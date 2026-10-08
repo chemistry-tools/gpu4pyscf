@@ -58,6 +58,8 @@ def _precision_context(mf):
                 setattr(ni, name, previous)
             else:
                 delattr(ni, name)
+        # Private function namespaces form cycles; release buffers without waiting for GC.
+        grid._release_scratch()
 
 
 def _full_check(mf, approximate_energy):

@@ -24,6 +24,7 @@ def install(mode='blas'):
         yield controller
     finally:
         numint.contract = original
+        controller._release_scratch()
 
 
 class _InlineExecutor:

@@ -6,6 +6,11 @@ native float64 energy and physical Fock. AO fields, densities, XC, exchange and
 orbital diagonalization retain float64. Numerical settings are configured on the
 mean-field object and preserved by the precision runner.
 
+Grid contractions reuse float32 scratch within each worker thread and CUDA stream,
+and fuse conversion, scaling and accumulation into a float64 output. Scratch is released
+when the precision scope exits. VV10 pair timing is disabled during normal calculations;
+the benchmark's `--profile` option explicitly enables synchronized timing.
+
 Use a matching native build of this checkout, following the [compilation guide](../README.md#compilation).
 Do not combine current numerical Python sources with an older wheel's native libraries.
 For a four-CPU allocation, apply CPU affinity, cap numerical thread counts at four,

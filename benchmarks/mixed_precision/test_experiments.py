@@ -170,3 +170,78 @@ def test_direct_blas_rectangular_and_accumulation():
         cp.testing.assert_allclose(numint.contract('ig,jg->ij', a, b), a @ b.T)
         raise RuntimeError('Check restoration')
     assert numint.contract is original
+
+
+@gpu
+@pytest.mark.parametrize('alpha,beta', [(1.0, 0.0), (0.2, -1.3), (-2.0, 1.0), (0.0, 1.0)])
+def test_mixed_grid_fused_float64_accumulation(alpha, beta):
+    import cupy as cp
+    import numpy as np
+
+    from gpu4pyscf.dft._mixed_grid import _gemm, _GridPrecision, _make_contract
+
+    rng = np.random.default_rng(73)
+    a, b = [cp.asarray(rng.normal(size=shape)) for shape in ((17, 83), (31, 83))]
+    initial = cp.asarray(rng.normal(size=(17, 31))) if beta else cp.full((17, 31), cp.nan)
+    product = _gemm(a.astype(cp.float32), b.astype(cp.float32)).astype(cp.float64)
+    expected = alpha * product
+    if beta:
+        expected += beta * initial
+    contract = _make_contract(None, _GridPrecision(True))
+    out = initial.copy()
+    actual = contract('ig,jg->ij', a, b, alpha=alpha, beta=beta, out=out)
+    assert actual is out and actual.dtype == cp.float64
+    cp.testing.assert_array_equal(actual, expected)
+    if not beta:
+        actual = contract('ig,jg->ij', a, b, alpha=alpha)
+        cp.testing.assert_array_equal(actual, expected)
+    with pytest.raises(ValueError, match='output matrix'):
+        contract('ig,jg->ij', a, b, beta=1.0)
+
+
+@gpu
+def test_mixed_grid_changing_blocks_and_streams_keep_outputs():
+    import cupy as cp
+    import numpy as np
+
+    from gpu4pyscf.dft._mixed_grid import _gemm, _GridPrecision, _make_contract
+
+    rng = np.random.default_rng(74)
+    inputs = [
+        (cp.asarray(rng.normal(size=(rows, grids))), cp.asarray(rng.normal(size=(cols, grids))))
+        for rows, cols, grids in ((17, 31, 83), (5, 11, 13), (29, 7, 113), (17, 31, 83))
+    ]
+    cp.cuda.get_current_stream().synchronize()
+    streams = [cp.cuda.Stream(non_blocking=True), cp.cuda.Stream(non_blocking=True)]
+    contract = _make_contract(None, _GridPrecision(True))
+    results = []
+    for _ in range(3):
+        for stream in streams:
+            with stream:
+                for a, b in inputs:
+                    result = contract('ig,jg->ij', a, b)
+                    expected = _gemm(a.astype(cp.float32), b.astype(cp.float32)).astype(cp.float64)
+                    results.append((result, expected))
+    for stream in streams:
+        stream.synchronize()
+    for actual, expected in results:
+        cp.testing.assert_array_equal(actual, expected)
+
+
+@gpu
+def test_mixed_grid_scope_releases_scratch_without_collecting_results():
+    import weakref
+
+    import cupy as cp
+    from grid_experiment import install
+
+    from gpu4pyscf.dft import numint
+
+    a = cp.ones((17, 83))
+    b = cp.ones((31, 83))
+    with install('mixed') as controller:
+        result = numint.contract('ig,jg->ij', a, b)
+        buffers = [weakref.ref(buffer) for _, values in controller._workspace.streams.values() for buffer in values]
+        assert all(reference() is not None for reference in buffers)
+    assert all(reference() is None for reference in buffers)
+    cp.testing.assert_array_equal(result, cp.full((17, 31), 83.0))

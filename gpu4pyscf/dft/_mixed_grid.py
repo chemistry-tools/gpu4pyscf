@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from threading import local
+
 
 def _gemm(a, b, *, alpha=1.0, beta=0.0, out=None):
     import cupy as cp
@@ -63,23 +65,29 @@ def _make_contract(original, controller):
         if (
             pattern == 'ig,jg->ij'
             and a.dtype == b.dtype == cp.float64
+            and a.ndim == b.ndim == 2
+            and a.shape[1] == b.shape[1]
+            and a.size and b.size
             and a.flags.c_contiguous
             and b.flags.c_contiguous
             and not kwargs
-            and (out is None or out.flags.c_contiguous)
+            and (
+                out is None
+                or (out.flags.c_contiguous and out.dtype == cp.float64 and out.shape == (a.shape[0], b.shape[0]))
+            )
         ):
             if controller.use_float32:
                 controller.last_precision = 'float32'
                 controller.float32_calls += 1
-                product = _gemm(a.astype(cp.float32), b.astype(cp.float32)).astype(cp.float64)
                 if out is None:
-                    return alpha * product
-                if beta:
-                    out *= beta
-                    out += alpha * product
-                else:
-                    out[:] = alpha * product
-                return out
+                    if beta:
+                        raise ValueError('Accumulation requires an output matrix')
+                    out = cp.empty((a.shape[0], b.shape[0]), dtype=cp.float64)
+                a32, b32, product = controller._scratch(a, b)
+                cp.copyto(a32, a, casting='unsafe')
+                cp.copyto(b32, b, casting='unsafe')
+                _gemm(a32, b32, out=product)
+                return controller._accumulate(product, alpha, beta, out)
             controller.float64_calls += 1
             controller.last_precision = 'float64'
             return _gemm(a, b, alpha=alpha, beta=beta, out=out)
@@ -94,3 +102,44 @@ class _GridPrecision:
         self.float32_calls = 0
         self.float64_calls = 0
         self.last_precision = None
+        self._workspace = local()
+        self._accumulation_kernel = None
+
+    def _release_scratch(self):
+        self._workspace = local()
+
+    def _scratch(self, a, b):
+        import cupy as cp
+
+        stream = cp.cuda.get_current_stream()
+        key = (cp.cuda.Device().id, stream.ptr)
+        if not hasattr(self._workspace, 'streams'):
+            self._workspace.streams = {}
+        # Retain the stream while buffers exist; worker threads never share scratch.
+        _, buffers = self._workspace.streams.setdefault(key, (stream, [None, None, None]))
+        shapes = (a.shape, b.shape, (a.shape[0], b.shape[0]))
+        views = []
+        for index, shape in enumerate(shapes):
+            size = shape[0] * shape[1]
+            if buffers[index] is None or buffers[index].size < size:
+                buffers[index] = cp.empty(size, dtype=cp.float32)
+            views.append(buffers[index][:size].reshape(shape))
+        return views
+
+    def _accumulate(self, product, alpha, beta, out):
+        import cupy as cp
+
+        if self._accumulation_kernel is None:
+            self._accumulation_kernel = cp.ElementwiseKernel(
+                'float32 product, float64 alpha, float64 beta',
+                'float64 out',
+                '''
+                double scaled = alpha * (double)product;
+                if (beta == 0.0) out = scaled;
+                else out = beta * out + scaled;
+                ''',
+                'mixed_grid_accumulate',
+                # Match the separate float64 multiplies/add in the unfused path.
+                options=('--fmad=false',),
+            )
+        return self._accumulation_kernel(product, alpha, beta, out)
