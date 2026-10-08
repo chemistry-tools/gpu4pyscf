@@ -41,7 +41,7 @@ def test_ase_energy_force_and_warm_geometry_agreement(charge):
     baseline = Atoms('OH2', positions=[[0, 0, 0], [0.7586, 0, 0.5043], [-0.7586, 0, 0.5043]])
     mixed = baseline.copy()
     baseline.calc = _calculator(baseline, charge, 'float64')
-    mixed.calc = _calculator(mixed, charge, 'mixed')
+    mixed.calc = _calculator(mixed, charge, 'auto' if charge == 0 else 'mixed')
     for displacement in (0.0, 0.015):
         baseline.positions[1, 0] += displacement
         mixed.positions[:] = baseline.positions
@@ -51,6 +51,7 @@ def test_ase_energy_force_and_warm_geometry_agreement(charge):
         np.testing.assert_allclose(forces, reference_forces, atol=1e-5, rtol=0)
         assert isinstance(forces, np.ndarray)
         assert mixed.calc.precision_info['accepted']
+        assert mixed.calc.calculation_info['precision'] == 'mixed'
         assert numint._vv10nlc is original_vv10 and numint.contract is original_contract
         assert all(name not in mixed.calc.method_scan._numint.__dict__ for name in ('nr_rks', 'nr_uks', 'nr_nlc_vxc'))
     assert mixed.calc.method_scan.e_tot == mixed.calc.precision_info['final_verification']['float64_energy_hartree']
