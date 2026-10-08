@@ -13,3 +13,6 @@ See [measured results](PERFORMANCE.md), [reproduction instructions](RUNNING.md) 
 [development guidance](AGENTS.md).
 
 Use the [ASE integration guide](ASE.md) for energies, forces, optimizer steps and workflow comparisons.
+
+The optional [Skala benchmark](SKALA.md) evaluates a different XC functional and its use for
+preoptimization; it does not replace the fixed-method precision checks.

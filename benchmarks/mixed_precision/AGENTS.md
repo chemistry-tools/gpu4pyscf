@@ -10,6 +10,9 @@ scope; [PERFORMANCE.md](PERFORMANCE.md) owns measured results and their version 
 - `ase_workflow.py`: generic external-input energy/force/optimization/Hessian comparisons.
 - `compare_ase.py`, `test_compare_ase.py`: recipe/source/resource guards and matched-geometry report comparisons.
 - `test_ase_precision.py`, `test_ase_gpu.py`: lifecycle/fallback and real-force checks.
+- `skala_benchmark.py`, `SKALA.md`: optional alternate-functional ASE timing, geometry-reuse
+  checks and Skala-to-ωB97M-V preoptimization comparisons. Record Skala's grid and D3 recipe;
+  do not interpret cross-functional energy differences as precision errors.
 - `vv10_experiment.py`: scoped VV10 adapters and CuPy pair-kernel/compiler comparisons. Adapted
   from upstream v1.8.1 `gpu4pyscf/lib/gdft/vv10.cu`, under the repository's Apache-2.0 license.
 - `grid_experiment.py`: scoped grid matrix products and single-GPU task-dispatch experiments.
