@@ -118,11 +118,11 @@ class PySCF(Calculator):
     implemented_properties = ['energy', 'forces', 'stress',
                               'dipole', 'magmom']
 
-    default_parameters = {'precision': 'float64', 'grid_response': None,
+    default_parameters = {'precision': 'auto', 'grid_response': None,
                           'auxbasis_response': None}
 
     def __init__(self, restart=None, label='PySCF', atoms=None, directory='.',
-                 method=None, precision='float64', grid_response=None,
+                 method=None, precision='auto', grid_response=None,
                  auxbasis_response=None, **kwargs):
         """Construct PySCF-calculator object.
 
@@ -133,9 +133,10 @@ class PySCF(Calculator):
             Default is 'PySCF'.
 
         method: A PySCF method class
-        precision: 'float64' (default) or 'mixed'
-            Mixed molecular DFT uses early float32 grid/VV10 products, then verifies
-            full float64 fields and reconverges in float64 if necessary.
+        precision: 'auto' (default), 'float64' or 'mixed'
+            Auto selects verified mixed precision for supported GPU VV10 DFT,
+            and native float64 for other methods. Mixed uses early float32 grid/VV10
+            products, verifies float64 fields and reconverges in float64 if necessary.
         grid_response: bool or None
             Explicit gradient grid response; None retains the method's default.
         auxbasis_response: bool or None
@@ -168,25 +169,35 @@ class PySCF(Calculator):
             self.method_scan = method.as_scanner()
 
     def set(self, **kwargs):
-        if 'precision' in kwargs and kwargs['precision'] not in ('float64', 'mixed'):
-            raise ValueError("precision must be 'float64' or 'mixed'")
+        if 'precision' in kwargs and kwargs['precision'] not in ('auto', 'float64', 'mixed'):
+            raise ValueError("precision must be 'auto', 'float64' or 'mixed'")
         for name in ('grid_response', 'auxbasis_response'):
             if name in kwargs and kwargs[name] is not None and type(kwargs[name]) is not bool:
                 raise ValueError(f'{name} must be bool or None')
         changed_parameters = Calculator.set(self, **kwargs)
         if changed_parameters:
             self.reset()
+        return changed_parameters
+
+    def reset(self):
+        Calculator.reset(self)
+        self.precision_info = None
+        self.calculation_info = None
+        self.hessian_info = None
 
     def calculate(self, atoms=None, properties=['energy'],
                   system_changes=all_properties):
         Calculator.calculate(self, atoms)
+        atoms = self.atoms
+        self.results.clear()
+        self.hessian_info = None
         started = time.perf_counter()
         self.calculation_info = {}
 
         positions = atoms.get_positions()
         atomic_numbers = atoms.get_atomic_numbers()
         Z = np.array([charge(x) for x in self.mol.elements])
-        if all(Z == atomic_numbers):
+        if len(Z) == len(atomic_numbers) and all(Z == atomic_numbers):
             _atoms = positions
         else:
             _atoms = list(zip(atomic_numbers, positions))
@@ -216,10 +227,17 @@ class PySCF(Calculator):
                     return self.method.e_tot
                 return self.method_scan(self.mol)
 
-            if self.parameters.precision == 'mixed':
+            precision = self.parameters.precision
+            if precision == 'auto':
+                from gpu4pyscf.dft.mixed_precision import supports_mixed_precision
+                precision = 'mixed' if supports_mixed_precision(base_method) else 'float64'
+            self.calculation_info['precision'] = precision
+            if precision == 'mixed':
                 from gpu4pyscf.dft.mixed_precision import run_verified_scf
-                e_tot = run_verified_scf(base_method, evaluate)
-                self.precision_info = base_method.mixed_precision_info
+                try:
+                    e_tot = run_verified_scf(base_method, evaluate)
+                finally:
+                    self.precision_info = getattr(base_method, 'mixed_precision_info', None)
             else:
                 e_tot = evaluate()
             if not getattr(base_method, 'converged', True):

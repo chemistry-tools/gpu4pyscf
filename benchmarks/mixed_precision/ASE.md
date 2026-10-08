@@ -1,5 +1,7 @@
 # Using verified mixed precision with ASE
 
+The [library guide](../../docs/mixed_precision.md) owns the public SCF API and installation boundary.
+
 The GPU4PySCF ASE calculator accepts `precision="mixed"` for molecular RKS/UKS with VV10 on a
 single visible GPU. Configure the method with the desired functional, basis, ECP, fitting basis,
 grids, SCF tolerance and cycle budget first; the calculator preserves them.
@@ -14,7 +16,8 @@ forces = atoms.get_forces()            # numpy array, eV/Angstrom
 hessian = atoms.calc.get_hessian(atoms, auxbasis_response=2)  # (3N, 3N), eV/Angstrom squared
 ```
 
-The default `precision="float64"` retains native SCF. Each new geometry starts a fresh precision
+The default `precision="auto"` selects verified mixed SCF for supported GPU VV10 DFT
+and native float64 for other methods. `precision="float64"` explicitly forces native SCF. Each new geometry starts a fresh precision
 schedule, while the normal scanner reuses the previous density. Grid products use float32 for
 at most five SCF iterations; VV10 pair products use float32 partial sums combined in float64.
 The calculator then computes the original float64 energy and physical Fock. Acceptance requires

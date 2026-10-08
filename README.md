@@ -61,6 +61,7 @@ Features
 - Spin-conserved and spin-flip TDA and TDDFT for excitated states;
 - Geometry optimization and transition state search via [geomeTRIC](https://geometric.readthedocs.io/en/latest/);
 - Atomic Simulation Environment ([ASE](https://gitlab.com/ase/ase)) interface;
+- [Verified mixed-precision molecular DFT](docs/mixed_precision.md), with float64 SCF checks and derivatives;
 - Dispersion corrections via [DFTD3](https://github.com/dftd3/simple-dftd3) and [DFTD4](https://github.com/dftd4/dftd4);
 - Analytical gradient and analytical Hessian for nonlocal functional correction (vv10);
 - GPU accelerated ECP;

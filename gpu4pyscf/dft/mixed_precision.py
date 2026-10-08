@@ -7,6 +7,10 @@ from contextlib import contextmanager
 from types import FunctionType, MethodType
 
 
+class SCFVerificationError(RuntimeError):
+    """Mixed or recovery SCF failed the original float64 convergence criteria."""
+
+
 def _private_functions(namespace, replacements):
     """Give an integration call graph private dispatch without changing module globals."""
     private = dict(namespace)
@@ -83,13 +87,32 @@ def _full_check(mf, approximate_energy):
     }
 
 
-def run_verified_scf(mf, calculate=None):
+def supports_mixed_precision(mf):
+    """Whether the method supports automatic mixed precision before NumInt/device checks."""
+    gpu = getattr(mf, 'device', None) == 'gpu' or any(
+        cls.__module__.startswith('gpu4pyscf.') for cls in type(mf).__mro__
+    )
+    return (
+        gpu
+        and not hasattr(mf, 'cell')
+        and hasattr(mf, 'xc')
+        and callable(getattr(mf, 'do_nlc', None))
+        and mf.do_nlc()
+        and getattr(mf, 'check_convergence', None) is None
+    )
+
+
+def run_verified_scf(mf, calculate=None, *, dm0=None):
     """Run mixed SCF, check float64 fields and reconverge at the same geometry if needed.
 
     ``calculate`` may call a scanner to preserve its normal density reuse and geometry reset.
     All patches are per NumInt instance and restored before returning to derivatives.
+    ``dm0`` supplies the native initial density when no scanner callable is used.
     ``mf.max_cycle`` remains the total budget across the mixed and float64 phases.
+    Verification failures raise ``SCFVerificationError``; CUDA and callback errors propagate.
     """
+    if calculate is not None and (not callable(calculate) or dm0 is not None):
+        raise ValueError('Use a scanner callable or dm0, not both')
     # PySCF creates scanner classes in its CPU module even for GPU subclasses.
     gpu_method = getattr(mf, 'device', None) == 'gpu' or any(
         cls.__module__.startswith('gpu4pyscf.') for cls in type(mf).__mro__
@@ -113,6 +136,7 @@ def run_verified_scf(mf, calculate=None):
     records = []
     info = {'cycles': records, 'fallback_scf': False, 'accepted': False}
     mf.mixed_precision_info = info
+    mf.converged = False
 
     with _precision_context(mf) as (grid, vv10):
 
@@ -134,7 +158,7 @@ def run_verified_scf(mf, calculate=None):
         try:
             # Reserve iterations for float64 recovery if approximate fields do not converge.
             mf.max_cycle = min(20, max(1, budget // 2))
-            energy = float(calculate() if calculate is not None else mf.kernel())
+            energy = float(calculate() if calculate is not None else mf.kernel(dm0=dm0))
             grid.use_float32 = vv10.use_float32 = False
             check = _full_check(mf, energy)
             info['initial_verification'] = check.copy()
@@ -143,7 +167,7 @@ def run_verified_scf(mf, calculate=None):
                 remaining = budget - len(records)
                 if remaining < 1:
                     mf.converged = False
-                    raise RuntimeError('Float64 verification failed and the SCF cycle budget is exhausted')
+                    raise SCFVerificationError('Float64 verification failed and the SCF cycle budget is exhausted')
                 mf.max_cycle = remaining
                 energy = float(mf.kernel(dm0=mf.make_rdm1()))
                 check = _full_check(mf, energy)
@@ -155,7 +179,7 @@ def run_verified_scf(mf, calculate=None):
             info['vv10_precisions'] = vv10.precisions.copy()
             if not check['passed']:
                 mf.converged = False
-                raise RuntimeError('Full float64 SCF failed the original convergence criteria')
+                raise SCFVerificationError('Full float64 SCF failed the original convergence criteria')
             mf.e_tot = check['float64_energy_hartree']
             mf.converged = info['accepted'] = True
             mf.cycles = len(records)

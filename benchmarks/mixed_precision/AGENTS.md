@@ -19,6 +19,9 @@ Use physical GPU 1 only and at most four logical CPUs, including builds and test
 computational jobs sequentially. Keep benchmark outputs and environments outside the checkout;
 never overwrite or delete earlier evidence. Preserve unrelated branches and working-tree changes.
 
+Keep validation datasets held out from tuning and implementation decisions. Designated development
+test data and synthetic molecules may be used; do not copy private inputs or results into fixtures.
+
 Preserve geometries, atom order, total charge, multiplicity, functional, basis, grids, tolerance,
 cycle budget and full nonlocal correlation when comparing performance. Report approximate-only
 experiments separately. An accepted mixed result requires full float64 energy and orbital-gradient

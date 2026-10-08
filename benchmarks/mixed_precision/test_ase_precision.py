@@ -333,3 +333,98 @@ def test_ase_hessian_reference_failure_stops_without_cached_results(ase_calculat
     with pytest.raises(RuntimeError, match='Float64 Hessian reference'):
         atoms.calc.get_hessian(atoms)
     assert atoms.calc.results == {} and atoms.calc.hessian_info is None
+
+
+def test_initial_density_is_passed_to_native_scf(precision, monkeypatch):
+    module, _, _ = precision
+    mf = _MeanField()
+    density = object()
+    monkeypatch.setattr(module, '_full_check', lambda *args: _check(True))
+    module.run_verified_scf(mf, dm0=density)
+    assert mf.calls == [(density, 20)]
+    with pytest.raises(ValueError, match='not both'):
+        module.run_verified_scf(mf, lambda: 0.0, dm0=density)
+
+
+def test_verification_failure_has_distinct_error_type(precision, monkeypatch):
+    module, _, _ = precision
+    monkeypatch.setattr(module, '_full_check', lambda *args: _check(False))
+    with pytest.raises(module.SCFVerificationError):
+        module.run_verified_scf(_MeanField())
+
+
+def test_ase_explicit_calculate_can_use_saved_atoms_and_reset_diagnostics(ase_calculator):
+    from ase import Atoms
+
+    calculator, method_type = ase_calculator
+    atoms = Atoms('H2', positions=[[0, 0, 0], [0, 0, 0.74]])
+    atoms.calc = calculator(method=method_type(), precision='mixed')
+    atoms.get_forces()
+    atoms.calc.calculate(properties=['energy'])
+    assert atoms.calc.precision_info['accepted'] and 'forces' not in atoms.calc.results
+    changed = atoms.calc.set(precision='float64')
+    assert changed == {'precision': 'float64'}
+    assert atoms.calc.precision_info is atoms.calc.calculation_info is atoms.calc.hessian_info is None
+
+
+def test_ase_failed_verification_retains_diagnostics_without_stale_results(ase_calculator, precision, monkeypatch):
+    from ase import Atoms
+
+    module, _, _ = precision
+    calculator, method_type = ase_calculator
+    atoms = Atoms('H2', positions=[[0, 0, 0], [0, 0, 0.74]])
+    atoms.calc = calculator(method=method_type(), precision='mixed')
+    atoms.get_forces()
+    monkeypatch.setattr(module, '_full_check', lambda *args: _check(False))
+    with pytest.raises(module.SCFVerificationError):
+        atoms.calc.calculate(properties=['forces'])
+    assert atoms.calc.results == {}
+    assert not atoms.calc.precision_info['accepted']
+
+
+def test_ase_defaults_to_verified_mixed_for_supported_gpu_dft(ase_calculator):
+    from ase import Atoms
+
+    calculator, method_type = ase_calculator
+    atoms = Atoms('H2', positions=[[0, 0, 0], [0, 0, 0.74]])
+    atoms.calc = calculator(method=method_type())
+    atoms.get_forces()
+    assert atoms.calc.parameters.precision == 'auto'
+    assert atoms.calc.calculation_info['precision'] == 'mixed'
+    assert atoms.calc.precision_info['accepted']
+
+
+@pytest.mark.parametrize('unsupported', ['cpu', 'no_vv10', 'custom_convergence'])
+def test_ase_auto_keeps_native_precision_for_unsupported_methods(ase_calculator, unsupported):
+    from ase import Atoms
+
+    calculator, method_type = ase_calculator
+    mf = method_type()
+    if unsupported == 'cpu':
+        mf.device = 'cpu'
+    elif unsupported == 'no_vv10':
+        mf.do_nlc = lambda: False
+    else:
+        mf.check_convergence = lambda env: True
+    atoms = Atoms('H2', positions=[[0, 0, 0], [0, 0, 0.74]])
+    atoms.calc = calculator(method=mf)
+    atoms.get_forces()
+    assert atoms.calc.calculation_info['precision'] == 'float64'
+    assert atoms.calc.precision_info is None
+
+
+def test_precision_setup_failure_invalidates_previous_convergence(precision, monkeypatch):
+    module, _, _ = precision
+    mf = _MeanField()
+    mf.converged = True
+
+    @contextmanager
+    def fail(mf):
+        raise ValueError('Unsupported integration dispatch')
+        yield
+
+    monkeypatch.setattr(module, '_precision_context', fail)
+    with pytest.raises(ValueError, match='Unsupported integration'):
+        module.run_verified_scf(mf)
+    assert not mf.converged and not mf.mixed_precision_info['accepted']
+    assert mf.callback is None and mf.max_cycle == 100
