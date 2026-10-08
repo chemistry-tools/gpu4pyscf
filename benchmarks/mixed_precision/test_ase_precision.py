@@ -276,3 +276,60 @@ def test_workflow_input_rejects_identity_and_schema_changes(tmp_path, mutation):
     path.write_text(json.dumps(value))
     with pytest.raises(ValueError):
         _input(path, 'hydrogen')
+
+
+def test_ase_hessian_uses_native_reference_full_response_and_invalidates_forces(ase_calculator, monkeypatch):
+    from ase import Atoms
+    from pyscf.data.nist import BOHR, HARTREE2EV
+
+    calculator, method_type = ase_calculator
+    mf = method_type()
+    atoms = Atoms('H2', positions=[[0, 0, 0], [0, 0, 0.74]])
+    atoms.calc = calculator(method=mf, precision='mixed', grid_response=True, auxbasis_response=True)
+    atoms.get_forces()
+    initial_density = mf.make_rdm1()
+    observed = []
+    raw_hessian = np.arange(36, dtype=float).reshape(2, 2, 3, 3)
+
+    def kernel(dm0):
+        assert dm0 is initial_density
+        mf.converged = True
+        mf.e_tot = -2.0
+        return mf.e_tot
+
+    class Hessian:
+        grid_response = False
+        auxbasis_response = 0
+
+        def kernel(self):
+            observed.append((self.grid_response, self.auxbasis_response))
+            return raw_hessian
+
+    monkeypatch.setattr(mf, 'kernel', kernel)
+    monkeypatch.setattr(mf, 'Hessian', Hessian, raising=False)
+    result = atoms.calc.get_hessian()
+    reference = raw_hessian.transpose(0, 2, 1, 3).reshape(6, 6)
+    reference = (reference + reference.T) * 0.5 * (HARTREE2EV / BOHR**2)
+    np.testing.assert_array_equal(result, reference)
+    assert observed == [(True, 2)]
+    assert 'forces' not in atoms.calc.results
+    assert atoms.calc.results['energy'] == -2.0 * HARTREE2EV
+    assert atoms.calc.hessian_info['float64_reference_energy_hartree'] == -2.0
+
+
+def test_ase_hessian_reference_failure_stops_without_cached_results(ase_calculator, monkeypatch):
+    from ase import Atoms
+
+    calculator, method_type = ase_calculator
+    mf = method_type()
+    atoms = Atoms('H2', positions=[[0, 0, 0], [0, 0, 0.74]])
+    atoms.calc = calculator(method=mf, precision='mixed')
+    atoms.get_forces()
+
+    def kernel(dm0):
+        mf.converged = False
+
+    monkeypatch.setattr(mf, 'kernel', kernel)
+    with pytest.raises(RuntimeError, match='Float64 Hessian reference'):
+        atoms.calc.get_hessian(atoms)
+    assert atoms.calc.results == {} and atoms.calc.hessian_info is None

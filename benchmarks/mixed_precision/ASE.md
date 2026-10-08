@@ -11,6 +11,7 @@ atoms.calc = PySCF(method=mf, precision="mixed", grid_response=True,
                    auxbasis_response=True)
 energy = atoms.get_potential_energy()  # eV
 forces = atoms.get_forces()            # numpy array, eV/Angstrom
+hessian = atoms.calc.get_hessian(atoms, auxbasis_response=2)  # (3N, 3N), eV/Angstrom squared
 ```
 
 The default `precision="float64"` retains native SCF. Each new geometry starts a fresh precision
@@ -31,6 +32,13 @@ or Hessians run. `grid_response` and `auxbasis_response` are optional explicit g
 `None` retains their native defaults. `calc.precision_info` records checks, fallback and cycles;
 `calc.calculation_info` separates SCF and force timing. `calc.set(precision="float64")` clears
 cached ASE results before the next calculation.
+
+`calc.get_hessian()` explicitly reconverges native float64 SCF and runs the analytic molecular
+Hessian with full auxiliary response by default. It returns a symmetric Cartesian NumPy matrix,
+invalidates force caches after reconvergence and records the reference and timing in
+`calc.hessian_info`. It is a separate method, since Hessians are not a standard ASE calculator
+property. There is no finite-difference fallback. Methods without density fitting require
+`auxbasis_response=None`. The grid response follows the calculator's explicit setting.
 
 ## Comparing an existing workflow
 
@@ -56,8 +64,9 @@ Use `--steps 0` for identical-geometry energy/force comparisons. Larger step cou
 with the same force threshold and `maxstep=0.15` Angstrom. Independent optimizer paths can diverge;
 compare matched-geometry forces as well as time, steps and final convergence. `--hessian` adds
 the analytic float64 Hessian with the recipe's grid and auxiliary responses, after reconverging
-the Hessian reference with native float64 SCF. It writes the Hessian in Hartree/Bohr² and never
-falls back to finite differences. A short optimizer run alone is not a validated minimum. Per-cycle progress is appended to
+the Hessian reference with native float64 SCF. It writes both Cartesian eV/Angstrom² and
+atom-pair Hartree/Bohr² arrays. A short optimizer run alone is not a validated minimum.
+Per-cycle progress is appended to
 `scf-progress.jsonl` beside the frames and optimizer artifacts, without modifying earlier results.
 
 Compare the resulting reports with:

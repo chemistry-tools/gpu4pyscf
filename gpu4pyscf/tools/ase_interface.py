@@ -152,6 +152,7 @@ class PySCF(Calculator):
         self.method = method
         self.precision_info = None
         self.calculation_info = None
+        self.hessian_info = None
         self.pbc = hasattr(method, 'cell')
         self.mesh = None
         if self.pbc:
@@ -265,6 +266,58 @@ class PySCF(Calculator):
             self.results['magmom'] = magmom
 
         self.calculation_info['total_seconds'] = time.perf_counter() - started
+
+    def get_hessian(self, atoms=None, auxbasis_response=2):
+        """Return an analytic molecular Cartesian Hessian in eV/Angstrom squared.
+
+        Reconverge the current geometry with native float64 SCF before CPHF. This
+        explicit method is separate from ASE's standard energy/force properties.
+        Auxiliary response defaults to the full density-fitting response; pass
+        None for a method without density fitting or to retain its native setting.
+        """
+        if self.pbc:
+            raise NotImplementedError('ASE analytic Hessians currently support molecules only')
+        if auxbasis_response is not None and (
+            type(auxbasis_response) is not int or auxbasis_response not in (0, 1, 2)
+        ):
+            raise ValueError('Hessian auxbasis_response must be 0, 1, 2 or None')
+        atoms = self.atoms if atoms is None else atoms
+        if atoms is None:
+            raise ValueError('Atoms are required for a Hessian calculation')
+        self.get_potential_energy(atoms)
+        base = self.method if self.method_scan is None else self.method_scan
+        self.hessian_info = None
+        started = time.perf_counter()
+        # Reconvergence can change the density; old derivative caches are invalid.
+        self.results.clear()
+        base.kernel(dm0=base.make_rdm1())
+        if not base.converged:
+            raise RuntimeError('Float64 Hessian reference did not converge')
+        self.results['energy'] = float(base.e_tot) * HARTREE2EV
+        hobj = base.Hessian()
+        if self.parameters.grid_response is not None:
+            hobj.grid_response = self.parameters.grid_response
+        if auxbasis_response is not None:
+            if not hasattr(hobj, 'auxbasis_response'):
+                raise ValueError('Hessian auxbasis_response requires density fitting')
+            hobj.auxbasis_response = auxbasis_response
+        hessian = hobj.kernel()
+        if hasattr(hessian, 'get'):
+            hessian = hessian.get()
+        hessian = np.asarray(hessian, dtype=np.float64)
+        n = len(atoms)
+        if hessian.shape != (n, n, 3, 3) or not np.isfinite(hessian).all():
+            raise RuntimeError('Analytic Hessian must be finite with shape (N, N, 3, 3)')
+        cartesian = hessian.transpose(0, 2, 1, 3).reshape(3 * n, 3 * n)
+        cartesian = 0.5 * (cartesian + cartesian.T) * (HARTREE2EV / BOHR**2)
+        self.hessian_info = {
+            'seconds': time.perf_counter() - started,
+            'float64_reference_energy_hartree': float(base.e_tot),
+            'reference_scf_cycles': int(base.cycles),
+            'grid_response': getattr(hobj, 'grid_response', None),
+            'auxbasis_response': getattr(hobj, 'auxbasis_response', None),
+        }
+        return cartesian
 
     def get_fermi_level(self):
         method = self.method if self.method_scan is None else self.method_scan

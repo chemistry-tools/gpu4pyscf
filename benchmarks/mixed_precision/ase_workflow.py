@@ -234,20 +234,12 @@ def main():
     write(artifact / 'final.xyz', atoms)
     hessian_seconds = None
     if args.hessian:
-        base = atoms.calc.method if atoms.calc.method_scan is None else atoms.calc.method_scan
         hessian_started = time.perf_counter()
-        # Hessian references are reconverged with the original float64 SCF before CPHF.
-        base.kernel(dm0=base.make_rdm1())
-        if not base.converged:
-            raise RuntimeError('Float64 Hessian reference did not converge')
-        hobj = base.Hessian()
-        hobj.grid_response = recipe['grid_response']
-        if recipe['auxbasis'] is not None:
-            hobj.auxbasis_response = recipe['auxbasis_response']
-        hessian = hobj.kernel()
-        if hasattr(hessian, 'get'):
-            hessian = hessian.get()
-        np.save(artifact / 'hessian_hartree_bohr2.npy', hessian)
+        hessian = atoms.calc.get_hessian(atoms, auxbasis_response=recipe['auxbasis_response'])
+        np.save(artifact / 'hessian_ev_angstrom2.npy', hessian)
+        n = len(atoms)
+        native_units = hessian.reshape(n, 3, n, 3).transpose(0, 2, 1, 3) * (BOHR**2 / HARTREE2EV)
+        np.save(artifact / 'hessian_hartree_bohr2.npy', native_units)
         cupy.cuda.get_current_stream().synchronize()
         hessian_seconds = time.perf_counter() - hessian_started
     report = {
@@ -262,6 +254,7 @@ def main():
         'fmax_target_ev_angstrom': args.fmax,
         'calculation_seconds': calculation_seconds,
         'hessian_seconds': hessian_seconds,
+        'hessian_info': atoms.calc.hessian_info,
         'benchmark_revision': revision,
         'gpu4pyscf_source': _source_provenance(gpu4pyscf, numint.libgdft),
         'python_extension_sha256': extensions,
