@@ -21,7 +21,9 @@ Keep raw results outside the checkout and use new output paths for every run.
 
 ## Installed release and source checkout
 
-The original measurements used the installed 1.8.1 wheel. To reproduce that environment, run
+The original measurements used the installed 1.8.1 wheel. The shared kernels now live in the
+library, so add `--extension-root /path/to/this/fork` to GPU benchmark commands when testing
+these new Python modules against that wheel; see [ASE.md](ASE.md) for the import boundary. To reproduce that environment, run
 these scripts by absolute path from a directory outside the source checkout, without a checkout
 in `PYTHONPATH`. Both this fork's current master and the older release report version 1.8.1;
 reports therefore also record the imported module path, source hashes and native library hash.

@@ -155,13 +155,21 @@ def _calculate(args):
     if lib.num_threads() != 4:
         raise RuntimeError('PySCF must provide four OpenMP threads')
     gpu = None
-    synchronize = lambda: None
+
+    def synchronize():
+        return None
+
     if args.backend == 'gpu':
         if os.environ.get('CUDA_VISIBLE_DEVICES') != '1':
             raise RuntimeError('Set CUDA_VISIBLE_DEVICES=1 to select physical GPU 1')
         import cupy
 
         import gpu4pyscf
+
+        if args.extension_root:
+            from _extensions import load_extensions
+
+            load_extensions(args.extension_root)
 
         if args.require_gpu_source is not None and not Path(gpu4pyscf.__file__).resolve().is_relative_to(
             args.require_gpu_source.resolve()
@@ -185,7 +193,10 @@ def _calculate(args):
             .split(',')
         )
         actual_pci = cupy.cuda.Device(0).pci_bus_id
-        normalize_pci = lambda value: (int(value.split(':')[0], 16), value.split(':', 1)[1].lower())
+
+        def normalize_pci(value):
+            return int(value.split(':')[0], 16), value.split(':', 1)[1].lower()
+
         if normalize_pci(physical[1].strip()) != normalize_pci(actual_pci):
             raise RuntimeError('Visible CUDA device is not physical GPU 1')
         gpu = {
@@ -417,6 +428,7 @@ def main():
         type=Path,
         help='Reject a GPU4PySCF import outside this checkout (use with PYTHONPATH)',
     )
+    parser.add_argument('--extension-root', type=Path, help='Compatibility-test only the new Python modules')
     parser.add_argument('--backend', choices=('cpu', 'gpu'), required=True)
     parser.add_argument('--case', choices=tuple(CASES), default='benzene')
     parser.add_argument('--guess', choices=('minao', 'huckel', 'mod_huckel', 'sap'), default='minao')
@@ -455,6 +467,7 @@ def main():
         parser.error('Overlap cutoff must be positive and below one')
     if args.backend == 'cpu' and (
         args.require_gpu_source is not None
+        or args.extension_root is not None
         or args.vv10 != 'baseline'
         or args.overlap_cutoff is not None
         or args.capture_vv10

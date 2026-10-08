@@ -20,15 +20,16 @@ pip3 install ase
           """)
     raise RuntimeError("ASE is not found")
 
-import numpy as np
+import time
+
 import cupy as cp
+import numpy as np
 from ase.units import Debye
 from pyscf import lib
 from pyscf.data.nist import BOHR, HARTREE2EV
 from pyscf.gto.mole import charge
 from pyscf.pbc.gto.cell import Cell
 from pyscf.pbc.tools.pyscf_ase import ase_atoms_to_pyscf
-from gpu4pyscf.pbc.tools.discretization import freeze_mesh
 
 # These functions are copied from the development branch of PySCF and will be
 # provided by the pyscf.pbc.tools.pyscf_ase module in PySCF 2.11.
@@ -38,8 +39,8 @@ def pyscf_to_ase_atoms(pyscf_obj):
     Convert PySCF Cell/Mole object to ASE Atoms object
     '''
     from ase import Atoms
-    from pyscf.pbc import gto
     from pyscf.gto import mole
+    from pyscf.pbc import gto
 
     if isinstance(pyscf_obj, mole.MoleBase):
         cell = pyscf_obj
@@ -117,10 +118,12 @@ class PySCF(Calculator):
     implemented_properties = ['energy', 'forces', 'stress',
                               'dipole', 'magmom']
 
-    default_parameters = {}
+    default_parameters = {'precision': 'float64', 'grid_response': None,
+                          'auxbasis_response': None}
 
     def __init__(self, restart=None, label='PySCF', atoms=None, directory='.',
-                 method=None, **kwargs):
+                 method=None, precision='float64', grid_response=None,
+                 auxbasis_response=None, **kwargs):
         """Construct PySCF-calculator object.
 
         Parameters
@@ -130,17 +133,29 @@ class PySCF(Calculator):
             Default is 'PySCF'.
 
         method: A PySCF method class
+        precision: 'float64' (default) or 'mixed'
+            Mixed molecular DFT uses early float32 grid/VV10 products, then verifies
+            full float64 fields and reconverges in float64 if necessary.
+        grid_response: bool or None
+            Explicit gradient grid response; None retains the method's default.
+        auxbasis_response: bool or None
+            Explicit gradient auxiliary basis response; None retains its default.
         """
         Calculator.__init__(self, restart, label=label, atoms=atoms,
-                            directory=directory, **kwargs)
+                            directory=directory, precision=precision,
+                            grid_response=grid_response, auxbasis_response=auxbasis_response,
+                            **kwargs)
 
         if not isinstance(method, lib.StreamObject):
             raise RuntimeError(f'{method} must be an instance of a PySCF method')
 
         self.method = method
+        self.precision_info = None
+        self.calculation_info = None
         self.pbc = hasattr(method, 'cell')
         self.mesh = None
         if self.pbc:
+            from gpu4pyscf.pbc.tools.discretization import freeze_mesh
             mol = method.cell
             self.mesh = freeze_mesh(method)
         else:
@@ -152,6 +167,11 @@ class PySCF(Calculator):
             self.method_scan = method.as_scanner()
 
     def set(self, **kwargs):
+        if 'precision' in kwargs and kwargs['precision'] not in ('float64', 'mixed'):
+            raise ValueError("precision must be 'float64' or 'mixed'")
+        for name in ('grid_response', 'auxbasis_response'):
+            if name in kwargs and kwargs[name] is not None and type(kwargs[name]) is not bool:
+                raise ValueError(f'{name} must be bool or None')
         changed_parameters = Calculator.set(self, **kwargs)
         if changed_parameters:
             self.reset()
@@ -159,6 +179,8 @@ class PySCF(Calculator):
     def calculate(self, atoms=None, properties=['energy'],
                   system_changes=all_properties):
         Calculator.calculate(self, atoms)
+        started = time.perf_counter()
+        self.calculation_info = {}
 
         positions = atoms.get_positions()
         atomic_numbers = atoms.get_atomic_numbers()
@@ -173,6 +195,7 @@ class PySCF(Calculator):
         else:
             self.mol.set_geom_(_atoms, unit='Angstrom')
         if self.pbc:
+            from gpu4pyscf.pbc.tools.discretization import freeze_mesh
             base_method = self.method
             if self.method_scan is not None:
                 base_method = self.method_scan
@@ -182,17 +205,26 @@ class PySCF(Calculator):
         with_energy = with_grad or 'energy' in properties or 'dipole' in properties
 
         if with_energy:
-            if self.method_scan is None:
-                self.mol.set_geom_(atoms)
-                self.method.reset(self.mol).run()
-                e_tot = self.method.e_tot
-                if not getattr(self.method, 'converged', True):
-                    raise RuntimeError(f'{self.method} not converged')
+            base_method = self.method if self.method_scan is None else self.method_scan
+            self.precision_info = None
+            scf_started = time.perf_counter()
+
+            def evaluate():
+                if self.method_scan is None:
+                    self.method.reset(self.mol).run()
+                    return self.method.e_tot
+                return self.method_scan(self.mol)
+
+            if self.parameters.precision == 'mixed':
+                from gpu4pyscf.dft.mixed_precision import run_verified_scf
+                e_tot = run_verified_scf(base_method, evaluate)
+                self.precision_info = base_method.mixed_precision_info
             else:
-                e_tot = self.method_scan(self.mol)
-                if not self.method_scan.converged:
-                    raise RuntimeError(f'{self.method} not converged')
+                e_tot = evaluate()
+            if not getattr(base_method, 'converged', True):
+                raise RuntimeError(f'{base_method} not converged')
             self.results['energy'] = e_tot * HARTREE2EV
+            self.calculation_info['scf_seconds'] = time.perf_counter() - scf_started
 
         if self.method_scan is None:
             base_method = self.method
@@ -201,14 +233,26 @@ class PySCF(Calculator):
 
         if with_grad:
             grad_obj = base_method.Gradients()
+            if self.parameters.grid_response is not None:
+                grad_obj.grid_response = self.parameters.grid_response
+            if self.parameters.auxbasis_response is not None:
+                if not hasattr(grad_obj, 'auxbasis_response'):
+                    raise ValueError('auxbasis_response requires a density-fitted gradient')
+                grad_obj.auxbasis_response = self.parameters.auxbasis_response
 
         if 'forces' in properties:
+            force_started = time.perf_counter()
             forces = -grad_obj.kernel()
-            self.results['forces'] = forces * (HARTREE2EV / BOHR)
+            if hasattr(forces, 'get'):
+                forces = forces.get()
+            self.results['forces'] = np.asarray(forces) * (HARTREE2EV / BOHR)
+            self.calculation_info['force_seconds'] = time.perf_counter() - force_started
 
         if 'stress' in properties:
             stress = grad_obj.get_stress()
-            self.results['stress'] = stress * (HARTREE2EV / BOHR**3)
+            if hasattr(stress, 'get'):
+                stress = stress.get()
+            self.results['stress'] = np.asarray(stress) * (HARTREE2EV / BOHR**3)
 
         if 'dipole' in properties:
             if self.pbc:
@@ -219,6 +263,8 @@ class PySCF(Calculator):
         if 'magmom' in properties:
             magmom = self.mol.spin
             self.results['magmom'] = magmom
+
+        self.calculation_info['total_seconds'] = time.perf_counter() - started
 
     def get_fermi_level(self):
         method = self.method if self.method_scan is None else self.method_scan
@@ -260,7 +306,7 @@ class PySCF(Calculator):
 
     def band_structure(self):
         """Create band-structure object for plotting."""
-        from ase.spectrum.band_structure import get_band_structure, BandStructure
+        from ase.spectrum.band_structure import BandStructure
         method = self.method if self.method_scan is None else self.method_scan
         standard_path = self.atoms.cell.bandpath()
         band_kpts = method.cell.get_abs_kpts(standard_path.kpts)
