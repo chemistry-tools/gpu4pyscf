@@ -74,13 +74,14 @@ extern "C" __global__ void pair(
 
 
 class _VV10:
-    def __init__(self, mode='refined', block=128, backend='nvrtc'):
+    def __init__(self, mode='refined', block=128, backend='nvrtc', *, profile=False):
         import cupy as cp
 
         if mode not in ('compiled', 'refined', 'float32') or block not in (64, 128, 256):
             raise ValueError('Unknown VV10 kernel mode or block size')
         self.block = block
         self.mode = mode
+        self.profile = profile
         options = ['-std=c++17', f'-DBLOCK={block}']
         if mode == 'refined':
             options.append('-DREFINE_RECIPROCAL')
@@ -131,17 +132,18 @@ class _VV10:
         kappa = kp * rho ** (1 / 6)
         rw = rho * weights[idx]
         u, w, e = [cp.empty(n) for _ in range(3)]
-        begin, end = cp.cuda.Event(), cp.cuda.Event()
-        begin.record()
-        if n:
-            self.kernel(
-                ((n + self.block - 1) // self.block,),
-                (self.block,),
-                (u, w, e, r, rw, omega, kappa, np.int32(n)),
-            )
-        end.record()
-        end.synchronize()
-        self.pair_seconds.append(cp.cuda.get_elapsed_time(begin, end) / 1000)
+        if self.profile:
+            begin, end = cp.cuda.Event(), cp.cuda.Event()
+            begin.record()
+        self.kernel(
+            ((n + self.block - 1) // self.block,),
+            (self.block,),
+            (u, w, e, r, rw, omega, kappa, np.int32(n)),
+        )
+        if self.profile:
+            end.record()
+            end.synchronize()
+            self.pair_seconds.append(cp.cuda.get_elapsed_time(begin, end) / 1000)
         self.active_grids.append(n)
         exc, vxc = cp.zeros(nfull), cp.zeros((2, nfull))
         exc[idx] = beta + 0.5 * e
@@ -151,9 +153,9 @@ class _VV10:
 
 
 class _AdaptiveVV10:
-    def __init__(self, original, block, backend):
+    def __init__(self, original, block, backend, *, profile=False):
         self.original = original
-        self.coarse = _VV10('float32', block, backend)
+        self.coarse = _VV10('float32', block, backend, profile=profile)
         self.use_float32 = True
         self.precisions = []
 

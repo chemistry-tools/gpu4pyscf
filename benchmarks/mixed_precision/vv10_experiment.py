@@ -27,11 +27,15 @@ class _AdaptiveVV10:
 
 
 @contextmanager
-def install(mode, block=128, backend='nvrtc'):
+def install(mode, block=128, backend='nvrtc', *, profile=False):
     from gpu4pyscf.dft import numint
 
     original = numint._vv10nlc
-    kernel = _AdaptiveVV10(original, block, backend) if mode in ('mixed', 'verify') else _VV10(mode, block, backend)
+    kernel = (
+        _AdaptiveVV10(original, block, backend, profile=profile)
+        if mode in ('mixed', 'verify')
+        else _VV10(mode, block, backend, profile=profile)
+    )
     numint._vv10nlc = kernel
     try:
         yield kernel
@@ -66,7 +70,7 @@ def main():
     results = []
     for mode in ('compiled', 'refined', 'float32'):
         for block in (64, 128, 256):
-            kernel = _VV10(mode, block, args.backend)
+            kernel = _VV10(mode, block, args.backend, profile=True)
             result = kernel(rho, coords, weights, pars)
             for _ in range(3):
                 result = kernel(rho, coords, weights, pars)

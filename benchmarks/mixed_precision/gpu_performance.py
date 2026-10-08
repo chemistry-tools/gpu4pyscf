@@ -290,7 +290,7 @@ def _calculate(args):
         if args.vv10 != 'baseline':
             from vv10_experiment import install
 
-            experiment = stack.enter_context(install(args.vv10, args.vv10_block))
+            experiment = stack.enter_context(install(args.vv10, args.vv10_block, profile=args.profile))
         if args.profile:
             for obj, name in (
                 (mf, 'get_init_guess'),

@@ -115,6 +115,33 @@ def test_vv10_empty_density():
 
 
 @gpu
+def test_vv10_profiling_is_opt_in(monkeypatch):
+    import cupy as cp
+    import numpy as np
+
+    from gpu4pyscf.dft._mixed_vv10 import _AdaptiveVV10
+
+    rng = np.random.default_rng(32)
+    rho = cp.asarray(np.vstack((rng.uniform(0.01, 2, 129), rng.normal(0, 0.02, (3, 129)))))
+    coords = cp.asarray(rng.normal(0, 3, (129, 3)))
+    weights = cp.ones(129) * 0.05
+    timed = _AdaptiveVV10(None, 128, 'nvrtc', profile=True)
+    reference = timed(rho, coords, weights, (6.0, 0.01))
+    assert len(timed.pair_seconds) == 1 and timed.pair_seconds[0] > 0
+    untimed = _AdaptiveVV10(None, 128, 'nvrtc')
+
+    def forbidden_event(*args, **kwargs):
+        raise AssertionError('Production VV10 must not create profiling events')
+
+    with monkeypatch.context() as patch:
+        patch.setattr(cp.cuda, 'Event', forbidden_event)
+        result = untimed(rho, coords, weights, (6.0, 0.01))
+    for actual, expected in zip(result, reference):
+        cp.testing.assert_array_equal(actual, expected)
+    assert untimed.pair_seconds == [] and untimed.coarse.active_grids == [129]
+
+
+@gpu
 def test_direct_blas_rectangular_and_accumulation():
     import cupy as cp
     import numpy as np
