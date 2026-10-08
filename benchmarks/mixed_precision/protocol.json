@@ -1,0 +1,12 @@
+{
+  "protocol_version": 1,
+  "xc": "wb97m-v",
+  "basis": "def2-tzvpd",
+  "ecp": "auto-def2",
+  "auxiliary_basis": null,
+  "density_fitting": true,
+  "grid_level": 5,
+  "nlc_grid_level": 3,
+  "conv_tol": 1e-08,
+  "max_cycle": 200
+}

@@ -1,0 +1,145 @@
+"""Resource enforcement and opt-in CUDA correctness for the benchmark experiments."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+
+import pytest
+from gpu_performance import THREAD_VARIABLES, _resources, _settings
+
+gpu = pytest.mark.skipif(os.getenv('DFT_GPU_TEST') != '1', reason='opt-in CUDA experiment')
+
+
+def test_four_cpu_limit(monkeypatch):
+    calls = []
+    monkeypatch.setattr(os, 'sched_getaffinity', lambda pid: set(range(8)), raising=False)
+    monkeypatch.setattr(os, 'sched_setaffinity', lambda pid, cpus: calls.append(cpus), raising=False)
+    for key in (*THREAD_VARIABLES, 'OMP_DYNAMIC', 'OMP_MAX_ACTIVE_LEVELS'):
+        monkeypatch.setenv(key, 'original')
+    _resources([4, 5, 6, 7])
+    assert calls == [[4, 5, 6, 7]]
+    assert all(os.environ[key] == '4' for key in THREAD_VARIABLES)
+    assert os.environ['OMP_DYNAMIC'] == 'FALSE'
+    for cpus in ([1], [1, 2, 3, 4, 5], [1, 1, 2, 3], [6, 7, 8, 9]):
+        with pytest.raises(ValueError):
+            _resources(cpus)
+
+
+def test_inline_task_errors_are_retained():
+    from grid_experiment import _InlineExecutor
+
+    with _InlineExecutor(1) as executor:
+        assert executor.submit(lambda x: x + 1, 3).result() == 4
+        future = executor.submit(lambda: 1 / 0)
+        with pytest.raises(ZeroDivisionError):
+            future.result()
+    with pytest.raises(ValueError):
+        _InlineExecutor(2)
+
+
+def test_protocol_preserves_method_and_provenance():
+    settings, checksum = _settings()
+    assert settings['xc'] == 'wb97m-v'
+    assert settings['basis'] == 'def2-tzvpd'
+    assert settings['conv_tol'] == 1e-8
+    assert settings['grid_level'] == 5 and settings['nlc_grid_level'] == 3
+    assert checksum == hashlib.sha256(Path(__file__).with_name('protocol.json').read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    'key,value',
+    [
+        ('unknown', True),
+        ('protocol_version', True),
+        ('ecp', None),
+        ('density_fitting', False),
+        ('grid_level', 10),
+        ('nlc_grid_level', True),
+        ('conv_tol', -1),
+        ('max_cycle', 0),
+        ('basis', ''),
+        ('auxiliary_basis', []),
+    ],
+)
+def test_protocol_rejects_unsupported_settings(tmp_path, key, value):
+    settings, _ = _settings()
+    settings[key] = value
+    path = tmp_path / 'protocol.json'
+    path.write_text(json.dumps(settings))
+    with pytest.raises(ValueError):
+        _settings(path)
+
+
+def test_protocol_rejects_missing_settings(tmp_path):
+    path = tmp_path / 'protocol.json'
+    path.write_text('{}')
+    with pytest.raises(ValueError):
+        _settings(path)
+
+
+@gpu
+@pytest.mark.parametrize('mode', ['compiled', 'refined', 'float32'])
+@pytest.mark.parametrize('block', [64, 128, 256])
+def test_vv10_partial_tiles_and_signed_weights(mode, block):
+    import cupy as cp
+    import numpy as np
+    from vv10_experiment import _VV10
+
+    from gpu4pyscf.dft import numint
+
+    rng = np.random.default_rng(31)
+    rho = cp.asarray(np.vstack((rng.uniform(0.01, 2, 257), rng.normal(0, 0.02, (3, 257)))))
+    coords = cp.asarray(rng.normal(0, 3, (257, 3)))
+    weights = cp.asarray(rng.normal(0, 0.05, 257))
+    rho[0, :3] = 0
+    weights[3:6] = 0
+    pars = (6.0, 0.01)
+    reference = numint._vv10nlc(rho, coords, weights, pars)
+    result = _VV10(mode, block)(rho, coords, weights, pars)
+    tolerance = 1e-6 if mode == 'float32' else 1e-12
+    for actual, expected in zip(result, reference):
+        cp.testing.assert_allclose(actual, expected, rtol=tolerance, atol=tolerance * 1e-2)
+    assert bool(cp.all(result[0][:3] == 0))
+
+
+@gpu
+def test_vv10_empty_density():
+    import cupy as cp
+    from vv10_experiment import _VV10
+
+    result = _VV10()(cp.zeros((4, 13)), cp.zeros((13, 3)), cp.ones(13), (6.0, 0.01))
+    assert all(bool(cp.all(array == 0)) for array in result)
+
+
+@gpu
+def test_direct_blas_rectangular_and_accumulation():
+    import cupy as cp
+    import numpy as np
+    from grid_experiment import _gemm, install
+
+    from gpu4pyscf.dft import numint
+
+    rng = np.random.default_rng(72)
+    a, b, initial = [cp.asarray(rng.normal(size=shape)) for shape in ((17, 83), (31, 83), (17, 31))]
+    expected = 0.2 * (a @ b.T) - 1.3 * initial
+    actual = _gemm(a, b, alpha=0.2, beta=-1.3, out=initial.copy())
+    cp.testing.assert_allclose(actual, expected, atol=1e-13, rtol=1e-13)
+    cp.testing.assert_allclose(_gemm(a, b), a @ b.T, atol=1e-13, rtol=1e-13)
+    cp.testing.assert_allclose(_gemm(a.astype(cp.float32), b.astype(cp.float32)), a @ b.T, atol=1e-5, rtol=1e-5)
+    with install('mixed') as precision:
+        out = initial.copy()
+        actual = numint.contract('ig,jg->ij', a, b, alpha=0.2, beta=-1.3, out=out)
+        assert precision.last_precision == 'float32'
+        cp.testing.assert_allclose(actual, expected, atol=1e-6, rtol=1e-5)
+        precision.use_float32 = False
+        actual = numint.contract('ig,jg->ij', a, b)
+        assert precision.last_precision == 'float64'
+        cp.testing.assert_allclose(actual, a @ b.T, atol=1e-13, rtol=1e-13)
+    original = numint.contract
+    with pytest.raises(RuntimeError), install():
+        cp.testing.assert_allclose(numint.contract('ig,jg->ij', a, b), a @ b.T)
+        raise RuntimeError('Check restoration')
+    assert numint.contract is original

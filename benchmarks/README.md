@@ -24,3 +24,5 @@ Find more benchmarks in
 
 - [Solvation free energy with SMD](https://github.com/pyscf/gpu4pyscf/tree/master/benchmarks/smd)
 - [Transition state search for transition metals](https://github.com/pyscf/gpu4pyscf/tree/master/benchmarks/ts)
+
+- [Single-GPU mixed precision ωB97M-V/def2-TZVPD experiments](mixed_precision/README.md)
