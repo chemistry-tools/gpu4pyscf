@@ -90,7 +90,11 @@ def run_verified_scf(mf, calculate=None):
     All patches are per NumInt instance and restored before returning to derivatives.
     ``mf.max_cycle`` remains the total budget across the mixed and float64 phases.
     """
-    if not getattr(mf, 'device', '').startswith('gpu'):
+    # PySCF creates scanner classes in its CPU module even for GPU subclasses.
+    gpu_method = getattr(mf, 'device', None) == 'gpu' or any(
+        cls.__module__.startswith('gpu4pyscf.') for cls in type(mf).__mro__
+    )
+    if not gpu_method:
         raise ValueError('Mixed precision requires a GPU4PySCF mean-field object')
     if hasattr(mf, 'cell') or not hasattr(mf, 'xc'):
         raise ValueError('Mixed precision currently supports molecular RKS and UKS only')

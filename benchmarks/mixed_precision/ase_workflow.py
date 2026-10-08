@@ -133,6 +133,7 @@ def main():
     from ase.io import write
     from ase.optimize import BFGS
     from pyscf import lib
+    from pyscf.data.nist import BOHR, HARTREE2EV
     from threadpoolctl import threadpool_info
 
     import gpu4pyscf
@@ -185,6 +186,7 @@ def main():
         base = atoms.calc.method if atoms.calc.method_scan is None else atoms.calc.method_scan
         entry = {
             'energy_ev': float(energy),
+            'energy_hartree': float(base.e_tot),
             'forces_ev_angstrom': forces.tolist(),
             'positions_angstrom': atoms.positions.tolist(),
             'fmax_ev_angstrom': float(np.linalg.norm(forces, axis=1).max()),
@@ -233,6 +235,7 @@ def main():
         hessian_seconds = time.perf_counter() - hessian_started
     report = {
         'recipe': recipe,
+        'unit_constants': {'hartree_ev': HARTREE2EV, 'bohr_angstrom': BOHR},
         'case': case,
         'input_sha256': hashlib.sha256(args.input.read_bytes()).hexdigest(),
         'precision': args.precision,

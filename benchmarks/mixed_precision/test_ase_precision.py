@@ -90,6 +90,16 @@ def test_verified_energy_updates_method_and_restores_callback(precision, monkeyp
     assert not mf.mixed_precision_info['fallback_scf']
 
 
+def test_gpu_scanner_accepts_gpu_bases_despite_cpu_device_label(precision, monkeypatch):
+    module, _, _ = precision
+    gpu_type = type('GPUSCF', (_MeanField,), {'__module__': 'gpu4pyscf.scf.hf'})
+    scanner_type = type('Scanner', (gpu_type,), {'__module__': 'pyscf.scf.hf', 'device': 'cpu'})
+    mf = scanner_type()
+    monkeypatch.setattr(module, '_full_check', lambda *args: _check(True))
+    module.run_verified_scf(mf)
+    assert mf.mixed_precision_info['accepted']
+
+
 def test_failed_verification_restarts_density_with_remaining_budget(precision, monkeypatch):
     module, _, vv10 = precision
     mf = _MeanField()
