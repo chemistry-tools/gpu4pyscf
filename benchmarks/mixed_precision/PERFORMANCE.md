@@ -82,3 +82,18 @@ The original settings source SHA256 was
 
 Raw reports, logs, densities and profiles are retained outside the checkout. The reports record
 exact source/settings hashes, software, affinity, thread pools, precision phases and verification.
+
+## Fork port verification
+
+The standalone harness at commit `094d71a00bf6bea38b1e3f8d3b06cc1f56f25aeb` passed all 25
+focused tests on GPU 1: 14 CPU resource/protocol tests and 11 CUDA checks. A fresh sequential
+benzene comparison using the same pinned 1.8.1 wheel took 22.7007 seconds for the float64
+baseline and 8.7197 seconds for the optimized calculation, a 2.60× speedup in this single pair.
+This confirms the port reproduces the experiment; it does not replace the three-run median.
+
+The final energy difference was `5.3774e-11` Hartree, the float32-to-float64 verification change
+was `7.6795e-11` Hartree, and the full float64 orbital gradient was `1.5823e-5`. Verification
+passed without fallback. Reports confirmed CPU affinity `[4, 5, 6, 7]`, four OpenMP threads,
+the experiment commit, actual wheel source hashes and the native library hash. The
+`--require-gpu-source` guard also correctly rejected that wheel when the fork checkout was
+required. Current master native-library changes remain outside this pinned-release check.
