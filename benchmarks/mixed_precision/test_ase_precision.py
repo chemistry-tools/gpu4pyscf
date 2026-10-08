@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -243,3 +244,35 @@ def test_ase_rejects_unknown_precision_and_response_types(ase_calculator):
         calculator(method=method_type(), precision='float32')
     with pytest.raises(ValueError, match='grid_response'):
         calculator(method=method_type(), grid_response=1)
+
+
+@pytest.mark.parametrize('mutation', ['unknown_root', 'unknown_recipe', 'unknown_case', 'atom_count', 'multiplicity'])
+def test_workflow_input_rejects_identity_and_schema_changes(tmp_path, mutation):
+    from ase_workflow import _RECIPE_KEYS, _input
+
+    value = {
+        'recipe': dict.fromkeys(_RECIPE_KEYS),
+        'cases': [
+            {
+                'id': 'hydrogen',
+                'numbers': [1],
+                'positions': [[0, 0, 0]],
+                'charge': 0,
+                'multiplicity': 2,
+            }
+        ],
+    }
+    if mutation == 'unknown_root':
+        value['other'] = True
+    elif mutation == 'unknown_recipe':
+        value['recipe']['other'] = True
+    elif mutation == 'unknown_case':
+        value['cases'][0]['other'] = True
+    elif mutation == 'atom_count':
+        value['cases'][0]['numbers'] = [1, 1]
+    else:
+        value['cases'][0]['multiplicity'] = 0
+    path = tmp_path / 'input.json'
+    path.write_text(json.dumps(value))
+    with pytest.raises(ValueError):
+        _input(path, 'hydrogen')

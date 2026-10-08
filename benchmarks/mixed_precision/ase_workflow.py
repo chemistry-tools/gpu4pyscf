@@ -172,8 +172,25 @@ def main():
     )
     if not recipe['warm_start']:
         atoms.calc.method_scan = None
+    if not hasattr(atoms.calc, 'precision_info'):
+        raise RuntimeError('The installed ASE interface does not implement the precision option')
     frames = []
     started = time.perf_counter()
+    revision = _checkout_revision(Path(__file__).resolve().parents[2])
+
+    def progress(env):
+        record = {
+            'cycle': int(env['cycle']) + 1,
+            'elapsed_seconds': time.perf_counter() - started,
+            'energy_hartree': float(env['e_tot']),
+            'orbital_gradient_norm': float(env['norm_gorb']),
+        }
+        with (artifact / 'scf-progress.jsonl').open('a') as output:
+            output.write(json.dumps(record, allow_nan=False) + '\n')
+
+    mf.callback = progress
+    if atoms.calc.method_scan is not None:
+        atoms.calc.method_scan.callback = progress
 
     def evaluate():
         if frames and np.array_equal(atoms.positions, frames[-1]['positions_angstrom']):
@@ -245,7 +262,7 @@ def main():
         'fmax_target_ev_angstrom': args.fmax,
         'calculation_seconds': calculation_seconds,
         'hessian_seconds': hessian_seconds,
-        'benchmark_revision': _checkout_revision(Path(__file__).resolve().parents[2]),
+        'benchmark_revision': revision,
         'gpu4pyscf_source': _source_provenance(gpu4pyscf, numint.libgdft),
         'python_extension_sha256': extensions,
         'versions': {
