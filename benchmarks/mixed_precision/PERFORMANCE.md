@@ -135,3 +135,72 @@ SCF and kernel timing used the pinned CUDA 13 runtime described above; force/lif
 additionally used ASE 3.27.0. Only the new precision/ASE Python modules were explicitly loaded
 over the matching installed 1.8.1 release. This does not verify a full native build of current
 master. Raw reports, source hashes, scripts and startup-failure logs remain outside Git.
+
+## Skala ASE comparison
+
+An isolated Skala 2026.9 / Skala-1.1-rev1 experiment used Python 3.12, PySCF 2.14.0,
+GPU4PySCF 1.8.1, PyTorch 2.13.0 CUDA 13 and ASE 3.27.0. All methods used the same installed
+numerical sources/native libraries and this fork's explicit Python precision/ASE extensions.
+The newer PySCF requirement means these are fresh comparisons, not ratios against the older
+environment's timings above. [SKALA.md](SKALA.md) documents the harness and reproduction.
+
+All cases were synthetic; validation datasets were untouched. Runs were sequential on the
+10 GB RTX 3080, physical GPU 1, with affinity `[4,5,6,7]` and four numerical threads.
+Benzene retained all 276 orbitals in def2-TZVPD. Density fitting used explicit
+`def2-universal-jkfit`, energy tolerance `1e-8` Hartree and orbital-gradient tolerance `1e-4`.
+Skala used its published D3 correction; ωB97M-V retained full VV10.
+
+Skala's default dense model evaluation ran out of GPU memory at ordinary grid level 5,
+before finishing an SCF. The completed Skala comparison uses its usual level 3, with 143,556
+points. Both ωB97M-V variants retain level 5, with 399,360 points, and nonlocal level 3.
+This is explicitly a comparison between different functionals and quadrature configurations.
+
+These are medians of three fresh-calculator energy-and-forces calls after retaining the first
+call separately. Imports/model loading are excluded; process caches and the Skala model remain
+warm. SCF and gradient column medians need not sum exactly to the total median.
+
+| Method | SCF, s | Forces, s | Energy + forces, s | SCF cycles |
+| --- | ---: | ---: | ---: | ---: |
+| ωB97M-V native float64, level 5 | 22.104 | 9.373 | 31.481 | 7 |
+| ωB97M-V verified mixed, level 5 | 7.966 | 9.490 | 17.460 | 7 |
+| Skala-1.1 + D3, level 3 | 7.747 | 14.295 | 22.062 | 10 |
+
+The first calculation in those processes took 44.528, 18.812 and 26.414 seconds respectively;
+imports/model loading took 1.278, 1.035 and 4.306 seconds. These are not cold-machine startup
+measurements. Skala was faster than the native float64 baseline, but took 26% more time than
+verified mixed ωB97M-V for energy and forces, even with its smaller grid. Its force evaluation
+accounts for the difference; the measured SCF costs were similar.
+
+A matched-start BFGS experiment scaled the same benzene geometry by 1.025 and required
+forces below 0.005 eV/Å with maximum step 0.1 Å. This was one complete optimization per
+workflow, including all force calls and setup within each stage, with imports excluded:
+
+| Workflow | Stage time, s | Optimizer steps | SCF cycles |
+| --- | ---: | ---: | ---: |
+| Direct verified mixed ωB97M-V | 82.499 | 4 | 29 |
+| Skala preoptimization | 145.238 | 6 | 47 |
+| ωB97M-V refinement after Skala | 95.634 | 5 | 25 |
+| Complete Skala → ωB97M-V workflow | 240.872 | 11 | 72 |
+
+The cascade took 2.92× as long as direct DFT in this example. Final DFT forces were
+0.000874 and 0.001104 eV/Å respectively, and final energies differed by `2.12e-7` eV.
+Every DFT precision verification passed without fallback. These are force-converged geometry
+optimizations, not frequency-verified minima or TS validation. No density was transferred
+between functionals, and UMA preoptimization was not benchmarked in this experiment.
+
+The published Skala GPU gradient reset also retained the preceding D3 geometry. A synthetic
+3% benzene geometry change reproduced a `0.0108293` eV stale-dispersion error; explicit D3
+reset matched a fresh object. The optimization harness uses a local ASE subclass with this
+refresh enabled and records that choice. The installed Skala package was not changed.
+Water geometry reuse and a central finite-difference force check passed with the refresh:
+reused/fresh energy difference `6.92e-8` eV, maximum force difference `1.54e-4` eV/Å and
+finite-difference force error `1.67e-4` eV/Å at a 0.001 Å displacement. Neutral and doublet
+water energy/force smoke checks passed. This does not establish broader chemical accuracy.
+
+Reports, harness snapshots, the pinned environment, source/model hashes, startup-failure
+logs and the reset diagnostic are retained outside Git. Skala runs emitted interpreter
+shutdown exceptions after writing valid reports and exiting with status zero; those messages
+remain unresolved. The final formatted harness passed another water force/geometry check
+with all SCFs converged, plus Ruff and 14 resource/protocol tests (18 CUDA checks skipped in
+that CPU suite). This experiment does not make Skala a calculator default. A full native
+build of the fork remains unverified as above.
