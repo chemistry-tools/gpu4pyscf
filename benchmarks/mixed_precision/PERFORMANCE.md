@@ -97,3 +97,41 @@ passed without fallback. Reports confirmed CPU affinity `[4, 5, 6, 7]`, four Ope
 the experiment commit, actual wheel source hashes and the native library hash. The
 `--require-gpu-source` guard also correctly rejected that wheel when the fork checkout was
 required. Current master native-library changes remain outside this pinned-release check.
+
+## Profiling and grid-contraction overhead
+
+The changes after `6cd096f`, through `70a5162`, disable profiling-only VV10 event synchronization
+in ordinary runs and reuse per-thread/per-stream float32 grid scratch. Conversion, scaling and
+accumulation now use one float64 output kernel. Its multiply/add rounding matches the separate
+operations; cuBLAS still uses pedantic math. Scratch is released when the precision scope exits.
+The explicit benchmark `--profile` option retains synchronized VV10 timing.
+
+Synthetic grid tests use deterministic normal fields (seed 75), `alpha=1`, `beta=1`, and six
+alternating batches of 50 contractions per implementation. Compilation and the first call are
+outside the timing. These are median per-call wall times, including CPU submission overhead:
+
+| Matrix rows × columns; grid points | Previous, ms | Fused, ms | Speedup |
+| --- | ---: | ---: | ---: |
+| 32 × 32; 512 | 0.1923 | 0.1497 | 1.28× |
+| 276 × 276; 4,096 | 0.2024 | 0.1581 | 1.28× |
+| 276 × 276; 16,384 | 0.4406 | 0.4301 | 1.02× |
+
+The outputs matched bit for bit, including repeated accumulation. The focused suite also checks
+non-unit and negative scaling, zero-beta overwrite of NaN outputs, changing block shapes,
+independent returned outputs, separate CUDA streams and releasing scratch without retaining it
+through private dispatch cycles. All 71 focused checks passed, including native float64 force
+comparisons and a finite-difference force check on synthetic water.
+
+For the unchanged benzene protocol, three fresh alternating runs per implementation took
+8.7995, 8.7238 and 8.7273 seconds before, and 8.6249, 8.7500 and 8.7150 seconds after. Medians
+were **8.7273 and 8.7150 seconds**: no material end-to-end improvement is established. All six
+full float64 energy/orbital-gradient checks passed without fallback; accepted energies differed
+by less than `4e-13` Hartree. An earlier three-pair check showed about 1% improvement, also
+within timing variation. Kernel gains must not be presented as equivalent whole-SCF gains.
+
+These checks used only synthetic fields, benzene and water; validation datasets were held out.
+They ran sequentially on physical GPU 1 with affinity `[4, 5, 6, 7]` and four numerical threads.
+SCF and kernel timing used the pinned CUDA 13 runtime described above; force/lifecycle checks
+additionally used ASE 3.27.0. Only the new precision/ASE Python modules were explicitly loaded
+over the matching installed 1.8.1 release. This does not verify a full native build of current
+master. Raw reports, source hashes, scripts and startup-failure logs remain outside Git.
