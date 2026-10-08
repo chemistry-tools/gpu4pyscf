@@ -57,7 +57,22 @@ with the same force threshold and `maxstep=0.15` Angstrom. Independent optimizer
 compare matched-geometry forces as well as time, steps and final convergence. `--hessian` adds
 the analytic float64 Hessian with the recipe's grid and auxiliary responses, after reconverging
 the Hessian reference with native float64 SCF. It writes the Hessian in Hartree/Bohr² and never
-falls back to finite differences. A short optimizer run alone is not a validated minimum.
+falls back to finite differences. A short optimizer run alone is not a validated minimum. Per-cycle progress is appended to
+`scf-progress.jsonl` beside the frames and optimizer artifacts, without modifying earlier results.
+
+Compare the resulting reports with:
+
+```sh
+python benchmarks/mixed_precision/compare_ase.py \
+  --baseline /outside/checkout/baseline.json --mixed /outside/checkout/mixed.json \
+  --output /outside/checkout/comparison.json
+```
+
+The comparator rejects differences in the frozen input, recipe, numerical sources, software
+versions, GPU and CPU allocation. It reports timing, verified fallbacks and errors only at
+exactly identical geometries; unmatched optimizer frames are counted separately. Energies are
+compared in Hartree, and force conversion constants are normalized. Single-run speedups on a
+shared host are preliminary measurements, not idle-host statistical estimates.
 
 When compatibility-testing these new Python modules against an installed 1.8.1 wheel, run by
 absolute path outside the checkout and add `--extension-root /path/to/this/fork`. The loader
