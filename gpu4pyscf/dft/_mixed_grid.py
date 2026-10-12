@@ -5,13 +5,15 @@ from __future__ import annotations
 from threading import local
 
 
-def _gemm(a, b, *, alpha=1.0, beta=0.0, out=None):
+def _gemm(a, b, *, alpha=1.0, beta=0.0, out=None, tf32=False):
     import cupy as cp
     import numpy as np
     from cupy_backends.cuda.libs import cublas
 
     if a.dtype != b.dtype or a.dtype not in (cp.float32, cp.float64):
         raise TypeError('BLAS matrices must share float32 or float64 dtype')
+    if type(tf32) is not bool or (tf32 and a.dtype != cp.float32):
+        raise ValueError('TF32 requires float32 inputs and a boolean flag')
     if a.ndim != 2 or b.ndim != 2 or a.shape[1] != b.shape[1]:
         raise ValueError('Expected two matrices with the same contraction dimension')
     if not a.flags.c_contiguous or not b.flags.c_contiguous:
@@ -34,8 +36,18 @@ def _gemm(a, b, *, alpha=1.0, beta=0.0, out=None):
     gemm = cublas.dgemm if a.dtype == cp.float64 else cublas.sgemm
     try:
         # cublas_api.h defines PEDANTIC_MATH=2; CuPy does not expose this enum.
-        cublas.setMathMode(handle, 2)
+        cublas.setMathMode(handle, 0 if tf32 else 2)
         # Row-major C = A B^T is column-major C^T = B A^T.
+        if tf32:
+            # CUDA_R_32F=0. Explicit compute type avoids implicit FP16/BF16 conversion.
+            cublas.gemmEx(
+                handle, cublas.CUBLAS_OP_T, cublas.CUBLAS_OP_N,
+                b.shape[0], a.shape[0], a.shape[1], alpha_value.ctypes.data,
+                b.data.ptr, 0, b.shape[1], a.data.ptr, 0, a.shape[1],
+                beta_value.ctypes.data, out.data.ptr, 0, out.shape[1],
+                cublas.CUBLAS_COMPUTE_32F_FAST_TF32, cublas.CUBLAS_GEMM_DEFAULT,
+            )
+            return out
         gemm(
             handle,
             cublas.CUBLAS_OP_T,
@@ -86,7 +98,7 @@ def _make_contract(original, controller):
                 a32, b32, product = controller._scratch(a, b)
                 cp.copyto(a32, a, casting='unsafe')
                 cp.copyto(b32, b, casting='unsafe')
-                _gemm(a32, b32, out=product)
+                _gemm(a32, b32, out=product, tf32=controller.tf32)
                 return controller._accumulate(product, alpha, beta, out)
             controller.float64_calls += 1
             controller.last_precision = 'float64'
@@ -97,8 +109,11 @@ def _make_contract(original, controller):
 
 
 class _GridPrecision:
-    def __init__(self, use_float32):
+    def __init__(self, use_float32, *, tf32=False):
+        if type(tf32) is not bool:
+            raise ValueError('tf32 must be a boolean')
         self.use_float32 = use_float32
+        self.tf32 = tf32
         self.float32_calls = 0
         self.float64_calls = 0
         self.last_precision = None

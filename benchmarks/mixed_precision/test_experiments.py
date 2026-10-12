@@ -86,9 +86,8 @@ def test_protocol_rejects_missing_settings(tmp_path):
 def test_vv10_partial_tiles_and_signed_weights(mode, block):
     import cupy as cp
     import numpy as np
-    from vv10_experiment import _VV10
-
     from gpu4pyscf.dft import numint
+    from vv10_experiment import _VV10
 
     rng = np.random.default_rng(31)
     rho = cp.asarray(np.vstack((rng.uniform(0.01, 2, 257), rng.normal(0, 0.02, (3, 257)))))
@@ -118,7 +117,6 @@ def test_vv10_empty_density():
 def test_vv10_profiling_is_opt_in(monkeypatch):
     import cupy as cp
     import numpy as np
-
     from gpu4pyscf.dft._mixed_vv10 import _AdaptiveVV10
 
     rng = np.random.default_rng(32)
@@ -145,9 +143,8 @@ def test_vv10_profiling_is_opt_in(monkeypatch):
 def test_direct_blas_rectangular_and_accumulation():
     import cupy as cp
     import numpy as np
-    from grid_experiment import _gemm, install
-
     from gpu4pyscf.dft import numint
+    from grid_experiment import _gemm, install
 
     rng = np.random.default_rng(72)
     a, b, initial = [cp.asarray(rng.normal(size=shape)) for shape in ((17, 83), (31, 83), (17, 31))]
@@ -173,11 +170,44 @@ def test_direct_blas_rectangular_and_accumulation():
 
 
 @gpu
+def test_tf32_accuracy_and_float64_restoration(monkeypatch):
+    import cupy as cp
+    import numpy as np
+    from cupy_backends.cuda.libs import cublas
+    from gpu4pyscf.dft._mixed_grid import _gemm, _GridPrecision, _make_contract
+
+    rng = np.random.default_rng(812)
+    a, b, initial = [cp.asarray(rng.normal(size=shape)) for shape in ((17, 83), (31, 83), (17, 31))]
+    reference = _gemm(a, b, alpha=0.2, beta=-1.3, out=initial.copy())
+    controller = _GridPrecision(True, tf32=True)
+    contract = _make_contract(None, controller)
+    result = contract('ig,jg->ij', a, b, alpha=0.2, beta=-1.3, out=initial.copy())
+    assert float(cp.linalg.norm(result - reference) / cp.linalg.norm(reference)) < 1e-3
+    controller.use_float32 = False
+    cp.testing.assert_array_equal(contract('ig,jg->ij', a, b, alpha=0.2, beta=-1.3, out=initial.copy()), reference)
+    with pytest.raises(ValueError, match='TF32 requires'):
+        _gemm(a, b, tf32=True)
+    a32, b32 = a.astype(cp.float32), b.astype(cp.float32)
+    handle = cp.cuda.device.get_cublas_handle()
+    original_math = cublas.getMathMode(handle)
+    original_pointer = cublas.getPointerMode(handle)
+    _gemm(a32, b32, tf32=True)
+    assert cublas.getMathMode(handle) == original_math
+    assert cublas.getPointerMode(handle) == original_pointer
+    def fail(*args):
+        raise RuntimeError('Injected TF32 GEMM failure')
+    monkeypatch.setattr(cublas, 'gemmEx', fail)
+    with pytest.raises(RuntimeError, match='Injected TF32'):
+        _gemm(a32, b32, tf32=True)
+    assert cublas.getMathMode(handle) == original_math
+    assert cublas.getPointerMode(handle) == original_pointer
+
+
+@gpu
 @pytest.mark.parametrize('alpha,beta', [(1.0, 0.0), (0.2, -1.3), (-2.0, 1.0), (0.0, 1.0)])
 def test_mixed_grid_fused_float64_accumulation(alpha, beta):
     import cupy as cp
     import numpy as np
-
     from gpu4pyscf.dft._mixed_grid import _gemm, _GridPrecision, _make_contract
 
     rng = np.random.default_rng(73)
@@ -203,7 +233,6 @@ def test_mixed_grid_fused_float64_accumulation(alpha, beta):
 def test_mixed_grid_changing_blocks_and_streams_keep_outputs():
     import cupy as cp
     import numpy as np
-
     from gpu4pyscf.dft._mixed_grid import _gemm, _GridPrecision, _make_contract
 
     rng = np.random.default_rng(74)
@@ -233,9 +262,8 @@ def test_mixed_grid_scope_releases_scratch_without_collecting_results():
     import weakref
 
     import cupy as cp
-    from grid_experiment import install
-
     from gpu4pyscf.dft import numint
+    from grid_experiment import install
 
     a = cp.ones((17, 83))
     b = cp.ones((31, 83))
