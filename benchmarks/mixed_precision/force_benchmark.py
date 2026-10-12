@@ -74,7 +74,7 @@ def main():
         'candidate_gradient_sha256': hashlib.sha256((args.extension_root / 'gpu4pyscf/grad/rks.py').read_bytes()).hexdigest(),
         'runs': [],
         'vv10_fused': args.vv10_fused,
-        'boundary': 'Reviewed density-contraction sites adapted into pinned release; full native checkout build unverified',
+        'boundary': 'Reviewed gradient sites adapted into pinned release; this run does not validate native installation',
     }
     if report['openmp_threads'] != 4 or any(pool['num_threads'] > 4 for pool in report['threadpools']):
         raise RuntimeError('Numerical thread pools exceed the resource allowance')

@@ -2,6 +2,8 @@
 
 Read [RUNNING.md](RUNNING.md) before running experiments. The [README](README.md) explains
 scope; [PERFORMANCE.md](PERFORMANCE.md) owns measured results and their version limitations.
+[NATIVE_BUILD.md](NATIVE_BUILD.md) covers ordinary wheel installation with matching native
+libraries, complete compiler prerequisites and the RTX 3080 build flags.
 
 - `gpu_performance.py`: fixed-method SCF, four-CPU enforcement, profiling, precision scheduling,
   original float64 energy/gradient verification and fallback. `protocol.json` owns scientific defaults.

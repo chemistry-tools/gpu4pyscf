@@ -35,6 +35,10 @@ This ensures compatibility and reproducibility, especially since this configurat
 
 Compilation
 --------
+For an RTX 3080 build and ordinary wheel installation, follow the
+[native build guide](benchmarks/mixed_precision/NATIVE_BUILD.md). It targets compute
+capability 8.6 and keeps build jobs within the four-CPU benchmark allocation.
+
 To compile the package, run the following commands:
 ```sh
 git clone https://github.com/pyscf/gpu4pyscf.git

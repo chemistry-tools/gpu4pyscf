@@ -18,6 +18,7 @@ import sys
 import subprocess
 import re
 import glob
+import shlex
 
 from setuptools import setup, find_packages
 from setuptools.command.build_py import build_py
@@ -73,14 +74,16 @@ class CMakeBuildPy(build_py):
         cmd = ['cmake', f'-S{src_dir}', f'-B{dest_dir}', '-DBUILD_LIBXC=OFF']
         configure_args = os.getenv('CMAKE_CONFIGURE_ARGS')
         if configure_args:
-            cmd.extend(configure_args.split(' '))
+            cmd.extend(shlex.split(configure_args))
         self.spawn(cmd)
 
         self.announce('Building binaries', level=3)
-        cmd = ['cmake', '--build', dest_dir, '-j', '8']
+        cmd = ['cmake', '--build', dest_dir]
+        if not os.getenv('CMAKE_BUILD_PARALLEL_LEVEL'):
+            cmd.extend(['--parallel', '4'])
         build_args = os.getenv('CMAKE_BUILD_ARGS')
         if build_args:
-            cmd.extend(build_args.split(' '))
+            cmd.extend(shlex.split(build_args))
         if self.dry_run:
             self.announce(' '.join(cmd))
         else:

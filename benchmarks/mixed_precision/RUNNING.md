@@ -29,7 +29,8 @@ in `PYTHONPATH`. Both this fork's current master and the older release report ve
 reports therefore also record the imported module path, source hashes and native library hash.
 
 For testing library changes in this checkout, compile its matching native libraries first,
-using the repository's [compilation instructions](../../README.md#compilation) with at most
+using the [native RTX 3080 build guide](NATIVE_BUILD.md) or the repository's
+[compilation instructions](../../README.md#compilation) with at most
 four build jobs and CPU affinity. Set `PYTHONPATH` to the checkout and pass
 `--require-gpu-source /absolute/path/to/gpu4pyscf`. The harness rejects an import from elsewhere.
 Do not combine current Python sources with native binaries from an older release.
@@ -145,7 +146,8 @@ implementation with the additional fused response. The normal native source path
 automatically for full grid-response forces. For pinned-release compatibility tests, load
 `_extensions.load_extensions(root, forces=True)` before using the scoped adapter with
 `density_response_patch(root, vv10_fused=True)`. All remaining installed numerical code stays
-from that release. A complete native rebuild of the fork remains a separate check.
+from that release. The ordinary native installation is checked separately; see
+[NATIVE_BUILD.md](NATIVE_BUILD.md) and the native results in [PERFORMANCE.md](PERFORMANCE.md).
 
 `test_vv10_response.py` compares all fields and contracted derivatives with the original native
 calls, and independently differentiates the pair energy by translating each atom's grid points.

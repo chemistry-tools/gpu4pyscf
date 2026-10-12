@@ -195,7 +195,8 @@ energies. Three additional ASE checks passed with the new force path active, inc
 geometry SCF reuse, geometry changes and finite-difference forces. Core Ruff checks and GitHub
 checks passed. Only the reviewed contraction sites and atom reduction were adapted into the
 matching installed-release gradient functions; their grid loops and native calls were retained.
-A full native build of the fork's later master changes remains unverified. Raw reports, profiles,
+A full native build was not verified in this experiment; the separate native installation
+check below covers it. Raw reports, profiles,
 fields, source snapshots and logs are retained outside Git. The benchmarked gradient source
 SHA256 is `7450bda807002d78cfa14f8d7737c24003521aca021d910998a42442d9d65328`.
 
@@ -250,10 +251,65 @@ full neutral/open-shell forces and energy finite differences, partial tiles, sig
 empty atom groups, independent CUDA streams, SCF reuse and geometry changes. Core Ruff and
 GitHub checks passed. Only the reviewed gradient sites were adapted into the matching installed
 release; remaining numerical Python/native code was retained. The new CuPy kernel itself was
-compiled and tested directly from its production source. A complete native rebuild of the
-broader fork remains unverified. Validation datasets were held out, and raw snapshots, fields,
+compiled and tested directly from its production source. These installed-release measurements
+did not verify a complete native rebuild; the separate native installation check below covers
+it. Validation datasets were held out, and raw snapshots, fields,
 reports and logs remain outside Git. The new kernel module SHA256 is
 `bea0d52af4cbfb3053a8a36efc42afbd4467e49ce44f6e898546b94ff07ab62a`.
+
+## Complete native RTX 3080 installation
+
+The complete fork was rebuilt and installed as an ordinary wheel in a private Python 3.12
+environment. All twelve fork libraries compiled, loaded and contained only `sm_86` device
+code; their installed hashes matched the build outputs. Source modules imported from the
+new installation's `site-packages`, with no installed-release compatibility adapter. The
+numerical source is commit `85c406c`; the package frontend additionally contains the build-job
+and argument-parsing fixes described in [NATIVE_BUILD.md](NATIVE_BUILD.md).
+
+The build used CUDA 13.0.2/NVCC 13.0.88, GCC/G++/gfortran 14.2.0, CMake 4.4.4 and Ninja
+1.13.2. Release mode used `-O3`, native host architecture flags and `86-real`. OpenMP,
+CUTLASS, solvent, periodic, multigrid and ECP libraries remained enabled. Global fast math
+was not enabled. LibXC remained the normal `gpu4pyscf-libxc-cuda13x==0.8.1` dependency,
+providing CUDA LibXC 7.0.0; it was installed directly in the private environment. Other
+Python/runtime dependencies were shared read-only from the retained environment, including
+PySCF 2.14.0, CuPy 14.2.0, cuTENSOR 2.3.1 and cuBLAS 13.1.1.3. Builds, tests and calculations
+ran sequentially with GPU 1 and CPU affinity `4,5,6,7`.
+
+All 101 focused native checks passed. They cover the precision lifecycle and recovery,
+ordinary ASE energy/force calls, unchanged-geometry SCF reuse, geometry changes,
+neutral/open-shell finite differences, and fused VV10 fields/derivatives against the newly
+built native calls. The separate compatibility-only force tests were not used for this
+installation check. Core Ruff checks passed for the package frontend and benchmark metadata
+change, using the repository's existing exclusions for legacy setup imports.
+
+Direct complete-gradient comparisons then used the original upstream gradient functions
+from `43dc42f`, executed with the same newly built libraries and grid loops as the optimized
+installation. Neutral water, water cation and benzene matched within `3.11e-15`, `6.22e-15`
+and `1.87e-14` Hartree/Bohr, respectively. Independent central energy differences on water
+and water cation agreed with analytic gradients within `6.28e-9` and `7.37e-9` Hartree/Bohr.
+Their single-call timings are accuracy checks rather than speed comparisons.
+
+Pyrene used the same synthetic geometry, full 682-function basis, functional, auxiliary
+basis, grid levels, response terms and scientific thresholds as the earlier measurements.
+One verified density was shared, and DF buffers were reconstructed before each timed
+gradient. Three alternating unprofiled calls per implementation gave:
+
+| Molecule | Upstream native, s | Optimized native, s | Speedup | Less force time |
+| --- | ---: | ---: | ---: | ---: |
+| Pyrene | 61.2417 | 42.6445 | 1.436× | 30.4% |
+
+Upstream samples were 61.4151, 61.2417 and 61.2384 seconds; optimized samples were 42.6645,
+42.6445 and 42.3624 seconds. Maximum force difference, including repeat variation, was
+`8.53e-14` Hartree/Bohr, about `4.39e-12` eV/Å. SCF took 71.4060 seconds and passed full
+float64 verification without fallback; all small cases also passed without fallback.
+This comparison isolates the force changes within the native installation. It does not
+isolate a compiler speedup or establish new whole-ASE-workflow timing medians.
+
+The complete native build and chosen-method force path are now verified. The earlier wheel
+measurements remain separate evidence. No validation data was used. Build archives, compiler
+configuration, the wheel, native/source hashes, raw forces, numerical checks and a runtime
+launcher are retained outside Git. The tested wheel SHA256 is
+`9a9e6c3e05f9cd5843c182622acc06c86ce98269c7fedca160572e95d6d5ae90`.
 
 ## ASE property reuse
 
