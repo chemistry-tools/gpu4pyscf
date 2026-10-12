@@ -38,13 +38,20 @@ def density_response_patch(root, *, vv10_fused=False):
         if name == 'get_exc_full_response':
             begin = source.index("        if xctype == 'LDA':", source.index('    g0 = 0'))
             end = source.index('\n        g0 = g1', begin)
-            candidate = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == name)
-            candidate_source = ast.get_source_segment(path.read_text(), candidate)
-            new_begin = candidate_source.index('        split_wv = ', candidate_source.index('    g0 = 0'))
-            new_end = candidate_source.index('\n        g0 = g1', new_begin)
             if 'dvmat_orbital_response' not in source[begin:end]:
                 raise RuntimeError('Missing reviewed derivative-matrix contraction')
-            source = source[:begin] + candidate_source[new_begin:new_end] + source[end:]
+            # Keep this release's density/grid passes. The native fork may stream
+            # those passes, which is outside this installed-release boundary.
+            replacement = '''        split_wv = cupy.ascontiguousarray(wv[:, g0:g1][:, nonzero_weight_mask[g0:g1]])
+        if xctype in ('GGA', 'MGGA'):
+            split_wv[0] *= .5
+        if xctype == 'MGGA':
+            split_wv[4] *= .5
+        partial = _contract_grad_response(ao, split_wv, dms_masked)
+        de_orbital_response[idx] += partial
+        de_grid_response_rho[i_atom] += partial.sum(axis=0) * 2
+'''
+            source = source[:begin] + replacement + source[end:]
             source = _replace(source,
                               'rhf_grad.contract_h1e_dm(opt._sorted_mol, dvmat_orbital_response, dms, hermi=1)',
                               '_reduce_to_atom(opt._sorted_mol, de_orbital_response) * 2')

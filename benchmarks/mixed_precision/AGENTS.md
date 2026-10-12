@@ -21,7 +21,12 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
 - `force_experiment.py`: fail-closed compatibility adapter for the reviewed contraction sites
   in installed-release gradients; keeps the installed grid loops and native calls intact.
 - `gpu4pyscf/grad/rks.py`: density contraction before AO derivative-matrix formation in full
-  RKS XC response and the shared RKS/UKS VV10 response. Forces remain float64.
+  RKS XC response and the shared RKS/UKS VV10 response. Full-response RKS streams density
+  and orbital derivatives in one AO pass; real exactly symmetric LDA/MGGA densities reuse
+  block-local density/AO products. Forces remain float64.
+- `test_native_grid_response.py`: native density/product comparisons and LDA/GGA/MGGA
+  complete-force comparisons plus energy finite differences. Set `DFT_REFERENCE_GRADIENT`
+  to a retained matching native baseline source for the complete-force comparisons.
 - `gpu4pyscf/dft/_vv10_grad.py`: one float64 pair traversal for U/W/E and contracted coordinate
   response, with atom-ordered labels and deterministic reductions. No SCF field cache.
 - `vv10_response_experiment.py`, `test_vv10_response.py`: native field/response comparisons,

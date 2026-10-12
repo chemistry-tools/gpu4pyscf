@@ -416,7 +416,26 @@ def _tau_grad_dot_(ao, wv, accumulate=False, buf=None, out=None):
     _d1_dot_(ao[idx3], aow.T, beta=1, out=out)
     return out
 
-def _contract_grad_response(ao, wv, dm):
+def _rho_and_dm_ao(ao, dm, xctype):
+    '''Evaluate density and retain products for a real, symmetric density matrix.'''
+    ncomp = 1 if xctype == 'LDA' else 4
+    dm_ao = cupy.empty_like(ao[:ncomp])
+    for component in range(ncomp):
+        dm.dot(ao[component], out=dm_ao[component])
+    if xctype == 'LDA':
+        return numint._contract_rho(dm_ao[0], ao[0]), dm_ao
+    rho = cupy.empty((5 if xctype == 'MGGA' else 4, ao.shape[-1]))
+    for component in range(4):
+        numint._contract_rho(dm_ao[0], ao[component], rho=rho[component])
+    rho[1:4] *= 2
+    if xctype == 'MGGA':
+        rho[4] = 0
+        for component in range(1, 4):
+            rho[4] += numint._contract_rho(dm_ao[component], ao[component])
+        rho[4] *= .5
+    return rho, dm_ao
+
+def _contract_grad_response(ao, wv, dm, dm_ao=None):
     '''Contract the AO index before forming nuclear XC derivatives.
 
     Returns the same per-AO contraction as the derivative matrix followed by
@@ -424,6 +443,17 @@ def _contract_grad_response(ao, wv, dm):
     The density and all products remain float64. wv uses the existing half
     factors for density and kinetic-energy density.
     '''
+    if dm_ao is not None:
+        # Distribute scalar grid weights over the retained density/AO products.
+        # Products are reusable only for exactly real-symmetric density matrices.
+        weighted = numint._scale_ao(dm_ao, wv[:4]) if len(wv) > 1 else dm_ao[0] * wv[0]
+        partial = cupy.einsum('dip,ip->id', ao[1:4], weighted)
+        if len(wv) > 1:
+            partial += cupy.einsum('dip,ip->id', _make_dR_dao_w(ao, wv[:4]), dm_ao[0])
+        if len(wv) == 5:
+            for component, derivatives in enumerate(([4, 5, 6], [5, 7, 8], [6, 8, 9]), 1):
+                partial += cupy.einsum('dip,ip->id', ao[derivatives], dm_ao[component] * wv[4])
+        return partial.real
     if len(wv) == 1:
         aow = numint._scale_ao(ao[0], wv[0])
         return cupy.einsum('dip,ip->id', ao[1:4], dm.T.dot(aow)).real
@@ -462,6 +492,8 @@ def get_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
     dms = cupy.asarray(dms)
     assert dms.ndim == 2
     dms = opt.sort_orbitals(dms, axis=[0,1])
+    reuse_products = (xctype in ('LDA', 'MGGA') and dms.dtype == cupy.float64
+                      and bool(cupy.array_equal(dms, dms.T)))
 
     de_grid_response_rho = cupy.zeros((natm, 3))
     de_orbital_response = cupy.zeros((nao, 3))
@@ -469,79 +501,60 @@ def get_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
 
     if xctype == 'LDA':
         ao_deriv = 0
-        ncomp = 1
     elif xctype == 'GGA':
         ao_deriv = 1
-        ncomp = 4
     elif xctype == 'MGGA':
         ao_deriv = 1
-        ncomp = 5
     else:
         raise NotImplementedError(f"Unrecognized xctype = {xctype}")
 
-    rho = cupy.empty([ncomp, ngrids])
-    g1 = 0
-    for ao, idx, weight, _ in ni.block_loop(_sorted_mol, grids, deriv = ao_deriv):
-        g0, g1 = g1, g1 + weight.size
-        dms_masked = take_last2d(dms, idx, out=dm_mask_buf)
-        rho[:, g0:g1] = numint.eval_rho(_sorted_mol, ao, dms_masked, xctype = xctype, hermi = 1)
-    assert g1 == ngrids
-
-    exc, vxc = ni.eval_xc_eff(xc_code, rho, 1, xctype=xctype, spin=0)[:2]
-    wv = grids.weights * vxc
-    nonzero_weight_mask = cupy.abs(grids.weights) > 1e-14
-
     from gpu4pyscf.hessian.rks import get_dweight_dA
 
-    de_grid_response_weight = cupy.zeros((natm, 3))
-    dweightdA_right = rho[0] * exc
-    del rho
-
-    available_gpu_memory = get_avail_mem()
-    available_gpu_memory = int(available_gpu_memory * 0.1) # Don't use too much gpu memory
-    ao_nbytes_per_grid = ((2*3) * natm) * 8
-    ngrids_per_batch = int(available_gpu_memory / ao_nbytes_per_grid)
-    if ngrids_per_batch < 16:
-        raise MemoryError(f"Out of GPU memory for XC energy first derivative, available gpu memory = {get_avail_mem()}"
-                          f" bytes, nao = {nao}, natm = {natm}, ngrids (nonzero rho) = {ngrids}")
-    ngrids_per_batch = (ngrids_per_batch + 16 - 1) // 16 * 16
-    ### Don't split the batch too small for get_dweight_dA()
-    # ngrids_per_batch = min(ngrids_per_batch, MIN_BLK_SIZE)
-
-    for g0 in range(0, ngrids, ngrids_per_batch):
-        g1 = min(g0 + ngrids_per_batch, ngrids)
-        dweight_dA = get_dweight_dA(_sorted_mol, grids, (g0,g1))
-        de_grid_response_weight += cupy.einsum("Adg->Ad", dweight_dA * dweightdA_right[g0:g1])
-    del dweight_dA
-    del dweightdA_right
-    del exc
-
+    # Keep the grid-weight response in large batches, but evaluate density and
+    # orbital derivatives together while each block's higher AO derivatives live.
+    dweightdA_right = cupy.empty(ngrids)
     g0 = 0
     for ao, idx, weight, _ in ni.block_loop(_sorted_mol, grids, nao, ao_deriv + 1):
-        g1 = g0 + weight.shape[0]
-
-        ao = ao[:, :, nonzero_weight_mask[g0:g1]]
-
-        if ao.size == 0:
-            g0 = g1
-            continue
-
+        g1 = g0 + weight.size
         dms_masked = take_last2d(dms, idx, out=dm_mask_buf)
-
-        i_atom = int(grids.atm_idx[g0])
-        assert cupy.max(cupy.abs(grids.atm_idx[g0:g1] - i_atom)) == 0 # Guaranteed by grids.build(sort_grids_of_each_atom = True)
-
-        split_wv = cupy.ascontiguousarray(wv[:, g0:g1][:, nonzero_weight_mask[g0:g1]])
-        if xctype in ('GGA', 'MGGA'):
-            split_wv[0] *= .5
-        if xctype == 'MGGA':
-            split_wv[4] *= .5
-        partial = _contract_grad_response(ao, split_wv, dms_masked)
-        de_orbital_response[idx] += partial
-        de_grid_response_rho[i_atom] += partial.sum(axis=0) * 2
-
+        if reuse_products:
+            rho, dm_ao = _rho_and_dm_ao(ao, dms_masked, xctype)
+        else:
+            density_ao = ao[0] if xctype == 'LDA' else ao[:4]
+            rho = numint.eval_rho(_sorted_mol, density_ao, dms_masked, xctype=xctype, hermi=1)
+            dm_ao = None
+        exc, vxc = ni.eval_xc_eff(xc_code, rho, 1, xctype=xctype, spin=0)[:2]
+        dweightdA_right[g0:g1] = rho[0] * exc if xctype != 'LDA' else rho * exc
+        nonzero = cupy.abs(weight) > 1e-14
+        ao = ao[:, :, nonzero]
+        if dm_ao is not None:
+            dm_ao = dm_ao[:, :, nonzero]
+        if ao.size:
+            i_atom = int(grids.atm_idx[g0])
+            assert cupy.max(cupy.abs(grids.atm_idx[g0:g1] - i_atom)) == 0
+            wv = cupy.ascontiguousarray((weight * vxc)[:, nonzero])
+            if xctype in ('GGA', 'MGGA'):
+                wv[0] *= .5
+            if xctype == 'MGGA':
+                wv[4] *= .5
+            partial = _contract_grad_response(ao, wv, dms_masked, dm_ao)
+            de_orbital_response[idx] += partial
+            de_grid_response_rho[i_atom] += partial.sum(axis=0) * 2
         g0 = g1
-    assert g1 == ngrids
+    assert g0 == ngrids
+    del ao, rho, exc, vxc, dms_masked
+
+    de_grid_response_weight = cupy.zeros((natm, 3))
+    available_gpu_memory = int(get_avail_mem() * 0.1)
+    ngrids_per_batch = available_gpu_memory // ((2*3) * natm * 8)
+    if ngrids_per_batch < 16:
+        raise MemoryError('Out of GPU memory for XC grid-weight response')
+    ngrids_per_batch = (ngrids_per_batch + 16 - 1) // 16 * 16
+    for g0 in range(0, ngrids, ngrids_per_batch):
+        g1 = min(g0 + ngrids_per_batch, ngrids)
+        dweight_dA = get_dweight_dA(_sorted_mol, grids, (g0, g1))
+        de_grid_response_weight += cupy.einsum('Adg->Ad', dweight_dA * dweightdA_right[g0:g1])
+    del dweight_dA, dweightdA_right
 
     excsum = de_grid_response_weight + de_grid_response_rho
     excsum = excsum.get()

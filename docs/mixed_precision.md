@@ -11,6 +11,12 @@ and fuse conversion, scaling and accumulation into a float64 output. Scratch is 
 when the precision scope exits. VV10 pair timing is disabled during normal calculations;
 the benchmark's `--profile` option explicitly enables synchronized timing.
 
+Full grid-response RKS forces evaluate density and orbital derivatives in one basis-function
+pass. Real, exactly symmetric LDA and meta-GGA density matrices share their float64 density/
+basis products within each block. Grid-weight derivatives keep their large batches. The
+derivatives remain float64, and these block-local products are released after the call;
+there is no reuse of density fields between geometries.
+
 Use a matching native build of this checkout, following the [compilation guide](../README.md#compilation).
 Do not combine current numerical Python sources with an older wheel's native libraries.
 For a four-CPU allocation, apply CPU affinity, cap numerical thread counts at four,
