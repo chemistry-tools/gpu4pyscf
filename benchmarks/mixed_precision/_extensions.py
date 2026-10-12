@@ -7,7 +7,7 @@ import importlib.util
 import sys
 
 
-def load_extensions(root, *, ase=False):
+def load_extensions(root, *, ase=False, forces=False):
     """Test only these new Python modules against a matching installed release.
 
     Leave all existing numerical Python and native library paths intact. This is explicit
@@ -15,6 +15,8 @@ def load_extensions(root, *, ase=False):
     """
     hashes = {}
     names = ['dft._mixed_grid', 'dft._mixed_vv10', 'dft.mixed_precision']
+    if forces:
+        names.append('dft._vv10_grad')
     if ase:
         names.append('tools.ase_interface')
     for name in names:

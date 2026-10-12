@@ -57,7 +57,8 @@ def test_contract_against_native_derivative_matrix(components, ngrids):
 
 
 @pytest.mark.parametrize('charge', [0, 1])
-def test_full_gradient_and_finite_difference(charge, monkeypatch):
+@pytest.mark.parametrize('vv10_fused', [False, True])
+def test_full_gradient_and_finite_difference(charge, vv10_fused, monkeypatch):
     import cupy as cp
     import numpy as np
     from pyscf import gto
@@ -78,7 +79,7 @@ def test_full_gradient_and_finite_difference(charge, monkeypatch):
     gradient = mf.nuc_grad_method()
     gradient.grid_response = gradient.auxbasis_response = True
     reference = np.asarray(gradient.kernel())
-    with density_response_patch(ROOT):
+    with density_response_patch(ROOT, vv10_fused=vv10_fused):
         actual = np.asarray(gradient.kernel())
     np.testing.assert_allclose(actual, reference, atol=2e-10, rtol=2e-10)
     step = 2e-4  # Bohr; numerical derivatives use the same full grids and method.

@@ -635,22 +635,11 @@ def get_nlc_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=
 
     rho_weight_i = rho_i * grids_weights
 
-    U_i = cupy.empty(ngrids)
-    W_i = cupy.empty(ngrids)
-    E_i = cupy.empty(ngrids)
-    err = libgdft.VXC_vv10nlc_fock_eval_UWE(
-        ctypes.cast(stream.ptr, ctypes.c_void_p),
-        ctypes.cast(U_i.data.ptr, ctypes.c_void_p),
-        ctypes.cast(W_i.data.ptr, ctypes.c_void_p),
-        ctypes.cast(E_i.data.ptr, ctypes.c_void_p),
-        ctypes.cast(grids_coords.data.ptr, ctypes.c_void_p),
-        ctypes.cast(rho_weight_i.data.ptr, ctypes.c_void_p),
-        ctypes.cast(omega_i.data.ptr, ctypes.c_void_p),
-        ctypes.cast(kappa_i.data.ptr, ctypes.c_void_p),
-        ctypes.c_int(ngrids),
-    )
-    if err != 0:
-        raise RuntimeError('CUDA Error in vv10 gradient (grid response) kernel')
+    from gpu4pyscf.dft._vv10_grad import _pair_response
+
+    grid_to_atom_index_map = cupy.ascontiguousarray(grids.atm_idx[rho_nonzero_mask], dtype=cupy.int32)
+    U_i, W_i, E_i, de_grid_response_phi = _pair_response(
+        grids_coords, rho_weight_i, omega_i, kappa_i, grid_to_atom_index_map, natm)
 
     fw_rho_i = (beta + E_i + rho_i * (dkappa_drho_i * U_i + domega_drho_i * W_i)) * grids_weights
     fw_gamma_i = rho_i * domega_dgamma_i * W_i * grids_weights
@@ -706,8 +695,6 @@ def get_nlc_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=
         raise MemoryError(f"Out of GPU memory for NLC energy first derivative, available gpu memory = {get_avail_mem()}"
                           f" bytes, nao = {nao}, natm = {natm}, ngrids (nonzero rho) = {ngrids}")
     ngrids_per_batch = (ngrids_per_batch + 16 - 1) // 16 * 16
-    ### Don't split the batch too small, it'll damage the performance of VXC_vv10nlc_grad_eval_E_grid_response_offdiagonal kernel
-    # ngrids_per_batch = min(ngrids_per_batch, MIN_BLK_SIZE)
 
     g0_nonzero = 0
     for g0_full in range(0, ngrids_full, ngrids_per_batch):
@@ -723,52 +710,6 @@ def get_nlc_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=
         del dweight_dA
     del dweightdA_right
     assert g1_nonzero == ngrids
-
-    grid_to_atom_index_map = grids.atm_idx[rho_nonzero_mask]
-    assert cupy.all(grid_to_atom_index_map >= 0) # There shouldn't be padded grids not from any atom with sort_grids_of_each_atom = True
-    grid_offsets_of_atom = cupy.bincount(grid_to_atom_index_map, minlength = natm)
-    grid_offsets_of_atom = cupy.concatenate((cupy.array([0]), grid_offsets_of_atom))
-    grid_offsets_of_atom = cupy.cumsum(grid_offsets_of_atom)
-    grid_offsets_of_atom = cupy.asarray(grid_offsets_of_atom, dtype = cupy.int32)
-
-    assert grid_offsets_of_atom.shape == (natm + 1,)
-    for i_atom in range(natm):
-        assert cupy.all(grid_to_atom_index_map[grid_offsets_of_atom[i_atom] : grid_offsets_of_atom[i_atom + 1]] == i_atom)
-    assert cupy.all(grid_to_atom_index_map[grid_offsets_of_atom[natm] : ] < 0)
-
-    de_grid_response_phi = cupy.zeros((natm, 3))
-
-    for g0 in range(0, ngrids, ngrids_per_batch):
-        g1 = min(g0 + ngrids_per_batch, ngrids)
-
-        E_Bgr_i = cupy.empty([natm, 3, g1-g0], order = "C")
-        err = libgdft.VXC_vv10nlc_grad_eval_E_grid_response_offdiagonal(
-            ctypes.cast(stream.ptr, ctypes.c_void_p),
-            ctypes.cast(E_Bgr_i.data.ptr, ctypes.c_void_p),
-            ctypes.cast(grids_coords.data.ptr, ctypes.c_void_p),
-            ctypes.cast(rho_weight_i.data.ptr, ctypes.c_void_p),
-            ctypes.cast(omega_i.data.ptr, ctypes.c_void_p),
-            ctypes.cast(kappa_i.data.ptr, ctypes.c_void_p),
-            ctypes.cast(grid_to_atom_index_map.data.ptr, ctypes.c_void_p),
-            ctypes.cast(grid_offsets_of_atom.data.ptr, ctypes.c_void_p),
-            ctypes.c_int(natm),
-            ctypes.c_int(g0),
-            ctypes.c_int(g1-g0),
-        )
-        if err != 0:
-            raise RuntimeError('CUDA Error in vv10 gradient (grid response) kernel')
-
-        for i_atom in range(natm):
-            range_0, range_1 = grid_offsets_of_atom[i_atom] - g0, grid_offsets_of_atom[i_atom + 1] - g0
-            range_0 = max(range_0, 0)
-            range_1 = min(range_1, g1)
-            if range_0 >= g1 or range_1 < 0:
-                continue
-
-            E_Bgr_i[i_atom, :, range_0:range_1] = \
-                -cupy.sum(E_Bgr_i[:, :, range_0:range_1], axis = 0)
-
-        de_grid_response_phi += cupy.einsum("Adg->Ad", E_Bgr_i * rho_weight_i[g0:g1])
 
     del omega_i, kappa_i
     del rho_weight_i

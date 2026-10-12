@@ -20,6 +20,10 @@ scope; [PERFORMANCE.md](PERFORMANCE.md) owns measured results and their version 
   in installed-release gradients; keeps the installed grid loops and native calls intact.
 - `gpu4pyscf/grad/rks.py`: density contraction before AO derivative-matrix formation in full
   RKS XC response and the shared RKS/UKS VV10 response. Forces remain float64.
+- `gpu4pyscf/dft/_vv10_grad.py`: one float64 pair traversal for U/W/E and contracted coordinate
+  response, with atom-ordered labels and deterministic reductions. No SCF field cache.
+- `vv10_response_experiment.py`, `test_vv10_response.py`: native field/response comparisons,
+  independent coordinate finite differences, partial tiles, signed weights and CUDA streams.
 
 Use physical GPU 1 only and at most four logical CPUs, including builds and tests. Run all
 computational jobs sequentially. Keep benchmark outputs and environments outside the checkout;
@@ -36,8 +40,10 @@ checks. Energy-only validation does not cover forces, Hessians or transition-sta
 The fork's master and the older wheel share a version string but different code. Check actual
 import paths and source/native hashes; use `--require-gpu-source` when testing checkout code.
 Never use mismatched Python sources/native libraries or generalize results beyond measured cases.
-The force adapter applies only the new contraction algebra and atom reduction to the pinned
-release's own gradient functions. It records source hashes and restores both functions on exit;
+The force adapter applies only the new contraction algebra, atom reduction and optional fused
+VV10 response to the pinned release's own gradient functions. `load_extensions(..., forces=True)`
+loads the new pure Python/CuPy kernel module; `--vv10-fused` compares it against density-first
+forces. The adapter records source hashes and restores both functions on exit;
 this isolated compatibility check does not validate a native build of the entire checkout.
 Run the focused Ruff and pytest commands in RUNNING.md; CUDA tests require the designated host.
 

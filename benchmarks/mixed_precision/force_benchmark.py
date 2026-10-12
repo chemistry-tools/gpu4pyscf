@@ -22,6 +22,7 @@ def main():
     parser.add_argument('--extension-root', type=Path, required=True)
     parser.add_argument('--case', choices=tuple(LARGER_CASES), required=True)
     parser.add_argument('--repeats', type=int, default=3)
+    parser.add_argument('--vv10-fused', action='store_true', help='Compare contracted forces with fused VV10 forces')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if args.repeats < 2 or args.output.exists() or args.output.suffix != '.json':
@@ -46,7 +47,7 @@ def main():
     if cp.cuda.runtime.getDeviceCount() != 1 or not cp.cuda.Device(0).pci_bus_id.lower().endswith('05:00.0'):
         raise RuntimeError('Visible device must be physical GPU 1 on the designated host')
     lib.num_threads(4)
-    extensions = load_extensions(args.extension_root)
+    extensions = load_extensions(args.extension_root, forces=args.vv10_fused)
     from gpu4pyscf.dft import mixed_precision
 
     hf.overlap_zero_eigenvalue_threshold = 1e-10
@@ -72,6 +73,7 @@ def main():
         'installed_gradient_sha256': hashlib.sha256(Path(rks.__file__).read_bytes()).hexdigest(),
         'candidate_gradient_sha256': hashlib.sha256((args.extension_root / 'gpu4pyscf/grad/rks.py').read_bytes()).hexdigest(),
         'runs': [],
+        'vv10_fused': args.vv10_fused,
         'boundary': 'Reviewed density-contraction sites adapted into pinned release; full native checkout build unverified',
     }
     if report['openmp_threads'] != 4 or any(pool['num_threads'] > 4 for pool in report['threadpools']):
@@ -86,8 +88,9 @@ def main():
         raise RuntimeError('SCF must pass native verification and retain the full basis')
     dm = mf.make_rdm1()
     reference = None
+    comparison = ('contracted', 'fused') if args.vv10_fused else ('native', 'contracted')
     for repeat in range(args.repeats):
-        modes = ('native', 'contracted') if repeat % 2 == 0 else ('contracted', 'native')
+        modes = comparison if repeat % 2 == 0 else comparison[::-1]
         for mode in modes:
             # Native gradients release DF buffers. Rebuild the same full/range-separated
             # buffers before each timed force call to match the post-SCF memory state.
@@ -95,14 +98,15 @@ def main():
             cp.cuda.get_current_stream().synchronize()
             gradient = mf.nuc_grad_method()
             gradient.grid_response = gradient.auxbasis_response = True
-            scope = density_response_patch(args.extension_root) if mode == 'contracted' else contextlib.nullcontext()
+            scope = density_response_patch(args.extension_root, vv10_fused=mode == 'fused') \
+                if mode != 'native' else contextlib.nullcontext()
             with scope:
                 started = time.perf_counter()
                 values = np.asarray(gradient.kernel())
                 cp.cuda.get_current_stream().synchronize()
                 seconds = time.perf_counter() - started
             if reference is None:
-                if mode != 'native':
+                if mode != comparison[0]:
                     raise RuntimeError('Native force must establish the reference')
                 reference = values.copy()
             error = float(np.max(np.abs(values - reference)))
@@ -115,8 +119,8 @@ def main():
             (artifact / 'progress.json').write_text(json.dumps(report, indent=2) + '\n')
             print(json.dumps({k: v for k, v in row.items() if k != 'gradient_hartree_bohr'}), flush=True)
     medians = {mode: statistics.median(row['seconds'] for row in report['runs'] if row['mode'] == mode)
-               for mode in ('native', 'contracted')}
-    report['summary'] = {'median_seconds': medians, 'speedup': medians['native'] / medians['contracted'],
+               for mode in comparison}
+    report['summary'] = {'median_seconds': medians, 'speedup': medians[comparison[0]] / medians[comparison[1]],
                          'max_error_hartree_bohr': max(row['max_error_hartree_bohr'] for row in report['runs'])}
     args.output.write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report['summary']), flush=True)

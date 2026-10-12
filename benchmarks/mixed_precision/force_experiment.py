@@ -14,7 +14,7 @@ def _replace(source, before, after):
 
 
 @contextmanager
-def density_response_patch(root):
+def density_response_patch(root, *, vv10_fused=False):
     """Patch only the reviewed contraction sites, retaining installed numerical code.
 
     This adapter tests new Python algebra against the pinned 1.8.1 wheel. It is
@@ -63,6 +63,23 @@ def density_response_patch(root):
             source = _replace(source,
                               'rhf_grad.contract_h1e_dm(_sorted_mol, dvmat_orbital_response, dms_sorted, hermi=1)',
                               '_reduce_to_atom(_sorted_mol, de_orbital_response) * 2')
+            if vv10_fused:
+                from gpu4pyscf.dft._vv10_grad import _pair_response
+
+                namespace['_pair_response'] = _pair_response
+                begin = source.index('    U_i = cupy.empty(ngrids)')
+                end = source.index('\n    fw_rho_i =', begin)
+                if source[begin:end].count('libgdft.VXC_vv10nlc_fock_eval_UWE(') != 1:
+                    raise RuntimeError('Missing reviewed native VV10 field call')
+                source = source[:begin] + '''    grid_to_atom_index_map = cupy.ascontiguousarray(grids.atm_idx[rho_nonzero_mask], dtype=cupy.int32)
+    U_i, W_i, E_i, de_grid_response_phi = _pair_response(
+        grids_coords, rho_weight_i, omega_i, kappa_i, grid_to_atom_index_map, natm)
+''' + source[end:]
+                begin = source.index('    grid_to_atom_index_map = grids.atm_idx')
+                end = source.index('    del omega_i, kappa_i', begin)
+                if source[begin:end].count('libgdft.VXC_vv10nlc_grad_eval_E_grid_response_offdiagonal(') != 1:
+                    raise RuntimeError('Missing reviewed native VV10 grid-response call')
+                source = source[:begin] + source[end:]
         exec(compile(source, str(path) + ':installed-release-contraction-adapter', 'exec'), namespace)
     try:
         for name in original:

@@ -131,3 +131,24 @@ LDA/GGA/MGGA contractions against native derivative matrices and full neutral/op
 ωB97M-V forces against native gradients and finite-difference energies. With full grid response
 enabled, the native source path applies the optimization directly in `gpu4pyscf/grad/rks.py`;
 there is no additional optimization flag. Existing grid-response defaults are preserved.
+
+## Fused VV10 response
+
+The full-response gradient now evaluates the float64 U/W/E fields and explicit coordinate
+derivative in one pair traversal. Pair antisymmetry combines the two atom contributions;
+a deterministic reduction replaces the atom × direction × grid tensor. The kernel is compiled
+through CuPy NVRTC and cached per device; its source is in `gpu4pyscf/dft/_vv10_grad.py`.
+It uses no approximate reciprocal, reduced precision or cross-calculation field cache.
+
+Add `--vv10-fused` to the force benchmark above to compare the already validated density-first
+implementation with the additional fused response. The normal native source path enables it
+automatically for full grid-response forces. For pinned-release compatibility tests, load
+`_extensions.load_extensions(root, forces=True)` before using the scoped adapter with
+`density_response_patch(root, vv10_fused=True)`. All remaining installed numerical code stays
+from that release. A complete native rebuild of the fork remains a separate check.
+
+`test_vv10_response.py` compares all fields and contracted derivatives with the original native
+calls, and independently differentiates the pair energy by translating each atom's grid points.
+It covers partial tiles, signed/zero weights, atoms without active points and separate CUDA
+streams. `test_force_response.py` additionally compares complete neutral/open-shell forces and
+finite-difference energies with and without the fused pass.
