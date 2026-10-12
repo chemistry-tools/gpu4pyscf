@@ -91,7 +91,8 @@ def _micro(cp, np, trace_library, artifact):
     return {'matrices': rows, 'kernel_trace': trace}
 
 
-def _scf(cp, np, repeats, with_forces, artifact, tf32_cycles):
+def _scf(cp, np, repeats, with_forces, artifact, tf32_cycles, candidates=('tf32',)):
+    from cupy_backends.cuda.libs import cublas
     from gpu4pyscf import dft
     from gpu4pyscf.dft import _mixed_grid, mixed_precision
     from gpu4pyscf.scf import hf
@@ -112,7 +113,8 @@ def _scf(cp, np, repeats, with_forces, artifact, tf32_cycles):
         controllers = []
         grid_type = _mixed_grid._GridPrecision
         def factory(use_float32):
-            grid = grid_type(use_float32, tf32=mode == 'tf32')
+            grid = grid_type(use_float32, tf32=mode == 'tf32',
+                             fp64_emulation=mode in ('emulated-grid', 'emulated-blas'))
             controllers.append(grid)
             return grid
         def progress(env):
@@ -136,9 +138,27 @@ def _scf(cp, np, repeats, with_forces, artifact, tf32_cycles):
             info = {'accepted': True, 'final_verification': check, 'fallback_scf': False}
         else:
             # This factory patch is scoped to this isolated benchmark process only.
-            with patch.object(_mixed_grid, '_GridPrecision', factory):
-                energy = mixed_precision.run_verified_scf(mf)
+            native_check = mixed_precision._full_check
+            handle = cp.cuda.device.get_cublas_handle()
+            previous_math = cublas.getMathMode(handle)
+            emulated_calls = []
+            def verify(current, approximate_energy):
+                emulated_calls.append(sum(grid.float64_calls for grid in controllers if grid.fp64_emulation))
+                for grid in controllers:
+                    grid.fp64_emulation = False
+                # Keep physical Fock verification and any recovery on native FP64.
+                cublas.setMathMode(handle, 2)
+                return native_check(current, approximate_energy)
+            try:
+                if mode == 'emulated-blas':
+                    cublas.setMathMode(handle, 8)
+                with patch.object(_mixed_grid, '_GridPrecision', factory), \
+                     patch.object(mixed_precision, '_full_check', verify):
+                    energy = mixed_precision.run_verified_scf(mf)
+            finally:
+                cublas.setMathMode(handle, previous_math)
             info = mf.mixed_precision_info
+            info['emulated_grid_calls_before_native_checks'] = emulated_calls
         cp.cuda.get_current_stream().synchronize()
         scf_seconds = time.perf_counter() - started
         force_seconds, forces = None, None
@@ -167,18 +187,20 @@ def _scf(cp, np, repeats, with_forces, artifact, tf32_cycles):
 
     # Small synthetic closed/open-shell checks also warm kernels before benzene timing.
     for case in ('water', 'water-cation'):
-        for mode in ('float64', 'fp32', 'tf32'):
+        for mode in ('float64', 'fp32', *candidates):
             calculate(case, mode, 0)
     calculate('benzene', 'float64', 0)
     for run in range(repeats):
-        for mode in (('fp32', 'tf32') if run % 2 == 0 else ('tf32', 'fp32')):
+        modes = ('fp32', *candidates)
+        order = modes[run % len(modes):] + modes[:run % len(modes)]
+        for mode in order:
             calculate('benzene', mode, run)
     summary = {}
     for case in ('water', 'water-cation', 'benzene'):
         rows = [r for r in records if r['case'] == case]
         reference = next(r for r in rows if r['mode'] == 'float64')
         summary[case] = {}
-        for mode in ('fp32', 'tf32'):
+        for mode in ('fp32', *candidates):
             group = [r for r in rows if r['mode'] == mode]
             energy_error = max(abs(r['energy_hartree'] - reference['energy_hartree']) for r in group)
             force_error = max(float(np.max(np.abs(np.asarray(r['forces_hartree_bohr']) -
@@ -194,7 +216,12 @@ def _scf(cp, np, repeats, with_forces, artifact, tf32_cycles):
                 'median_energy_force_seconds': statistics.median(r['scf_seconds'] + r['force_seconds'] for r in group)
                 if with_forces else None,
             }
-        summary[case]['scf_speedup'] = summary[case]['fp32']['median_scf_seconds'] / summary[case]['tf32']['median_scf_seconds']
+        summary[case]['scf_speedups'] = {
+            mode: summary[case]['fp32']['median_scf_seconds'] / summary[case][mode]['median_scf_seconds']
+            for mode in candidates
+        }
+        if candidates == ('tf32',):
+            summary[case]['scf_speedup'] = summary[case]['scf_speedups']['tf32']
     return {'summary': summary, 'runs': records}
 
 

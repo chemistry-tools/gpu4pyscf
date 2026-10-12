@@ -170,6 +170,39 @@ def test_direct_blas_rectangular_and_accumulation():
 
 
 @gpu
+def test_fp64_emulation_accuracy_and_handle_restoration(monkeypatch):
+    import cupy as cp
+    import numpy as np
+    from cupy_backends.cuda.libs import cublas
+    from gpu4pyscf.dft._mixed_grid import _gemm, _GridPrecision, _make_contract
+
+    rng = np.random.default_rng(413)
+    a, b, initial = [cp.asarray(rng.normal(size=shape)) for shape in ((17, 83), (31, 83), (17, 31))]
+    expected = _gemm(a, b, alpha=0.2, beta=-1.3, out=initial.copy())
+    controller = _GridPrecision(False, fp64_emulation=True)
+    contract = _make_contract(None, controller)
+    actual = contract('ig,jg->ij', a, b, alpha=0.2, beta=-1.3, out=initial.copy())
+    cp.testing.assert_allclose(actual, expected, rtol=1e-12, atol=1e-12)
+    with pytest.raises(ValueError, match='FP64 emulation requires'):
+        _gemm(a.astype(cp.float32), b.astype(cp.float32), fp64_emulation=True)
+    handle = cp.cuda.device.get_cublas_handle()
+    original_math = cublas.getMathMode(handle)
+    original_pointer = cublas.getPointerMode(handle)
+    ordinary = cublas.dgemm
+    def fail(*args):
+        assert cublas.getMathMode(handle) == 8
+        raise RuntimeError('Injected FP64 emulation failure')
+    monkeypatch.setattr(cublas, 'dgemm', fail)
+    with pytest.raises(RuntimeError, match='Injected FP64'):
+        _gemm(a, b, fp64_emulation=True)
+    assert cublas.getMathMode(handle) == original_math
+    assert cublas.getPointerMode(handle) == original_pointer
+    monkeypatch.setattr(cublas, 'dgemm', ordinary)
+    controller.fp64_emulation = False
+    cp.testing.assert_array_equal(contract('ig,jg->ij', a, b, alpha=0.2, beta=-1.3, out=initial.copy()), expected)
+
+
+@gpu
 def test_tf32_accuracy_and_float64_restoration(monkeypatch):
     import cupy as cp
     import numpy as np
