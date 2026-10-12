@@ -286,6 +286,47 @@ Use the [FP64 reproduction guide](RUNNING.md#fp64-fixed-point-emulation-experime
 Raw reports, exact source snapshots, controller scripts, traces and intermediate
 results remain outside Git. Validation datasets are held out.
 
+## Larger synthetic size comparisons
+
+The follow-up uses the same ωB97M-V/def2-TZVPD recipe, GPU 1, four-CPU affinity,
+native implementation and independently generated idealized geometries described
+in the [larger-system guide](RUNNING.md#larger-synthetic-systems). The cases do not
+come from held-out datasets. Native float64 reference timings are single runs;
+the mixed and emulated columns are medians of three cyclically alternating fresh
+SCFs. Every SCF receives native energy/physical-Fock verification. Native forces
+are measured and compared once per variant, on its first repeat.
+
+Completed size comparisons, in seconds:
+
+| Molecule | Basis functions | Actual cuBLAS | Native FP64 reference | Existing mixed | Grid emulation | Grid + main-handle emulation |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| Naphthalene, C10H8 | 442 | 13.1.1.3 | 80.0077 | 27.5954 | 30.5523 | 37.5867 |
+| Naphthalene, C10H8 | 442 | 13.8.0.4 | 81.1440 | 27.5676 | 30.6855 | 40.8705 |
+| Pyrene, C16H10 | 682 | 13.8.0.4 | 188.9207 | 71.2234 | 75.4702 | 87.6566 |
+
+For naphthalene, grid emulation increases SCF time by 10.7–11.3%, while broader
+main-handle coverage increases it by 36.2–48.3%. With the newer library, pyrene's
+increases are 6.0% and 23.1%. The smaller overhead at 682 orbitals does not yet
+establish a speedup. These completed runs retain all basis orbitals and ten SCF
+iterations. Naphthalene energy errors are below `7e-13` Hartree and force-component
+errors below `1.7e-5` eV/Angstrom, without recovery.
+The completed pyrene comparison has energy errors below `7.9e-10` Hartree and
+force-component errors below `1.93e-4` eV/Angstrom, within the original comparison
+thresholds. This is fixed-geometry energy/force coverage, not Hessian or TS validation.
+
+The observed full/range-separated density-fitting buffers for naphthalene and
+pyrene remain on the GPU. Pyrene stores approximately 3.32 GiB across the two
+caches; first-repeat native force calls take approximately 62.5 seconds, regardless
+of SCF variant. Force timing has one sample per variant and must not be presented
+as a three-run optimizer/workflow measurement. The initial 13.1 naphthalene
+placement formatter did not handle array lists; its zero-byte storage fields are
+unavailable, not evidence of zero use. Its numerical/timing results are unaffected,
+and the original snapshot plus an explicit reporting note are retained. Later
+reports use the corrected formatter.
+
+Raw reports and logs remain outside Git. Library selection is checked against the
+loaded path, API and package metadata; the shared environment is unchanged.
+
 ## Skala ASE comparison
 
 An isolated Skala 2026.9 / Skala-1.1-rev1 experiment used Python 3.12, PySCF 2.14.0,
