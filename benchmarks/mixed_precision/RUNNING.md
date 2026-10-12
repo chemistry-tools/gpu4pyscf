@@ -176,12 +176,54 @@ describe Ozaki-II selection on Ampere and newer GPUs and the newer workspace poo
 Do not replace shared runtime libraries or interpret a package upgrade as a whole
 fork/native build validation.
 
+### Larger synthetic systems
+
+Select `--cases naphthalene pyrene coronene` for deterministic idealized fused
+aromatics with 18, 26 and 36 atoms. In the pinned def2-TZVPD environment they have
+442, 682 and 996 basis functions. Their geometries are generated independently
+of test/validation datasets, with fixed 1.40 Angstrom carbon bonds and
+1.09 Angstrom hydrogen bonds; they are not optimized minima. Charges remain zero
+and multiplicities one. The functional, fitting basis, grids and tolerances match
+the benzene protocol.
+
+```sh
+CUBLAS_EMULATION_STRATEGY=eager taskset -c 4-7 python \
+  /absolute/path/to/gpu4pyscf/benchmarks/mixed_precision/fp64_emulation_benchmark.py \
+  --extension-root /absolute/path/to/gpu4pyscf --mode scf \
+  --cases naphthalene pyrene coronene --repeats 3 --forces --forces-first-only \
+  --output /outside/checkout/larger-fp64-comparison.json
+```
+
+Use the guarded private-library setup above for a cuBLAS upgrade comparison.
+Each selected molecule gets a native float64 reference followed by three
+cyclically alternating mixed/grid-emulated/main-handle-emulated SCFs. Reports
+embed the exact synthetic inputs and generator hash, and verify matching retained
+orbitals and grid counts. Native water/open-shell water-cation checks warm each
+process. Running one selected molecule per process releases cached library
+workspace between molecules and preserves completed reports if a larger case fails.
+
+`--forces-first-only` computes native analytic forces for the reference and first
+repeat of each variant. Every SCF repeat still receives the full native energy and
+orbital-gradient verification. Summaries explicitly report `scf_samples` and
+`force_samples`: with this option, the energy-plus-force result has **one sample**,
+not three paired timings. Omit the option for force measurements on every repeat.
+The normal TF32/FP64 benchmark defaults continue to measure forces on every repeat
+when `--forces` is provided.
+
+`density_fitting_storage` records GPU and CPU-backed integral buffers separately
+for full-range and range-separated exchange, outside the timing intervals. The
+native memory-placement policy is preserved; large molecules can use mapped CPU
+buffers on a 10 GB GPU. `provenance.json` is saved before the first calculation,
+and per-run results are saved as they complete. Retain incomplete/OOM logs and
+choose a new output path for retries.
+
 ## Kernel checks
 
 CPU-only resource/protocol tests do not require GPU libraries:
 
 ```sh
 python -m pytest -q benchmarks/mixed_precision/test_experiments.py
+python -m pytest -q benchmarks/mixed_precision/test_larger_cases.py benchmarks/mixed_precision/test_benchmark_summary.py
 ruff check --config .ruff.toml benchmarks/mixed_precision
 ```
 

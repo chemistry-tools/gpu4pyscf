@@ -14,6 +14,7 @@ from importlib.metadata import version
 from pathlib import Path
 
 from _extensions import load_extensions
+from _larger_cases import LARGER_CASES
 from gpu_performance import CASES, _resources, _source_provenance
 from tf32_benchmark import _scf
 
@@ -76,10 +77,16 @@ def main():
     parser.add_argument('--forces', action='store_true')
     parser.add_argument('--trace-library', type=Path)
     parser.add_argument('--cublas-library', type=Path, help='Require this exact loaded cuBLAS library')
+    parser.add_argument('--cases', nargs='+', choices=('benzene', *LARGER_CASES), default=['benzene'])
+    parser.add_argument('--forces-first-only', action='store_true', help='Check forces on the native reference and first repeat')
     args = parser.parse_args()
     artifact = args.output.with_suffix('')
     if args.repeats < 1 or args.output.exists() or artifact.exists():
         parser.error('Use a positive repeat count and a new report and artifact directory')
+    if len(set(args.cases)) != len(args.cases) or (args.forces_first_only and not args.forces):
+        parser.error('Use distinct cases and combine forces-first-only with forces')
+    all_cases = CASES | LARGER_CASES
+    selected_cases = {name: all_cases[name] for name in ('water', 'water-cation', *args.cases)}
     _resources([4, 5, 6, 7])
     if os.environ.get('CUDA_VISIBLE_DEVICES') != '1':
         raise RuntimeError('Select physical GPU 1')
@@ -149,15 +156,22 @@ def main():
         'extension_hashes': load_extensions(args.extension_root),
         'benchmark_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         'scf_driver_sha256': hashlib.sha256(Path(__file__).with_name('tf32_benchmark.py').read_bytes()).hexdigest(),
-        'cases_sha256': hashlib.sha256(json.dumps(CASES, sort_keys=True).encode()).hexdigest(),
+        'cases_sha256': hashlib.sha256(json.dumps(selected_cases, sort_keys=True).encode()).hexdigest(),
+        'cases': selected_cases, 'benchmark_cases': args.cases,
+        'geometry_policy': 'Fixed synthetic geometries; larger aromatics are idealized, not optimized',
+        'case_generator_sha256': hashlib.sha256(Path(__file__).with_name('_larger_cases.py').read_bytes()).hexdigest(),
+        'forces_policy': 'First repeat only' if args.forces_first_only else 'Every repeat' if args.forces else 'None',
         'policy': 'Automatic FP64 accuracy; native physical-Fock verification, recovery and analytic forces',
     }
+    (artifact / 'provenance.json').write_text(json.dumps(report, indent=2, allow_nan=False) + '\n')
     if args.mode in ('micro', 'all'):
         report['micro'] = _micro(cp, np, artifact, args.trace_library)
         (artifact / 'micro.json').write_text(json.dumps(report['micro'], indent=2) + '\n')
     if args.mode in ('scf', 'all'):
         report['scf'] = _scf(cp, np, args.repeats, args.forces, artifact, 5,
-                              candidates=('emulated-grid', 'emulated-blas'))
+                              candidates=('emulated-grid', 'emulated-blas'),
+                              benchmark_cases=tuple(args.cases), case_definitions=selected_cases,
+                              forces_first_only=args.forces_first_only)
     args.output.write_text(json.dumps(report, indent=2, allow_nan=False) + '\n')
     print('SUMMARY ' + json.dumps(report.get('scf', {}).get('summary', {})), flush=True)
 

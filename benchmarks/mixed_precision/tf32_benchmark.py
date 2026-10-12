@@ -91,7 +91,70 @@ def _micro(cp, np, trace_library, artifact):
     return {'matrices': rows, 'kernel_trace': trace}
 
 
-def _scf(cp, np, repeats, with_forces, artifact, tf32_cycles, candidates=('tf32',)):
+def _scf_summary(np, records, cases, candidates, with_forces):
+    summary = {}
+    for case in cases:
+        rows = [r for r in records if r['case'] == case]
+        reference = next(r for r in rows if r['mode'] == 'float64')
+        summary[case] = {}
+        for mode in ('float64', 'fp32', *candidates):
+            group = [r for r in rows if r['mode'] == mode]
+            measured_forces = [r for r in group if r['forces_hartree_bohr'] is not None]
+            energy_error = max(abs(r['energy_hartree'] - reference['energy_hartree']) for r in group)
+            if with_forces and (not measured_forces or reference['forces_hartree_bohr'] is None):
+                raise RuntimeError('Native and candidate force measurements are required')
+            force_error = max(float(np.max(np.abs(np.asarray(r['forces_hartree_bohr']) -
+                                np.asarray(reference['forces_hartree_bohr'])))) for r in measured_forces) \
+                if with_forces else None
+            if any(r['effective_orbitals'] != reference['effective_orbitals'] or
+                   r['grid_points'] != reference['grid_points'] or
+                   r['nlc_grid_points'] != reference['nlc_grid_points'] for r in group):
+                raise RuntimeError('Compared runs must retain the same basis and grids')
+            if energy_error > 1e-8 or (force_error is not None and force_error > 1e-5):
+                raise RuntimeError('Accepted result differs from native reference beyond comparison thresholds')
+            summary[case][mode] = {
+                'scf_seconds': [r['scf_seconds'] for r in group],
+                'median_scf_seconds': statistics.median(r['scf_seconds'] for r in group),
+                'max_energy_error_hartree': energy_error, 'max_force_error_hartree_bohr': force_error,
+                'fallbacks': sum(r['precision_info']['fallback_scf'] for r in group),
+                'cycles': [r['cycles'] for r in group],
+                'scf_samples': len(group), 'force_samples': len(measured_forces),
+                'median_energy_force_seconds': statistics.median(r['scf_seconds'] + r['force_seconds']
+                                                                 for r in measured_forces)
+                if measured_forces else None,
+            }
+        summary[case]['scf_speedups'] = {
+            mode: summary[case]['fp32']['median_scf_seconds'] / summary[case][mode]['median_scf_seconds']
+            for mode in candidates
+        }
+        if candidates == ('tf32',):
+            summary[case]['scf_speedup'] = summary[case]['scf_speedups']['tf32']
+    return summary
+
+
+def _df_storage(cp, np, mf):
+    df = mf.with_df
+    objects = [('full_range', df), *[(f'omega={omega}', item) for omega, item in df._rsh_df.items()]]
+    result = {}
+    for name, item in objects:
+        buffers = item._cderi
+        if isinstance(buffers, dict):
+            values = tuple(buffers.values())
+        elif isinstance(buffers, (list, tuple)):
+            values = buffers
+        else:
+            values = () if buffers is None else (buffers,)
+        if any(not isinstance(value, (cp.ndarray, np.ndarray)) for value in values):
+            raise RuntimeError('Unknown density-fitting buffer type')
+        result[name] = {
+            'gpu_bytes': sum(value.nbytes for value in values if isinstance(value, cp.ndarray)),
+            'cpu_backed_bytes': sum(value.nbytes for value in values if isinstance(value, np.ndarray)),
+        }
+    return result
+
+
+def _scf(cp, np, repeats, with_forces, artifact, tf32_cycles, candidates=('tf32',), *,
+         benchmark_cases=('benzene',), case_definitions=None, forces_first_only=False):
     from cupy_backends.cuda.libs import cublas
     from gpu4pyscf import dft
     from gpu4pyscf.dft import _mixed_grid, mixed_precision
@@ -100,9 +163,19 @@ def _scf(cp, np, repeats, with_forces, artifact, tf32_cycles, candidates=('tf32'
 
     hf.overlap_zero_eigenvalue_threshold = 1e-10
     records = []
+    definitions = CASES if case_definitions is None else case_definitions
+    warmup_cases = ('water', 'water-cation')
+    if not benchmark_cases or len(set(benchmark_cases)) != len(benchmark_cases) or \
+            set(benchmark_cases) & set(warmup_cases):
+        raise ValueError('Use distinct benchmark cases separate from the warmup cases')
+    if not candidates or len(set(candidates)) != len(candidates) or \
+            set(candidates) - {'tf32', 'emulated-grid', 'emulated-blas'}:
+        raise ValueError('Unknown or repeated SCF candidates')
+    if {*warmup_cases, *benchmark_cases} - definitions.keys():
+        raise ValueError('Missing SCF case definitions')
 
     def calculate(case, mode, run):
-        atom, charge, multiplicity = CASES[case]
+        atom, charge, multiplicity = definitions[case]
         mol = gto.M(atom=atom, basis='def2-tzvpd', charge=charge, spin=multiplicity - 1, verbose=0)
         mf = (dft.RKS if multiplicity == 1 else dft.UKS)(mol, xc='wb97m-v').density_fit(
             auxbasis='def2-universal-jkfit',
@@ -110,6 +183,8 @@ def _scf(cp, np, repeats, with_forces, artifact, tf32_cycles, candidates=('tf32'
         mf.grids.level, mf.nlcgrids.level = 5, 3
         mf.conv_tol, mf.conv_tol_grad, mf.max_cycle = 1e-8, 1e-4, 200
         mf.chkfile = None
+        print('START ' + json.dumps({'case': case, 'mode': mode, 'run': run,
+                                     'atoms': mol.natm, 'basis_functions': mol.nao_nr()}), flush=True)
         controllers = []
         grid_type = _mixed_grid._GridPrecision
         def factory(use_float32):
@@ -162,8 +237,9 @@ def _scf(cp, np, repeats, with_forces, artifact, tf32_cycles, candidates=('tf32'
             info['emulation_requested_grid_calls_before_native_checks'] = emulated_calls
         cp.cuda.get_current_stream().synchronize()
         scf_seconds = time.perf_counter() - started
+        storage = _df_storage(cp, np, mf)
         force_seconds, forces = None, None
-        if with_forces:
+        if with_forces and (not forces_first_only or run == 0):
             started = time.perf_counter()
             gradient = mf.Gradients()
             gradient.grid_response = gradient.auxbasis_response = True
@@ -180,6 +256,7 @@ def _scf(cp, np, repeats, with_forces, artifact, tf32_cycles, candidates=('tf32'
             'cycles': int(mf.cycles), 'precision_info': info,
             'effective_orbitals': int(mf.mo_coeff.shape[-1]),
             'grid_points': len(mf.grids.weights), 'nlc_grid_points': len(mf.nlcgrids.weights),
+            'density_fitting_storage': storage,
         }
         records.append(row)
         (artifact / f'{case}-{mode}-{run}.json').write_text(json.dumps(row, indent=2) + '\n')
@@ -187,42 +264,17 @@ def _scf(cp, np, repeats, with_forces, artifact, tf32_cycles, candidates=('tf32'
         cp.get_default_memory_pool().free_all_blocks()
 
     # Small synthetic closed/open-shell checks also warm kernels before benzene timing.
-    for case in ('water', 'water-cation'):
+    for case in warmup_cases:
         for mode in ('float64', 'fp32', *candidates):
             calculate(case, mode, 0)
-    calculate('benzene', 'float64', 0)
-    for run in range(repeats):
-        modes = ('fp32', *candidates)
-        order = modes[run % len(modes):] + modes[:run % len(modes)]
-        for mode in order:
-            calculate('benzene', mode, run)
-    summary = {}
-    for case in ('water', 'water-cation', 'benzene'):
-        rows = [r for r in records if r['case'] == case]
-        reference = next(r for r in rows if r['mode'] == 'float64')
-        summary[case] = {}
-        for mode in ('fp32', *candidates):
-            group = [r for r in rows if r['mode'] == mode]
-            energy_error = max(abs(r['energy_hartree'] - reference['energy_hartree']) for r in group)
-            force_error = max(float(np.max(np.abs(np.asarray(r['forces_hartree_bohr']) -
-                                np.asarray(reference['forces_hartree_bohr'])))) for r in group) if with_forces else None
-            if energy_error > 1e-8 or (force_error is not None and force_error > 1e-5):
-                raise RuntimeError('Accepted result differs from native reference beyond comparison thresholds')
-            summary[case][mode] = {
-                'scf_seconds': [r['scf_seconds'] for r in group],
-                'median_scf_seconds': statistics.median(r['scf_seconds'] for r in group),
-                'max_energy_error_hartree': energy_error, 'max_force_error_hartree_bohr': force_error,
-                'fallbacks': sum(r['precision_info']['fallback_scf'] for r in group),
-                'cycles': [r['cycles'] for r in group],
-                'median_energy_force_seconds': statistics.median(r['scf_seconds'] + r['force_seconds'] for r in group)
-                if with_forces else None,
-            }
-        summary[case]['scf_speedups'] = {
-            mode: summary[case]['fp32']['median_scf_seconds'] / summary[case][mode]['median_scf_seconds']
-            for mode in candidates
-        }
-        if candidates == ('tf32',):
-            summary[case]['scf_speedup'] = summary[case]['scf_speedups']['tf32']
+    for case in benchmark_cases:
+        calculate(case, 'float64', 0)
+        for run in range(repeats):
+            modes = ('fp32', *candidates)
+            order = modes[run % len(modes):] + modes[:run % len(modes)]
+            for mode in order:
+                calculate(case, mode, run)
+    summary = _scf_summary(np, records, (*warmup_cases, *benchmark_cases), candidates, with_forces)
     return {'summary': summary, 'runs': records}
 
 

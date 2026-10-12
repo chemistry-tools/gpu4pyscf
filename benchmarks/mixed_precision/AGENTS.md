@@ -20,6 +20,10 @@ scope; [PERFORMANCE.md](PERFORMANCE.md) owns measured results and their version 
   kernel-name tracing. The normal precision policy remains unchanged.
 - `fp64_emulation_benchmark.py`: scoped cuBLAS fixed-point FP64 comparisons using automatic
   native-accuracy mantissa control. Final checks, recovery and forces remain native FP64.
+- `_larger_cases.py`, `test_larger_cases.py`: synthetic idealized fused aromatics, formula and
+  valence checks for size scaling. These inputs do not come from held-out datasets.
+- `test_benchmark_summary.py`: force-sampling counts, paired timing and basis/grid identity
+  guards. `tf32_benchmark.py` shares the SCF driver and reports full/range-separated DF storage.
 - `test_experiments.py`: CPU-only resource/protocol checks and opt-in CUDA kernel checks.
 
 Use physical GPU 1 only and at most four logical CPUs, including builds and tests. Run all
