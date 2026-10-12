@@ -190,6 +190,102 @@ additionally used ASE 3.27.0. Only the new precision/ASE Python modules were exp
 over the matching installed 1.8.1 release. This does not verify a full native build of current
 master. Raw reports, source hashes, scripts and startup-failure logs remain outside Git.
 
+## FP64 fixed-point tensor-core emulation
+
+The October 12 FP64 experiment uses the same synthetic benzene recipe and numerical
+implementation as the TF32 comparison above: one RTX 3080, physical GPU 1,
+CPU affinity `[4,5,6,7]`, four numerical threads, PySCF 2.14.0, GPU4PySCF CUDA 13
+1.8.1 and CuPy 14.2.0. Only the fork's precision extensions are loaded over the
+installed implementation. Native source/library hashes remain recorded; this does
+not validate a complete native build of the fork.
+
+The existing mixed baseline uses early FP32 grid products and mixed VV10. The
+`emulated-grid` variant additionally requests cuBLAS FP64 fixed-point emulation
+for later grid products. `emulated-blas` also enables the request on the main SCF
+thread's cuBLAS handle. All variants disable the requests before final native
+energy/physical-Fock verification, recovery and analytic forces. Dynamic mantissa
+control, automatic maximum and zero bit offset retain native FP64 accuracy;
+fixed-precision and global FP64-emulation overrides are absent. `eager` requests
+emulation whenever possible; `performant` lets cuBLAS predict whether it helps.
+
+Each configuration uses three cyclically alternating fresh-calculator benzene
+comparisons. Timings include native verification; force timings remain native.
+Baseline rows are matched within each library/policy comparison, rather than
+reusing timings across upgraded libraries:
+
+| cuBLAS package / selection | Mixed baseline SCF, s | Grid emulation SCF, s | Grid + main-handle emulation SCF, s | Energy + forces, baseline / grid / broader, s |
+| --- | ---: | ---: | ---: | --- |
+| 13.1.1.3 / eager | 8.1403 | 8.7985 | 11.3966 | 17.5458 / 18.1441 / 20.7397 |
+| 13.8.0.4 / performant | 8.2798 | 8.2430 | 8.1820 | 17.7431 / 17.6807 / 17.6168 |
+| 13.8.0.4 / eager | 8.1768 | 8.8676 | 12.5900 | 17.6299 / 18.3206 / 22.0344 |
+
+Forced emulation in the installed library increases benzene SCF time by
+about **8%** for grid products and **40%** for broader BLAS coverage. Requesting
+emulation does not by itself establish that tensor-core emulation ran.
+With 13.8.0.4, eager selection increases SCF time by **8.45%** and **53.97%**,
+respectively, and energy-plus-force time by **3.92%** and **24.98%**. All benzene
+runs retain seven SCF iterations and pass native verification without recovery.
+Accepted energies differ from the native reference by less than `5.4e-11` Hartree;
+maximum force-component errors stay below `3.7e-5` eV/Angstrom. Closed-shell water
+and doublet water-cation energy/force checks also pass. The focused suite has 59
+passing checks in both actual library configurations, plus manual negative
+checks that reject wrong loaded paths and API/package mismatches before any
+matrix/SCF benchmark.
+
+Six alternating batches of 20 matrix products include CPU submission overhead,
+with FP64 inputs/outputs and separate non-unit scaling/accumulation checks. On
+13.1.1.3 with eager selection, a random 1024×1024×1024 product improves from
+**5.1153 ms to 0.8220 ms (6.22×)**. The 276×276×16,384 probe improves from
+6.1573 to 4.6586 ms (1.32×), while the irregular 17×31×83 probe slows from
+0.0394 to 0.3394 ms. Maximum relative Frobenius error is `1.36e-15`. Separate
+CUPTI traces show `cublasLt_fused_imma_dgemm_kernel_sm80` or its split-K variant,
+with zero dropped records. Tracing is excluded from timing; these are matrix
+kernel-selection measurements, not whole-SCF tensor-core utilization.
+
+With the verified 13.8.0.4 library, eager selection uses Ozaki-II kernels
+containing `oz2_int8_dgemm` and `nvjet_sm86_biu_mma` in the separate traces.
+The 1024-cubed probe takes 5.1927 ms natively and 1.2906 ms with emulation
+(4.02×); 276×276×4,096 instead slows from 1.8136 to 2.0282 ms, and
+276×276×16,384 from 6.2635 to 7.2937 ms. The modular-conversion prologs take
+most of the rectangular probe's traced time. This contrasts with the faster
+square product and shows why a dense-kernel speedup cannot establish a molecular
+workflow improvement. Maximum relative Frobenius error remains `1.36e-15`.
+The automatic matrix probes select native FP64 and have approximately equal
+timings. The automatic SCF median differences are 0.4–1.2%, comparable with
+the measured variation; they do not establish a useful emulation speedup.
+
+An additional untimed SCF diagnostic samples 14 distinct substantial benzene grid
+products. Most have 220–270 rows and a 4,096-point contraction dimension; one has
+2,048 points. Values include extremely small Gaussian tails. The dynamic mantissa
+counter reports 91–1,020 bits, compared with roughly 60 in the initial random
+probes. In 12 samples, the native FP64 kernel consumes more than 90% of traced
+GPU kernel time while integer GEMMs take only about 5–6 microseconds. These
+durations indicate native fallback after precision analysis; the other two samples
+perform substantial Ozaki-II work. Kernel names alone can include conditionally
+skipped emulation/native launches. This diagnostic explains why requesting
+emulation on actual molecular fields adds setup work without the dense-probe gain;
+its instrumented SCF times are excluded from every performance table.
+
+No useful whole-workflow speedup is established for this recipe, so FP64 emulation
+remains an opt-in benchmark and is disabled in the normal ASE `auto` policy.
+
+The cuBLAS packages are installed in private external directories, leaving the
+shared runtime unchanged. CUDA toolkit versions and cuBLAS package versions are
+different. Early upgrade attempts changed package metadata but still loaded
+**13.1.1.3**, because cuda-pathfinder searched the existing environment before
+the supplied library paths. Their loaded paths, hashes and API version identify
+that mismatch; these retained diagnostics are excluded from upgrade comparisons.
+The guarded runs explicitly preload both private cuBLAS libraries and require
+their loaded path and API to match the expected library/package. Separate
+13.8.0.4 reports test CUDA 13.4 Update 1, whose
+[release notes](https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html)
+describe Ozaki-II selection and retained workspace memory. Do not infer an
+algorithm or loaded library version from a filename or package metadata alone.
+
+Use the [FP64 reproduction guide](RUNNING.md#fp64-fixed-point-emulation-experiment).
+Raw reports, exact source snapshots, controller scripts, traces and intermediate
+results remain outside Git. Validation datasets are held out.
+
 ## Skala ASE comparison
 
 An isolated Skala 2026.9 / Skala-1.1-rev1 experiment used Python 3.12, PySCF 2.14.0,

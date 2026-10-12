@@ -43,6 +43,8 @@ cuBLAS package versions differ from CUDA toolkit versions. Record the loaded lib
 package/API versions and emulation environment. An emulation request can dispatch to native
 GEMM; use separate kernel traces to distinguish selection from activation. Never enable global
 FP64 emulation or fixed mantissa overrides when claiming independent native verification.
+Emulation traces may include conditionally skipped kernels: inspect durations and dynamic
+mantissa counts before interpreting kernel-name presence as substantive emulated work.
 
 The numerical kernels now live in `gpu4pyscf/dft/_mixed_grid.py` and `_mixed_vv10.py`; benchmark
 adapters share them. Private source geometries, identifiers and results must stay outside Git.

@@ -143,6 +143,8 @@ Matrix probes use six alternating batches of 20 products, include CPU submission
 and check irregular dimensions plus non-unit scaling/accumulation. They retain
 FP64 inputs and outputs. Optional `--trace-library` records separate CUPTI calls
 after timing, as above. Those traces identify kernels, not whole-SCF utilization.
+cuBLAS may launch conditionally skipped emulation and native fallback kernels;
+use durations and dynamic mantissa counts to interpret actual work.
 
 For a private library comparison, install a pinned cuBLAS package into a new directory
 outside the environment and preserve the original library paths. CuPy 14.2 uses

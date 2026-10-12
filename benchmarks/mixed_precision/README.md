@@ -6,8 +6,8 @@ then check the final energy and orbital gradient with the original float64 imple
 A failed check triggers float64 reconvergence within the original cycle budget.
 
 The harness, scoped CuPy kernel adapters and pinned [protocol](protocol.json) are self-contained.
-The ASE calculator now exposes `precision="mixed"` explicitly; float64 remains the default. These are energy experiments; wider chemistry and
-analytical derivative validation are still needed before making the policy a library default.
+The ASE calculator provides verified mixed SCF and native float64 forces. Broader chemical
+coverage remains necessary before generalizing the measured speedups.
 
 See [measured results](PERFORMANCE.md), [reproduction instructions](RUNNING.md) and
 [development guidance](AGENTS.md).
@@ -16,3 +16,8 @@ Use the [ASE integration guide](ASE.md) for energies, forces, optimizer steps an
 
 The optional [Skala benchmark](SKALA.md) evaluates a different XC functional and its use for
 preoptimization; it does not replace the fixed-method precision checks.
+
+The [TF32](RUNNING.md#tf32-early-grid-experiment) and
+[FP64 emulation](RUNNING.md#fp64-fixed-point-emulation-experiment) experiments measure
+tensor-core paths separately. They retain native final checks and remain opt-in;
+the measured benzene comparisons do not establish a useful workflow speedup.
