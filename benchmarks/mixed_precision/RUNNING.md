@@ -154,3 +154,36 @@ calls, and independently differentiates the pair energy by translating each atom
 It covers partial tiles, signed/zero weights, atoms without active points and separate CUDA
 streams. `test_force_response.py` additionally compares complete neutral/open-shell forces and
 finite-difference energies with and without the fused pass.
+
+## Native density-fitting force comparisons
+
+`native_force_benchmark.py` compares complete forces against a retained `df/grad/rhf.py`
+from the same native-library revision. The reference function runs in the installed native
+module's namespace; all other force code stays identical. Use a properly built installation
+of this fork, preserve the baseline source outside the checkout, and require the actual
+installed package path. The [native build guide](NATIVE_BUILD.md) explains the environment.
+
+```sh
+taskset -c 4-7 /tmp/gpu4pyscf-native-env/bin/python \
+  /absolute/path/to/gpu4pyscf/benchmarks/mixed_precision/native_force_benchmark.py \
+  --case ovalene --reference-df-grad /tmp/baseline-df-rhf.py \
+  --require-gpu-source /tmp/gpu4pyscf-native-env/lib/python3.12/site-packages/gpu4pyscf \
+  --output /tmp/ovalene-native-forces.json
+```
+
+Run under the host's shared benchmark lock, with the resource environment above, and finish
+each calculation before starting another. Synthetic ovalene has 32 carbons and 14 hydrogens;
+pyrene and coronene remain available. The recipe and full response terms are unchanged.
+Three alternating repetitions rebuild the full/range-separated DF buffers outside timing
+and release unused GPU-pool blocks first. Reports include each force, available memory,
+source/native hashes and the complete-call medians. Component profiles are separate evidence.
+
+The artifact directory contains `scf.npz` and `recipe.json`. Pass that directory through
+`--state` to avoid repeating SCF. Reuse requires the identical recipe and geometry, a matching
+state hash, retained basis orbitals and a fresh full float64 energy/orbital-gradient check.
+The recorded SCF time then belongs to the original calculation, not the reload.
+
+For native derivative checks, set `DFT_GPU_TEST=1` and `DFT_REFERENCE_DF_GRADIENT` to the
+retained baseline source before running `test_native_df_response.py` sequentially. These
+checks cover full/long/short-range operators, nonsymmetric densities, auxiliary response,
+Cartesian/spherical hybrid forces and independent finite-difference energies.

@@ -1,5 +1,52 @@
 # Fixed-method performance measurements
 
+## Native density-fitting force scheduling
+
+The 2026-10-13 native comparison retains the preceding optimized force implementation
+(`147d304`) as its baseline. The density-fitting derivative kernel assigns up to 16 auxiliary
+lanes to an orbital pair. Reducing shell-pair batch lengths from `4 * triplet_lanes` to
+`triplet_lanes // 16` exposes more independent GPU blocks and shortens serial pair loops.
+Integral screening, the original 54-element per-thread tile, float64 arithmetic, both
+exchange operators and full response terms are unchanged.
+
+Controlled pyrene J/K comparisons reconstructed the same full/range-separated DF buffers
+before every call; available GPU memory was identical at 6,345,064,448 bytes. Three alternating
+repetitions gave 13.3440 seconds for the original batching and 9.5430 seconds for smaller
+batches. Narrowing the per-thread tile to nine added no benefit (9.5428 seconds), so the
+original tile remains. Two further alternating repetitions with the selected pair-tile batches
+gave **13.3418 → 5.2725 seconds**, 60.5% less J/K force time, with differences below
+`3.5e-13` Hartree/Bohr. An initial uncontrolled-memory diagnostic is retained separately;
+its different auxiliary batching caused approximately `1.02e-9` Hartree/Bohr variation.
+
+Complete native force calls use one accepted density, freshly verified in float64. The
+[native benchmark](native_force_benchmark.py) releases unused pool blocks and reconstructs
+both DF buffers outside timing, then alternates the baseline and current complete gradient.
+The ordinary/nonlocal grids, ωB97M-V/def2-TZVPD, def2-universal-jkfit, overlap cutoff,
+convergence thresholds and full grid/auxiliary response are identical.
+
+| Synthetic molecule | Baseline force seconds | Optimized force seconds | Reduction |
+| --- | ---: | ---: | ---: |
+| Pyrene, 26 atoms / 682 orbitals | 36.1476 | 28.1815 | 22.0% |
+
+These are medians of two alternating pairs, with individual baseline samples 36.0777/36.2175
+and optimized samples 28.1373/28.2257 seconds. Pyrene's maximum complete-force difference
+was `6.51e-13` Hartree/Bohr. SCF is unchanged; these force comparisons are not complete ASE
+workflow medians. All measurements use physical GPU 1 (RTX 3080 10 GB), four CPU cores and
+sequential runs. No validation-set inputs were used.
+
+The isolated ordinary wheel's DF gradient SHA256 is
+`875b0d5d2aace272ee718260208af6139e6d4c2426344c8f1a84ea9b24e9334c`.
+Every native-library source and all 12 compiled library hashes match the previous verified
+native build. The wheel passed **118 checks**, including full/long/short-range derivatives,
+nonsymmetric densities, auxiliary-response control, Cartesian/spherical hybrid forces and
+independent energy finite differences. Existing precision, ASE and VV10 checks are included.
+The initial private environment's missing local LibXC installation and its failed import checks
+are retained; the passing environment explicitly installs LibXC locally.
+
+Raw profiles, trials, installed sources, wheel provenance, checks and complete force reports
+are retained outside Git under `df-profile-next-06`, `df-schedule-next-07/08/10/11`,
+`df-ovalene-next-09`, `native-package-df-next-12/13` and `native-df-forces-next-14`.
+
 Measured on 2026-10-08 with one RTX 3080 10 GB and four logical CPUs near the GPU, on a dual
 Xeon E5-2667 v4 server. Other GPUs were occupied. Every calculation ran sequentially in a fresh
 process with CPU affinity and OpenMP/BLAS limits of four. The CPU reference averaged 3.82 active

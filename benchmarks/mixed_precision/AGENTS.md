@@ -27,6 +27,11 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
 - `test_native_grid_response.py`: native density/product comparisons and LDA/GGA/MGGA
   complete-force comparisons plus energy finite differences. Set `DFT_REFERENCE_GRADIENT`
   to a retained matching native baseline source for the complete-force comparisons.
+- `native_force_benchmark.py`: complete native force comparisons with a retained matching
+  DF gradient source, identical rebuilt buffers and fresh float64 verification of saved SCF states.
+- `test_native_df_response.py`: full/long/short-range DF derivative checks, nonsymmetric
+  densities, Cartesian/spherical hybrid forces and energy finite differences. Set
+  `DFT_REFERENCE_DF_GRADIENT` to a matching native baseline `df/grad/rhf.py`.
 - `gpu4pyscf/dft/_vv10_grad.py`: one float64 pair traversal for U/W/E and contracted coordinate
   response, with atom-ordered labels and deterministic reductions. No SCF field cache.
 - `vv10_response_experiment.py`, `test_vv10_response.py`: native field/response comparisons,
