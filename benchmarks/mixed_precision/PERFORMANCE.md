@@ -136,6 +136,29 @@ additionally used ASE 3.27.0. Only the new precision/ASE Python modules were exp
 over the matching installed 1.8.1 release. This does not verify a full native build of current
 master. Raw reports, source hashes, scripts and startup-failure logs remain outside Git.
 
+## Force evaluation profile
+
+On 2026-10-12, sequential native float64 force profiles used idealized synthetic pyrene
+(26 atoms, 682 AOs) and coronene (36 atoms, 996 AOs), the same method/grids above, full grid
+and auxiliary-basis response, physical GPU 1 and four CPUs. This later runtime used PySCF
+2.14.0 and the pinned GPU4PySCF 1.8.1 CUDA 13 wheel. Component timings synchronize the GPU;
+unprofiled repeated measurements are required for speed comparisons.
+
+| Gradient component | Pyrene, seconds | Coronene, seconds |
+| --- | ---: | ---: |
+| Complete gradient | 62.18 | 140.75 |
+| Semilocal XC full response | 24.94 | 58.33 |
+| VV10 full response | 22.67 | 45.88 |
+| VV10 U/W/E pairs, included in VV10 response | 8.58 | 16.72 |
+| VV10 coordinate-response pairs, included in VV10 response | 9.70 | 19.06 |
+
+Grid construction took 0.094/0.231 seconds, and the grid-weight derivative calls totaled
+0.348/0.952 seconds. Semilocal/VV10 derivative contractions are better targets than these
+small terms. The remaining complete-gradient time includes density-fitting exchange/Coulomb
+derivatives and one-electron/nuclear terms; those were not individually timed in this profile.
+The SCF and gradient routines rebuild grids in different orders, so their VV10 fields cannot
+be reused by array shape alone.
+
 ## ASE property reuse
 
 The `optimisation-v1` branch combines the verified mixed-precision path and grid

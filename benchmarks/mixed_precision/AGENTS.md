@@ -14,6 +14,12 @@ scope; [PERFORMANCE.md](PERFORMANCE.md) owns measured results and their version 
   from upstream v1.8.1 `gpu4pyscf/lib/gdft/vv10.cu`, under the repository's Apache-2.0 license.
 - `grid_experiment.py`: scoped grid matrix products and single-GPU task-dispatch experiments.
 - `test_experiments.py`: CPU-only resource/protocol checks and opt-in CUDA kernel checks.
+- `force_benchmark.py`, `test_force_response.py`: exact density-contraction force comparisons,
+  full grid/auxiliary response and finite differences on synthetic molecules.
+- `force_experiment.py`: fail-closed compatibility adapter for the reviewed contraction sites
+  in installed-release gradients; keeps the installed grid loops and native calls intact.
+- `gpu4pyscf/grad/rks.py`: density contraction before AO derivative-matrix formation in full
+  RKS XC response and the shared RKS/UKS VV10 response. Forces remain float64.
 
 Use physical GPU 1 only and at most four logical CPUs, including builds and tests. Run all
 computational jobs sequentially. Keep benchmark outputs and environments outside the checkout;
@@ -30,6 +36,9 @@ checks. Energy-only validation does not cover forces, Hessians or transition-sta
 The fork's master and the older wheel share a version string but different code. Check actual
 import paths and source/native hashes; use `--require-gpu-source` when testing checkout code.
 Never use mismatched Python sources/native libraries or generalize results beyond measured cases.
+The force adapter applies only the new contraction algebra and atom reduction to the pinned
+release's own gradient functions. It records source hashes and restores both functions on exit;
+this isolated compatibility check does not validate a native build of the entire checkout.
 Run the focused Ruff and pytest commands in RUNNING.md; CUDA tests require the designated host.
 
 The numerical kernels now live in `gpu4pyscf/dft/_mixed_grid.py` and `_mixed_vv10.py`; benchmark

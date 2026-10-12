@@ -328,7 +328,9 @@ def _reduce_to_atom(mol, exc1):
     ao_loc = mol.ao_loc
     dims = ao_loc[1:] - ao_loc[:-1]
     atm_id_for_ao = numpy.repeat(mol._bas[:,ATOM_OF], dims)
-    return groupby(atm_id_for_ao, exc1, op='sum')
+    result = numpy.zeros((mol.natm, 3), dtype=exc1.dtype)
+    numpy.add.at(result, atm_id_for_ao, exc1)
+    return result
 
 def _make_dR_dao_w(ao, wv, out=None):
     assert ao.shape[0] >= 10
@@ -414,6 +416,27 @@ def _tau_grad_dot_(ao, wv, accumulate=False, buf=None, out=None):
     _d1_dot_(ao[idx3], aow.T, beta=1, out=out)
     return out
 
+def _contract_grad_response(ao, wv, dm):
+    '''Contract the AO index before forming nuclear XC derivatives.
+
+    Returns the same per-AO contraction as the derivative matrix followed by
+    einsum('xij,ji->ix', vmat, dm), without constructing three AO-square matrices.
+    The density and all products remain float64. wv uses the existing half
+    factors for density and kinetic-energy density.
+    '''
+    if len(wv) == 1:
+        aow = numint._scale_ao(ao[0], wv[0])
+        return cupy.einsum('dip,ip->id', ao[1:4], dm.T.dot(aow)).real
+
+    aow = numint._scale_ao(ao[:4], wv[:4])
+    partial = cupy.einsum('dip,ip->id', ao[1:4], dm.T.dot(aow))
+    partial += cupy.einsum('dip,ip->id', _make_dR_dao_w(ao, wv[:4]), dm.T.dot(ao[0]))
+    if len(wv) == 5:
+        for component, derivatives in enumerate(([4, 5, 6], [5, 7, 8], [6, 8, 9]), 1):
+            aow = numint._scale_ao(ao[component], wv[4])
+            partial += cupy.einsum('dip,ip->id', ao[derivatives], dm.T.dot(aow))
+    return partial.real
+
 def get_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
                           max_memory=2000, verbose=None):
     '''Full response including the response of the grids'''
@@ -441,7 +464,7 @@ def get_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
     dms = opt.sort_orbitals(dms, axis=[0,1])
 
     de_grid_response_rho = cupy.zeros((natm, 3))
-    dvmat_orbital_response = cupy.zeros((3, nao, nao))
+    de_orbital_response = cupy.zeros((nao, 3))
     dm_mask_buf = cupy.empty(nao*nao)
 
     if xctype == 'LDA':
@@ -508,40 +531,14 @@ def get_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
         i_atom = int(grids.atm_idx[g0])
         assert cupy.max(cupy.abs(grids.atm_idx[g0:g1] - i_atom)) == 0 # Guaranteed by grids.build(sort_grids_of_each_atom = True)
 
-        if xctype == 'LDA':
-            split_wv = cupy.ascontiguousarray(wv[:, g0:g1][:, nonzero_weight_mask[g0:g1]])
-
-            aow = numint._scale_ao(ao[0], split_wv[0])
-            vtmp = _d1_dot_(ao[1:4], aow.T)
-
-            dvmat_orbital_response[:, idx[:,None], idx] += vtmp
-            de_grid_response_rho[i_atom] += cupy.einsum('xij,ji->x', vtmp, dms_masked) * 2
-
-        elif xctype == 'GGA':
-            split_wv = cupy.ascontiguousarray(wv[:, g0:g1][:, nonzero_weight_mask[g0:g1]])
+        split_wv = cupy.ascontiguousarray(wv[:, g0:g1][:, nonzero_weight_mask[g0:g1]])
+        if xctype in ('GGA', 'MGGA'):
             split_wv[0] *= .5
-
-            vtmp = _gga_grad_sum_(ao, split_wv[:4])
-
-            dvmat_orbital_response[:, idx[:,None], idx] += vtmp
-            de_grid_response_rho[i_atom] += cupy.einsum('xij,ji->x', vtmp, dms_masked) * 2
-
-        elif xctype == 'NLC':
-            raise ValueError("You see a bug, please report to the developer team.")
-
-        elif xctype == 'MGGA':
-            split_wv = cupy.ascontiguousarray(wv[:, g0:g1][:, nonzero_weight_mask[g0:g1]])
-            split_wv[0] *= .5
-            split_wv[4] *= .5 # for the factor 1/2 in tau
-
-            vtmp = _gga_grad_sum_(ao, split_wv[:4])
-            _tau_grad_dot_(ao, split_wv[4], accumulate=True, out=vtmp)
-
-            dvmat_orbital_response[:, idx[:,None], idx] += vtmp
-            de_grid_response_rho[i_atom] += cupy.einsum('xij,ji->x', vtmp, dms_masked) * 2
-
-        else:
-            raise NotImplementedError(f"Unrecognized xctype = {xctype}")
+        if xctype == 'MGGA':
+            split_wv[4] *= .5
+        partial = _contract_grad_response(ao, split_wv, dms_masked)
+        de_orbital_response[idx] += partial
+        de_grid_response_rho[i_atom] += partial.sum(axis=0) * 2
 
         g0 = g1
     assert g1 == ngrids
@@ -549,7 +546,7 @@ def get_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
     excsum = de_grid_response_weight + de_grid_response_rho
     excsum = excsum.get()
     # - sign because nabla_X = -nabla_x
-    excsum -= rhf_grad.contract_h1e_dm(opt._sorted_mol, dvmat_orbital_response, dms, hermi=1)
+    excsum -= _reduce_to_atom(opt._sorted_mol, de_orbital_response) * 2
 
     log.timer_debug1('rks grad vxc full response', *t0)
     return excsum, 0
@@ -663,7 +660,7 @@ def get_nlc_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=
     fw_gamma_vxc_form = 2 * nabla_rho_i * fw_gamma_i
     del fw_gamma_i, nabla_rho_i
 
-    dvmat_orbital_response = cupy.zeros((3, nao, nao))
+    de_orbital_response = cupy.zeros((nao, 3))
     de_grid_response_rho = cupy.zeros((natm, 3))
 
     g0_full = 0
@@ -684,12 +681,12 @@ def get_nlc_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=
 
         wv = cupy.vstack([fw_rho_i[g0_nonzero : g1_nonzero], fw_gamma_vxc_form[:, g0_nonzero : g1_nonzero]])
         wv[0] *= .5
-        vtmp = _gga_grad_sum_(ao, wv)
-        dvmat_orbital_response[numpy.ix_(range(3), idx, idx)] += vtmp
         dms_masked = take_last2d(dms_sorted, idx, out = dm_mask_buf)
-        de_grid_response_rho[i_atom_of_grids] += cupy.einsum('xij,ji->x', vtmp, dms_masked) * 2
+        partial = _contract_grad_response(ao, wv, dms_masked)
+        de_orbital_response[idx] += partial
+        de_grid_response_rho[i_atom_of_grids] += partial.sum(axis=0) * 2
 
-        del wv, vtmp
+        del wv, partial
 
         g0_nonzero = g1_nonzero
         g0_full = g1_full
@@ -778,7 +775,7 @@ def get_nlc_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=
 
     exc1 = de_grid_response_rho + de_grid_response_weight + de_grid_response_phi
     exc1 = exc1.get()
-    exc1 += -rhf_grad.contract_h1e_dm(_sorted_mol, dvmat_orbital_response, dms_sorted, hermi=1)
+    exc1 += -_reduce_to_atom(_sorted_mol, de_orbital_response) * 2
 
     log.timer_debug1('grad nlc vxc full response', *t0)
 

@@ -99,3 +99,34 @@ It compares 64, 128 and 256-thread tiles with double arithmetic, float32 partial
 with two double corrections. No global fast-math flag is used. For `--backend nvcc`, the pinned
 environment includes NVCC, CRT and NVVM 13.0.88; export its `nvidia/cu13` directory as `CUDA_PATH`
 and add its `bin` directory to `PATH`. Compiler comparisons use identical inputs and settings.
+
+## Exact force contractions
+
+`force_benchmark.py` compares the original installed-release gradients with the new density-first
+contraction on idealized synthetic pyrene or coronene. It retains the full functional, basis,
+grids and both response terms. The accepted density is shared by both force implementations;
+three alternating repetitions rebuild the same full/range-separated density-fitting buffers
+outside the timed region, because native gradients release those buffers. Timing covers the
+complete gradient call, without profiling synchronization inside its components.
+
+Run from outside the checkout against the pinned wheel, with the resource limits above, and
+keep each output path new. Finish one molecule before starting the next:
+
+```sh
+/tmp/gpu4pyscf-bench-env/bin/python /absolute/path/to/gpu4pyscf/benchmarks/mixed_precision/force_benchmark.py \
+  --extension-root /absolute/path/to/gpu4pyscf --case pyrene --output /tmp/pyrene-forces.json
+/tmp/gpu4pyscf-bench-env/bin/python /absolute/path/to/gpu4pyscf/benchmarks/mixed_precision/force_benchmark.py \
+  --extension-root /absolute/path/to/gpu4pyscf --case coronene --output /tmp/coronene-forces.json
+```
+
+The scoped adapter changes only the reviewed derivative-matrix contraction sites and atom
+reduction within the installed release's own functions. Its source guards reject incompatible
+layouts. The remainder of the numerical Python and all native libraries stay from that release;
+this is algebra compatibility evidence, not a full checkout build. Reports preserve source
+hashes, fixed geometry, accepted SCF checks, resource limits, individual forces and timings.
+
+After importing the installed release and loading the precision modules through `_extensions.py`,
+run the opt-in `test_force_response.py` checks alongside the existing GPU tests. They compare
+LDA/GGA/MGGA contractions against native derivative matrices and full neutral/open-shell
+ωB97M-V forces against native gradients and finite-difference energies. The normal native source
+path applies the optimization directly in `gpu4pyscf/grad/rks.py`; no ASE option is required.
