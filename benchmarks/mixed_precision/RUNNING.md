@@ -128,5 +128,6 @@ hashes, fixed geometry, accepted SCF checks, resource limits, individual forces 
 After importing the installed release and loading the precision modules through `_extensions.py`,
 run the opt-in `test_force_response.py` checks alongside the existing GPU tests. They compare
 LDA/GGA/MGGA contractions against native derivative matrices and full neutral/open-shell
-ωB97M-V forces against native gradients and finite-difference energies. The normal native source
-path applies the optimization directly in `gpu4pyscf/grad/rks.py`; no ASE option is required.
+ωB97M-V forces against native gradients and finite-difference energies. With full grid response
+enabled, the native source path applies the optimization directly in `gpu4pyscf/grad/rks.py`;
+there is no additional optimization flag. Existing grid-response defaults are preserved.

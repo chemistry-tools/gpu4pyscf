@@ -159,6 +159,46 @@ derivatives and one-electron/nuclear terms; those were not individually timed in
 The SCF and gradient routines rebuild grids in different orders, so their VV10 fields cannot
 be reused by array shape alone.
 
+## Density-first float64 force contractions
+
+The full-response RKS XC and shared RKS/UKS VV10 routines now contract the density before
+forming AO derivative matrices. For a meta-GGA, this replaces fifteen AO-square products
+with five density/AO products and per-AO reductions. Every derivative remains float64;
+the change preserves the density, all grid points and both response terms. It introduces
+no SCF-to-gradient field cache.
+
+Three alternating unprofiled force calls per implementation used the same accepted density
+and rebuilt the native full/range-separated DF buffers before each timed gradient. The
+synthetic molecules and resource limits match the profile above; validation datasets were
+held out. These are complete-gradient medians:
+
+| Molecule | Native, seconds | Density-first, seconds | Speedup | Less force time |
+| --- | ---: | ---: | ---: | ---: |
+| Pyrene | 62.5023 | 49.3319 | 1.267× | 21.1% |
+| Coronene | 140.2340 | 109.6475 | 1.279× | 21.8% |
+
+Pyrene native samples were 62.8358, 62.4885 and 62.5023 seconds; optimized samples were
+49.3330, 49.3319 and 49.3267 seconds. Coronene native samples were 140.2365, 140.2289 and
+140.2340 seconds; optimized samples were 109.6527, 109.6452 and 109.6475 seconds.
+Maximum force-component differences from the first native call were `5.50e-12` and
+`2.58e-13` Hartree/Bohr, respectively, including native repeat variation. The larger error
+is about `2.83e-10` eV/Å. Both molecules retained the full basis and passed native SCF
+verification without fallback.
+
+The shared SCF runs took 71.3592/202.0493 seconds. Adding those to the force medians gives
+estimated energy-plus-force reductions of 9.8%/8.9%; this sum is not a fresh whole-workflow
+timing comparison. The VV10 U/W/E and coordinate-response pair kernels remain unchanged.
+
+All 98 focused checks passed, including native derivative-matrix comparisons for LDA/GGA/MGGA,
+atom reduction with missing basis functions, neutral/open-shell full forces and finite-difference
+energies. Three additional ASE checks passed with the new force path active, including unchanged
+geometry SCF reuse, geometry changes and finite-difference forces. Core Ruff checks and GitHub
+checks passed. Only the reviewed contraction sites and atom reduction were adapted into the
+matching installed-release gradient functions; their grid loops and native calls were retained.
+A full native build of the fork's later master changes remains unverified. Raw reports, profiles,
+fields, source snapshots and logs are retained outside Git. The benchmarked gradient source
+SHA256 is `7450bda807002d78cfa14f8d7737c24003521aca021d910998a42442d9d65328`.
+
 ## ASE property reuse
 
 The `optimisation-v1` branch combines the verified mixed-precision path and grid
