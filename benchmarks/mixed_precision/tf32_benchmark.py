@@ -10,7 +10,6 @@ import os
 import statistics
 import subprocess
 import time
-from functools import partial
 from importlib.metadata import version
 from pathlib import Path
 from unittest.mock import patch
@@ -92,7 +91,7 @@ def _micro(cp, np, trace_library, artifact):
     return {'matrices': rows, 'kernel_trace': trace}
 
 
-def _scf(cp, np, repeats, with_forces, artifact):
+def _scf(cp, np, repeats, with_forces, artifact, tf32_cycles):
     from gpu4pyscf import dft
     from gpu4pyscf.dft import _mixed_grid, mixed_precision
     from gpu4pyscf.scf import hf
@@ -110,11 +109,22 @@ def _scf(cp, np, repeats, with_forces, artifact):
         mf.grids.level, mf.nlcgrids.level = 5, 3
         mf.conv_tol, mf.conv_tol_grad, mf.max_cycle = 1e-8, 1e-4, 200
         mf.chkfile = None
-        mf.callback = lambda env: print(json.dumps({
-            'case': case, 'mode': mode, 'run': run, 'cycle': int(env['cycle']) + 1,
-            'energy_hartree': float(env['e_tot']), 'orbital_gradient': float(env['norm_gorb']),
-        }), flush=True)
-        factory = partial(_mixed_grid._GridPrecision, tf32=mode == 'tf32')
+        controllers = []
+        grid_type = _mixed_grid._GridPrecision
+        def factory(use_float32):
+            grid = grid_type(use_float32, tf32=mode == 'tf32')
+            controllers.append(grid)
+            return grid
+        def progress(env):
+            cycle = int(env['cycle']) + 1
+            if mode == 'tf32' and cycle >= tf32_cycles:
+                for grid in controllers:
+                    grid.tf32 = False
+            print(json.dumps({
+                'case': case, 'mode': mode, 'run': run, 'cycle': cycle,
+                'energy_hartree': float(env['e_tot']), 'orbital_gradient': float(env['norm_gorb']),
+            }), flush=True)
+        mf.callback = progress
         cp.cuda.get_current_stream().synchronize()
         started = time.perf_counter()
         if mode == 'float64':
@@ -136,7 +146,10 @@ def _scf(cp, np, repeats, with_forces, artifact):
             started = time.perf_counter()
             gradient = mf.Gradients()
             gradient.grid_response = gradient.auxbasis_response = True
-            forces = -gradient.kernel().get()
+            forces = -gradient.kernel()
+            if hasattr(forces, 'get'):
+                forces = forces.get()
+            forces = np.asarray(forces)
             cp.cuda.get_current_stream().synchronize()
             force_seconds = time.perf_counter() - started
         row = {
@@ -193,10 +206,15 @@ def main():
     parser.add_argument('--mode', choices=('micro', 'scf', 'all'), default='all')
     parser.add_argument('--forces', action='store_true')
     parser.add_argument('--trace-library', type=Path)
+    parser.add_argument('--tf32-cycles', type=int, default=5, help='TF32 grid iterations before ordinary FP32')
     args = parser.parse_args()
+    if not 1 <= args.tf32_cycles <= 5:
+        parser.error('tf32-cycles must be between one and five')
     if args.repeats < 1 or args.output.exists():
         parser.error('Use a positive repeat count and a new output path')
     artifact = args.output.with_suffix('')
+    if artifact.exists():
+        parser.error('The artifact directory already exists; preserve it and choose a new output path')
     artifact.mkdir(parents=True, exist_ok=False)
     _resources([4, 5, 6, 7])
     if os.environ.get('CUDA_VISIBLE_DEVICES') != '1' or os.environ.get('NVIDIA_TF32_OVERRIDE') == '0':
@@ -233,12 +251,14 @@ def main():
         'benchmark_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         'cases_sha256': hashlib.sha256(json.dumps(CASES, sort_keys=True).encode()).hexdigest(),
         'initial_density': 'Fresh native initial guess; no density reused between runs',
-        'policy': 'Only first five grid iterations can use TF32; native float64 checks, recovery and derivatives',
+        'tf32_grid_cycles': args.tf32_cycles,
+        'policy': 'TF32 grid schedule ends within five iterations; native float64 checks, recovery and derivatives',
     }
     if args.mode in ('micro', 'all'):
         report['micro'] = _micro(cp, np, args.trace_library, artifact)
+        (artifact / 'micro.json').write_text(json.dumps(report['micro'], indent=2) + '\n')
     if args.mode in ('scf', 'all'):
-        report['scf'] = _scf(cp, np, args.repeats, args.forces, artifact)
+        report['scf'] = _scf(cp, np, args.repeats, args.forces, artifact, args.tf32_cycles)
     args.output.write_text(json.dumps(report, indent=2, allow_nan=False) + '\n')
     print('SUMMARY ' + json.dumps({key: value['summary'] for key, value in report.items() if key == 'scf'}), flush=True)
 

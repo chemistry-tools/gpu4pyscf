@@ -129,6 +129,60 @@ full float64 energy/orbital-gradient checks passed without fallback; accepted en
 by less than `4e-13` Hartree. An earlier three-pair check showed about 1% improvement, also
 within timing variation. Kernel gains must not be presented as equivalent whole-SCF gains.
 
+## TF32 tensor-core experiment
+
+The October 12 comparison uses an RTX 3080, physical GPU 1, CPU affinity `[4,5,6,7]`,
+and four numerical threads. The installed environment contains GPU4PySCF CUDA 13 1.8.1,
+PySCF 2.14.0, CuPy 14.2.0, NumPy 2.5.3 and cuBLAS 13.1.1.3. Only the fork's precision
+modules are loaded over the installed numerical/native implementation. These results do
+not establish compatibility of the complete fork with older native libraries.
+
+The synthetic benzene recipe is ωB97M-V/def2-TZVPD with def2-universal-jkfit, grid
+levels 5/3, full VV10, energy tolerance `1e-8` Hartree, orbital-gradient tolerance
+`1e-4`, cycle budget 200 and overlap cutoff `1e-10`. Every run starts from a fresh
+native density guess. Energy verification, physical-Fock checks, float64 recovery and
+native float64 gradients retain the existing settings. The two schedules use separate
+three-pair alternating comparisons against the existing FP32 mixed policy:
+
+| TF32 grid schedule | Matched FP32 SCF median, s | TF32 SCF median, s | SCF cycles, FP32/TF32 | Energy + forces median, FP32/TF32, s |
+| --- | ---: | ---: | --- | --- |
+| First five iterations | 8.1297 | 9.9647 | 7 / 9 | 17.5206 / 19.3288 |
+| First iteration only | 8.0287 | 7.9954 | 7 / 7 | 17.3554 / 17.4108 |
+
+Five TF32 iterations add two SCF cycles and increase SCF time by **22.6%** and
+energy-plus-force time by **10.3%**. The first-iteration schedule avoids extra cycles,
+but its 0.4% SCF median reduction is within the run-to-run variation; total
+energy-plus-force time is 0.3% higher. No material workflow speedup is established,
+so the normal `auto` policy keeps TF32 disabled.
+
+All accepted results pass the original float64 checks without recovery. The maximum
+benzene energy differences against native float64 are `6.82e-10` Hartree for five
+TF32 iterations and `1.81e-10` Hartree for one. Maximum force-component differences
+are `5.08e-5` and `6.02e-5` eV/Angstrom respectively. Closed-shell water and doublet
+water-cation energy/force checks also pass; their individual timings are correctness
+checks, not repeated performance measurements.
+
+Matrix microbenchmarks use fixed random fields, six alternating batches of 50
+contractions, and include float64-to-float32 conversion and float64 accumulation:
+
+| Rows × columns; grid points | FP32 median, ms | TF32 median, ms | Speedup |
+| --- | ---: | ---: | ---: |
+| 17 × 31; 83 | 0.1454 | 0.1477 | 0.98× |
+| 32 × 32; 512 | 0.1475 | 0.1547 | 0.95× |
+| 276 × 276; 4,096 | 0.1574 | 0.1602 | 0.98× |
+| 276 × 276; 16,384 | 0.4113 | 0.3515 | 1.17× |
+
+Separate CUDA 13 CUPTI activity traces record ordinary `ampere_sgemm` for the FP32
+probe and `cutlass_80_tensorop_s1688gemm` for the TF32 probe, with zero dropped
+records. This confirms tensor-core kernel selection for the representative matrix
+operation; it is not a measurement of tensor-core utilization for the whole SCF.
+Tracing is excluded from the timings. The focused correctness suite has 61 passing
+checks, including irregular matrix dimensions, native float64 restoration, handle
+restoration after injected errors, and real energy/force comparisons.
+
+Use the [TF32 reproduction guide](RUNNING.md#tf32-early-grid-experiment). The
+benchmark option remains experimental and is not exposed as an ASE precision default.
+
 These checks used only synthetic fields, benzene and water; validation datasets were held out.
 They ran sequentially on physical GPU 1 with affinity `[4, 5, 6, 7]` and four numerical threads.
 SCF and kernel timing used the pinned CUDA 13 runtime described above; force/lifecycle checks

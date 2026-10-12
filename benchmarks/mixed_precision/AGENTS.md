@@ -16,6 +16,8 @@ scope; [PERFORMANCE.md](PERFORMANCE.md) owns measured results and their version 
 - `vv10_experiment.py`: scoped VV10 adapters and CuPy pair-kernel/compiler comparisons. Adapted
   from upstream v1.8.1 `gpu4pyscf/lib/gdft/vv10.cu`, under the repository's Apache-2.0 license.
 - `grid_experiment.py`: scoped grid matrix products and single-GPU task-dispatch experiments.
+- `tf32_benchmark.py`, `tensor_trace.cpp`: opt-in TF32 early-grid comparisons and separate CUDA 13
+  kernel-name tracing. The normal precision policy remains unchanged.
 - `test_experiments.py`: CPU-only resource/protocol checks and opt-in CUDA kernel checks.
 
 Use physical GPU 1 only and at most four logical CPUs, including builds and tests. Run all

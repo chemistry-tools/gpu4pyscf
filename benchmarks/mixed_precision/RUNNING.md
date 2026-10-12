@@ -69,6 +69,37 @@ Hartree and the gradient below `1e-3`, or after 20 iterations. `--vv10 float32` 
 diagnostic without final verification. `--grid-contract blas` and `--grid-tasks inline` test
 float64 BLAS and synchronous single-GPU dispatch. Every patch is scoped and restored on exit.
 
+## TF32 early-grid experiment
+
+`tf32_benchmark.py` compares the existing verified FP32 policy with explicit
+`CUBLAS_COMPUTE_32F_FAST_TF32` grid products during the first five SCF iterations.
+Use `--tf32-cycles 1` to limit TF32 to the first iteration, then retain ordinary
+FP32 grid products for the rest of the existing five-iteration schedule.
+VV10, the float64 energy/physical-Fock checks, recovery budget and native derivatives
+retain the existing policy. This is an isolated benchmark option; ASE's `auto` default
+does not enable TF32.
+
+Run outside the checkout, with the same one-GPU/four-CPU limits and sequential
+execution above. Use this branch's extension root when testing against the installed wheel:
+
+```sh
+python /absolute/path/to/gpu4pyscf/benchmarks/mixed_precision/tf32_benchmark.py \
+  --extension-root /absolute/path/to/gpu4pyscf --forces --repeats 3 \
+  --output /outside/checkout/tf32-comparison.json
+```
+
+The frozen synthetic cases are benzene, water and water cation. All use ωB97M-V,
+def2-TZVPD, def2-universal-jkfit, grid levels 5/3, `conv_tol=1e-8`,
+`conv_tol_grad=1e-4`, `max_cycle=200` and overlap cutoff `1e-10`. Runs start with
+fresh native guesses. The report includes accepted float64 energy/force errors,
+fallbacks, SCF cycles and three alternating benzene timing pairs. Matrix microbenchmarks
+include conversion and accumulation costs, and check irregular dimensions separately.
+
+Optional `--trace-library /outside/checkout/tensor_trace.so` records kernel names
+in separate calls after matrix timing. Build `tensor_trace.cpp` against CUDA 13 CUPTI
+headers and `libcupti.so.13`; the CUDA CRT headers must also be on the include path.
+Tracing does not measure hardware utilization and is excluded from all timing runs.
+
 ## Kernel checks
 
 CPU-only resource/protocol tests do not require GPU libraries:

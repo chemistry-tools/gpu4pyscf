@@ -31,7 +31,8 @@ void CUPTIAPI complete(CUcontext context, uint32_t stream, uint8_t *buffer,
     while ((status = cuptiActivityGetNextRecord(buffer, valid, &record)) == CUPTI_SUCCESS) {
         if (record->kind == CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL) {
             auto *kernel = reinterpret_cast<CUpti_ActivityKernel10 *>(record);
-            kernels.emplace_back(kernel->end - kernel->start, kernel->name);
+            const char *name = kernel->name;
+            kernels.emplace_back(kernel->end - kernel->start, name ? name : "");
         }
     }
     if (status != CUPTI_ERROR_MAX_LIMIT_REACHED) callback_error = status;
