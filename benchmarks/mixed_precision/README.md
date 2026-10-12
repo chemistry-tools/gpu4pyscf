@@ -6,8 +6,11 @@ then check the final energy and orbital gradient with the original float64 imple
 A failed check triggers float64 reconvergence within the original cycle budget.
 
 The harness, scoped CuPy kernel adapters and pinned [protocol](protocol.json) are self-contained.
-The ASE calculator now exposes `precision="mixed"` explicitly; float64 remains the default. These are energy experiments; wider chemistry and
-analytical derivative validation are still needed before making the policy a library default.
+The ASE calculator defaults to `precision="auto"`, selecting verified mixed precision for
+supported GPU VV10 DFT. Its explicit `precision="mixed"` and `precision="float64"` options
+control the SCF policy. The native build, full-response forces, geometry reuse and independent
+energy finite differences are checked on synthetic development molecules; validation data
+remains held out.
 
 See [measured results](PERFORMANCE.md), [reproduction instructions](RUNNING.md) and
 [development guidance](AGENTS.md).

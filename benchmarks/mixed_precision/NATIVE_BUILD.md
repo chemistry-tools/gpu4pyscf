@@ -57,9 +57,11 @@ compute capability 8.6 and must be rebuilt for a different GPU architecture.
 
 Run from outside the checkout, without a checkout `PYTHONPATH`. Confirm that `gpu4pyscf`
 imports from the new environment's `site-packages`, and retain its native library hashes.
-Run the opt-in `test_ase_gpu.py` and `test_vv10_response.py` checks sequentially with
+Run the opt-in `test_ase_gpu.py`, `test_vv10_response.py` and `test_native_grid_response.py` checks with
 `DFT_GPU_TEST=1`. The former checks energies, full-response forces, geometry changes, SCF
 reuse and finite differences; the latter compares fused fields and derivatives with the
-newly built native calls. `test_force_response.py` uses the older wheel compatibility
+newly built native calls. Native streaming tests compare density/products and differentiate
+energies; set `DFT_REFERENCE_GRADIENT` to a retained matching native baseline source for
+complete-force comparisons. `test_force_response.py` uses the older wheel compatibility
 adapter and is not the native installation check. [PERFORMANCE.md](PERFORMANCE.md) records
 the measured build and numerical validation separately from older wheel results.

@@ -311,6 +311,88 @@ configuration, the wheel, native/source hashes, raw forces, numerical checks and
 launcher are retained outside Git. The tested wheel SHA256 is
 `9a9e6c3e05f9cd5843c182622acc06c86ce98269c7fedca160572e95d6d5ae90`.
 
+## Native profiling and streaming density products
+
+On 2026-10-12–13, fresh profiles of the optimized native installation separated SCF,
+the final float64 check and complete force evaluation. The same synthetic cases, recipe,
+full basis, GPU 1 and four-CPU limits were retained. These synchronized timings are
+inclusive; parent and child rows must not be added together. Profiling increased SCF
+overhead and can change its iteration trajectory, so speed comparisons use separate
+unprofiled runs.
+
+| Native force component | Pyrene, s | Coronene, s |
+| --- | ---: | ---: |
+| Complete force call | 42.41 | 95.97 |
+| Semilocal XC response | 13.95 | 32.09 |
+| VV10 response | 15.14 | 30.36 |
+| Density-fitting J/K derivatives | 12.87 | 32.59 |
+| Basis evaluation, included above | 0.46 | 0.81 |
+| Density products, included above | 6.65 | 15.96 |
+| Force density contractions, included above | 7.47 | 17.02 |
+
+The final float64 SCF check took 15.41/33.49 seconds. Its native VV10 evaluation took
+8.51/16.72 seconds, and ordinary XC integration took 5.44/12.54 seconds. During SCF,
+float64 contractions accounted for substantial time. Basis construction and grid-weight
+derivatives were small, so eliminating repeated density products was the useful force target.
+
+Full-response RKS now evaluates density, XC and orbital derivatives in one higher-derivative
+AO pass. Real, exactly symmetric LDA/meta-GGA densities share block-local float64 density/AO
+products. A meta-GGA needs four such products instead of the previous nine across density
+and force evaluation. Scalar grid weights are distributed over retained products; any
+rounding change is checked against the previous complete gradient. GGA and other density
+matrices retain separate products. Grid-weight responses still use large batches, and no
+fields are cached across geometries or between SCF and forces.
+
+Three alternating unprofiled complete-gradient calls per implementation used one accepted
+density from the retained five-iteration precision runner. DF buffers were reconstructed
+outside each timed gradient. Both implementations used the same native libraries:
+
+| Molecule | Previous force path, s | Streaming products, s | Speedup | Less force time |
+| --- | ---: | ---: | ---: | ---: |
+| Pyrene | 42.3672 | 36.4876 | 1.161× | 13.9% |
+| Coronene | 95.8000 | 82.0957 | 1.167× | 14.3% |
+
+Pyrene previous samples were 42.4210, 42.3561 and 42.3672 seconds; streaming samples were
+36.4876, 36.4795 and 36.4905 seconds. Coronene previous samples were 95.8000, 95.6860 and
+95.8504 seconds; streaming samples were 81.9902, 82.0957 and 82.1135 seconds. Maximum force
+differences, including repeat variation, were `3.27e-12` and `1.90e-13` Hartree/Bohr. Both
+densities were exactly symmetric, all 682/996 orbitals were retained and the original SCF
+verification passed without fallback. The shared SCF calls took 71.8722/201.8124 seconds.
+Adding SCF to the force medians suggests about 5.1%/4.6% less combined time; these sums are
+not fresh whole-ASE-workflow timing medians.
+
+The force implementation is commit `3a9909f`, with gradient-source SHA256
+`a1a13d69844d694b3ae4154ff24b8099fbca99f43a695892cc3a956fa8e95263`.
+The initial candidate suite passed 114 checks, including four tests for an experimental
+SCF policy that was subsequently discarded. A normal installation of the force-only wheel,
+with the original precision policy, passed all 110 applicable native checks. Eleven separate
+pinned-release force checks passed after retaining that release's original density/grid
+loops in the compatibility adapter. Density tests matched native values bit for bit for
+fixed AO inputs; contraction comparisons, LDA/GGA/meta-GGA complete forces and independent
+energy finite differences also passed. Ruff and GitHub checks passed.
+
+Only Python force code changed. Every native source file matched the earlier native build,
+so packaging reused its twelve verified binaries; installed hashes and production Python
+sources were checked again. The old installation and all source snapshots, profiles,
+raw forces, wheels and logs were retained. Validation data was not used.
+
+### Precision schedules that did not improve performance
+
+Three isolated SCF trials retained full float64 acceptance/recovery and the original
+tolerances, grids, basis and budget. The reference pyrene run took 71.5246 seconds and
+ten iterations. Switching grid products at a convergence-based eighth iteration took
+72.7064 seconds and twelve iterations. A bounded extension that switched at iteration six
+took 74.4443 seconds and eleven iterations. Both passed verification without fallback,
+but the extra iterations erased the cheaper products.
+
+Keeping grid products coarse until final verification stalled at the twenty-iteration
+limit. The native orbital gradient was `5.26e-4`, above the required `1e-4`, even though
+the float32-to-float64 energy change was only `7.14e-11` Hartree. Verification rejected the
+result, native float64 recovery converged in two iterations, and total time reached
+137.1917 seconds. This demonstrates why the physical Fock check is required in addition
+to energy agreement. These single-run trials were rejected, not promoted as improvements.
+The production grid schedule remains float32 for at most five iterations.
+
 ## ASE property reuse
 
 The `optimisation-v1` branch combines the verified mixed-precision path and grid
