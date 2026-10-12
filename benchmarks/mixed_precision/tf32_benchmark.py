@@ -158,7 +158,8 @@ def _scf(cp, np, repeats, with_forces, artifact, tf32_cycles, candidates=('tf32'
             finally:
                 cublas.setMathMode(handle, previous_math)
             info = mf.mixed_precision_info
-            info['emulated_grid_calls_before_native_checks'] = emulated_calls
+            # A request can fall back to native GEMM inside cuBLAS; traces establish dispatch.
+            info['emulation_requested_grid_calls_before_native_checks'] = emulated_calls
         cp.cuda.get_current_stream().synchronize()
         scf_seconds = time.perf_counter() - started
         force_seconds, forces = None, None

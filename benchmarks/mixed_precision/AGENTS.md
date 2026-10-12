@@ -18,6 +18,8 @@ scope; [PERFORMANCE.md](PERFORMANCE.md) owns measured results and their version 
 - `grid_experiment.py`: scoped grid matrix products and single-GPU task-dispatch experiments.
 - `tf32_benchmark.py`, `tensor_trace.cpp`: opt-in TF32 early-grid comparisons and separate CUDA 13
   kernel-name tracing. The normal precision policy remains unchanged.
+- `fp64_emulation_benchmark.py`: scoped cuBLAS fixed-point FP64 comparisons using automatic
+  native-accuracy mantissa control. Final checks, recovery and forces remain native FP64.
 - `test_experiments.py`: CPU-only resource/protocol checks and opt-in CUDA kernel checks.
 
 Use physical GPU 1 only and at most four logical CPUs, including builds and tests. Run all
@@ -36,6 +38,11 @@ The fork's master and the older wheel share a version string but different code.
 import paths and source/native hashes; use `--require-gpu-source` when testing checkout code.
 Never use mismatched Python sources/native libraries or generalize results beyond measured cases.
 Run the focused Ruff and pytest commands in RUNNING.md; CUDA tests require the designated host.
+
+cuBLAS package versions differ from CUDA toolkit versions. Record the loaded library path/hash,
+package/API versions and emulation environment. An emulation request can dispatch to native
+GEMM; use separate kernel traces to distinguish selection from activation. Never enable global
+FP64 emulation or fixed mantissa overrides when claiming independent native verification.
 
 The numerical kernels now live in `gpu4pyscf/dft/_mixed_grid.py` and `_mixed_vv10.py`; benchmark
 adapters share them. Private source geometries, identifiers and results must stay outside Git.

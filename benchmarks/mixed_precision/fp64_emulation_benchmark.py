@@ -131,7 +131,12 @@ def main():
         'gpu': physical, 'cpu_affinity': sorted(os.sched_getaffinity(0)), 'threadpools': threadpool_info(),
         'versions': {name: version(name) for name in ('pyscf', 'gpu4pyscf-cuda13x', 'cupy-cuda13x', 'numpy', 'nvidia-cublas')},
         'cublas': {'path': paths[0], 'sha256': hashlib.sha256(Path(paths[0]).read_bytes()).hexdigest(),
-                   'api_version': cublas.getVersion(handle), 'settings': settings},
+                   'api_version': cublas.getVersion(handle), 'settings': settings,
+                   'environment': {name: os.environ.get(name) for name in (
+                       'CUBLAS_EMULATION_STRATEGY', 'CUBLAS_EMULATE_DOUBLE_PRECISION',
+                       'CUBLAS_FIXEDPOINT_EMULATION_MANTISSA_BIT_COUNT',
+                       'CUBLAS_EMULATION_SPECIAL_VALUES_SUPPORT_MASK', 'CUBLAS_WORKSPACE_CONFIG',
+                   )}},
         'numerical_provenance': _source_provenance(gpu4pyscf, numint.libgdft),
         'extension_hashes': load_extensions(args.extension_root),
         'benchmark_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),

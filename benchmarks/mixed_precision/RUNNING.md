@@ -100,6 +100,61 @@ in separate calls after matrix timing. Build `tensor_trace.cpp` against CUDA 13 
 headers and `libcupti.so.13`; the CUDA CRT headers must also be on the include path.
 Tracing does not measure hardware utilization and is excluded from all timing runs.
 
+## FP64 fixed-point emulation experiment
+
+`fp64_emulation_benchmark.py` compares the existing verified mixed policy with two
+opt-in requests for cuBLAS FP64 fixed-point emulation: `emulated-grid` covers the
+later float64 grid products, and `emulated-blas` also enables it on the main SCF
+thread's cuBLAS handle. Early FP32 grid products and mixed VV10 retain the existing
+schedule. Before final physical-Fock verification, the harness disables both
+emulation requests; verification, any recovery and analytic forces run natively.
+The ASE `auto` default does not enable this experiment.
+
+Use dynamic mantissa control with zero bit offset and the library's automatic
+maximum. Do not set `CUBLAS_EMULATE_DOUBLE_PRECISION` or
+`CUBLAS_FIXEDPOINT_EMULATION_MANTISSA_BIT_COUNT`: those global overrides would
+invalidate the independent native check. `performant` lets cuBLAS select emulation
+only when its heuristic expects a gain; `eager` requests it whenever possible.
+Either can still dispatch to native FP64. See NVIDIA's
+[emulation reference](https://docs.nvidia.com/cuda/cublas/#floating-point-emulation).
+
+Run outside the checkout using the same four-CPU, GPU 1 and sequential-execution
+constraints above. Each invocation requires a new report and artifact directory:
+
+```sh
+unset CUBLAS_EMULATE_DOUBLE_PRECISION CUBLAS_FIXEDPOINT_EMULATION_MANTISSA_BIT_COUNT
+CUBLAS_EMULATION_STRATEGY=performant taskset -c 4-7 python \
+  /absolute/path/to/gpu4pyscf/benchmarks/mixed_precision/fp64_emulation_benchmark.py \
+  --extension-root /absolute/path/to/gpu4pyscf --forces --repeats 3 \
+  --output /outside/checkout/fp64-automatic.json
+CUBLAS_EMULATION_STRATEGY=eager taskset -c 4-7 python \
+  /absolute/path/to/gpu4pyscf/benchmarks/mixed_precision/fp64_emulation_benchmark.py \
+  --extension-root /absolute/path/to/gpu4pyscf --forces --repeats 3 \
+  --output /outside/checkout/fp64-eager.json
+```
+
+The frozen cases and scientific settings match the TF32 experiment above. Three
+cyclically alternating benzene comparisons use fresh calculators and density
+guesses. The report includes loaded cuBLAS path/hash, package/API versions,
+mantissa settings, environment, extension/source hashes, native energy/force errors,
+SCF cycles and recoveries. Requested grid-call counts do not prove emulated dispatch.
+
+Matrix probes use six alternating batches of 20 products, include CPU submission,
+and check irregular dimensions plus non-unit scaling/accumulation. They retain
+FP64 inputs and outputs. Optional `--trace-library` records separate CUPTI calls
+after timing, as above. Those traces identify kernels, not whole-SCF utilization.
+
+For a private library comparison, install a pinned cuBLAS package into a new directory
+outside the environment, then prepend its `nvidia/cu13/lib` to `LD_LIBRARY_PATH`
+and its installation root to `PYTHONPATH` **before starting Python**. Preserve the
+original library paths and test this configuration separately. CUDA toolkit and
+cuBLAS package versions are different: the tested CUDA 13.4 Update 1 library is
+`nvidia-cublas==13.8.0.4`; `13.6.1.10` predates Ozaki-II. The
+[release notes](https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html)
+describe Ozaki-II selection on Ampere and newer GPUs and the newer workspace pool.
+Do not replace shared runtime libraries or interpret a package upgrade as a whole
+fork/native build validation.
+
 ## Kernel checks
 
 CPU-only resource/protocol tests do not require GPU libraries:
