@@ -302,11 +302,12 @@ Completed size comparisons, in seconds:
 | --- | ---: | --- | ---: | ---: | ---: | ---: |
 | Naphthalene, C10H8 | 442 | 13.1.1.3 | 80.0077 | 27.5954 | 30.5523 | 37.5867 |
 | Naphthalene, C10H8 | 442 | 13.8.0.4 | 81.1440 | 27.5676 | 30.6855 | 40.8705 |
+| Pyrene, C16H10 | 682 | 13.1.1.3 | 188.9984 | 71.4960 | 75.9034 | 89.5331 |
 | Pyrene, C16H10 | 682 | 13.8.0.4 | 188.9207 | 71.2234 | 75.4702 | 87.6566 |
 
 For naphthalene, grid emulation increases SCF time by 10.7–11.3%, while broader
-main-handle coverage increases it by 36.2–48.3%. With the newer library, pyrene's
-increases are 6.0% and 23.1%. The smaller overhead at 682 orbitals does not yet
+main-handle coverage increases it by 36.2–48.3%. Pyrene's increases are 6.0–6.2%
+and 23.1–25.2%. The smaller overhead at 682 orbitals does not yet
 establish a speedup. These completed runs retain all basis orbitals and ten SCF
 iterations. Naphthalene energy errors are below `7e-13` Hartree and force-component
 errors below `1.7e-5` eV/Angstrom, without recovery.
