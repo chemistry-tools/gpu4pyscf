@@ -135,3 +135,21 @@ SCF and kernel timing used the pinned CUDA 13 runtime described above; force/lif
 additionally used ASE 3.27.0. Only the new precision/ASE Python modules were explicitly loaded
 over the matching installed 1.8.1 release. This does not verify a full native build of current
 master. Raw reports, source hashes, scripts and startup-failure logs remain outside Git.
+
+## ASE property reuse
+
+The `optimisation-v1` branch combines the verified mixed-precision path and grid
+scratch/accumulation improvements above with reuse of accepted SCF state for
+energy-then-force requests at unchanged atoms. That request pattern now makes one
+SCF call, rather than two. No end-to-end timing ratio is claimed for this change.
+The [ASE guide](ASE.md) describes invalidation and per-call timing.
+
+On 2026-10-12, the consolidated branch passed 89 focused checks, including CUDA
+contractions, neutral/open-shell water energy and force comparisons, warm geometry
+changes, and a central finite-difference force check. The selected CI lint rules
+also passed. Tests ran sequentially on GPU 1 with affinity `[4,5,6,7]` and four
+numerical threads, using PySCF 2.14.0, ASE 3.27.0, CuPy 14.2.0 and the pinned
+GPU4PySCF 1.8.1 CUDA 13 wheel. Only the new precision and ASE modules were loaded
+from the branch; this remains installed-release compatibility testing rather than
+verification of a full native checkout build. All inputs were synthetic, and
+source hashes and logs are retained outside Git.

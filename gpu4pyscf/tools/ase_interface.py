@@ -13,7 +13,7 @@
 # limitations under the License.
 
 try:
-    from ase.calculators.calculator import Calculator, all_properties
+    from ase.calculators.calculator import Calculator, all_properties, compare_atoms
 except ImportError:
     print("""ASE is not found. Please install ASE via
 pip3 install ase
@@ -154,6 +154,7 @@ class PySCF(Calculator):
         self.precision_info = None
         self.calculation_info = None
         self.hessian_info = None
+        self._scf_state = None
         self.pbc = hasattr(method, 'cell')
         self.mesh = None
         if self.pbc:
@@ -184,40 +185,65 @@ class PySCF(Calculator):
         self.precision_info = None
         self.calculation_info = None
         self.hessian_info = None
+        self._scf_state = None
+
+    def _can_reuse_scf(self, atoms, base_method, system_changes):
+        if system_changes or self._scf_state is None or 'energy' not in self.results:
+            return False
+        previous_atoms, previous_method, energy = self._scf_state
+        return (
+            base_method is previous_method
+            and bool(getattr(base_method, 'converged', False))
+            and self.results['energy'] == energy
+            and getattr(base_method, 'e_tot', None) is not None
+            and base_method.e_tot * HARTREE2EV == energy
+            and (self.precision_info is None or self.precision_info.get('accepted', False))
+            and not compare_atoms(previous_atoms, atoms)
+        )
 
     def calculate(self, atoms=None, properties=['energy'],
                   system_changes=all_properties):
+        atoms = self.atoms if atoms is None else atoms
+        base_method = self.method if self.method_scan is None else self.method_scan
+        reuse_scf = self._can_reuse_scf(atoms, base_method, system_changes)
+        previous_info = self.calculation_info
+        # Do not retain reusable electronic state after a failed property evaluation.
+        self._scf_state = None
         Calculator.calculate(self, atoms)
         atoms = self.atoms
-        self.results.clear()
+        if not reuse_scf:
+            self.results.clear()
+        else:
+            for name in properties:
+                if name != 'energy':
+                    self.results.pop(name, None)
         self.hessian_info = None
         started = time.perf_counter()
-        self.calculation_info = {}
+        self.calculation_info = {'scf_reused': bool(reuse_scf)}
+        if reuse_scf:
+            self.calculation_info.update(precision=previous_info['precision'], scf_seconds=0.0)
 
-        positions = atoms.get_positions()
-        atomic_numbers = atoms.get_atomic_numbers()
-        Z = np.array([charge(x) for x in self.mol.elements])
-        if len(Z) == len(atomic_numbers) and all(Z == atomic_numbers):
-            _atoms = positions
-        else:
-            _atoms = list(zip(atomic_numbers, positions))
+        if not reuse_scf:
+            positions = atoms.get_positions()
+            atomic_numbers = atoms.get_atomic_numbers()
+            Z = np.array([charge(x) for x in self.mol.elements])
+            if len(Z) == len(atomic_numbers) and all(Z == atomic_numbers):
+                _atoms = positions
+            else:
+                _atoms = list(zip(atomic_numbers, positions))
 
-        if self.pbc:
-            self.mol.set_geom_(_atoms, a=np.asarray(atoms.cell), unit='Angstrom')
-        else:
-            self.mol.set_geom_(_atoms, unit='Angstrom')
-        if self.pbc:
-            from gpu4pyscf.pbc.tools.discretization import freeze_mesh
-            base_method = self.method
-            if self.method_scan is not None:
-                base_method = self.method_scan
-            freeze_mesh(base_method, self.mol, self.mesh)
+            if self.pbc:
+                self.mol.set_geom_(_atoms, a=np.asarray(atoms.cell), unit='Angstrom')
+            else:
+                self.mol.set_geom_(_atoms, unit='Angstrom')
+            if self.pbc:
+                from gpu4pyscf.pbc.tools.discretization import freeze_mesh
+                freeze_mesh(base_method, self.mol, self.mesh)
 
         with_grad = 'forces' in properties or 'stress' in properties
         with_energy = with_grad or 'energy' in properties or 'dipole' in properties
 
-        if with_energy:
-            base_method = self.method if self.method_scan is None else self.method_scan
+        if with_energy and not reuse_scf:
             self.precision_info = None
             scf_started = time.perf_counter()
 
@@ -244,11 +270,6 @@ class PySCF(Calculator):
                 raise RuntimeError(f'{base_method} not converged')
             self.results['energy'] = e_tot * HARTREE2EV
             self.calculation_info['scf_seconds'] = time.perf_counter() - scf_started
-
-        if self.method_scan is None:
-            base_method = self.method
-        else:
-            base_method = self.method_scan
 
         if with_grad:
             grad_obj = base_method.Gradients()
@@ -284,6 +305,10 @@ class PySCF(Calculator):
             self.results['magmom'] = magmom
 
         self.calculation_info['total_seconds'] = time.perf_counter() - started
+        if (with_energy or reuse_scf) and bool(getattr(base_method, 'converged', False)):
+            energy = self.results['energy']
+            if np.isfinite(energy):
+                self._scf_state = (atoms.copy(), base_method, energy)
 
     def get_hessian(self, atoms=None, auxbasis_response=2):
         """Return an analytic molecular Cartesian Hessian in eV/Angstrom squared.
@@ -307,6 +332,7 @@ class PySCF(Calculator):
         self.hessian_info = None
         started = time.perf_counter()
         # Reconvergence can change the density; old derivative caches are invalid.
+        self._scf_state = None
         self.results.clear()
         base.kernel(dm0=base.make_rdm1())
         if not base.converged:

@@ -70,6 +70,10 @@ precision schedule and the scanner reuses the last density. SCF fallback retains
 optimizer's geometry and history. Energies are in eV and NumPy forces in eV/Angstrom.
 Optional gradient response controls retain native defaults when omitted.
 
+An energy request followed by forces at unchanged atoms reuses the accepted SCF
+state. The [ASE guide](../benchmarks/mixed_precision/ASE.md) describes invalidation
+and the per-call timing report.
+
 `get_hessian()` reconverges the current density with native float64 SCF before the
 analytic molecular Hessian. It returns a symmetric `(3N, 3N)` NumPy array in
 eV/Angstrom² and invalidates force caches after reconvergence. Full auxiliary-basis

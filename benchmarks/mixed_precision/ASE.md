@@ -36,6 +36,14 @@ or Hessians run. `grid_response` and `auxbasis_response` are optional explicit g
 `calc.calculation_info` separates SCF and force timing. `calc.set(precision="float64")` clears
 cached ASE results before the next calculation.
 
+An energy-only request followed by forces at unchanged atoms reuses the accepted
+SCF state and its precision verification; derivatives still use native float64.
+`calc.calculation_info['scf_reused']` reports this reuse, with `scf_seconds=0` for
+that property call. Changed atoms, calculator settings, resets, failed calculations
+and explicit `calc.calculate()` calls invalidate reuse. Call `calc.reset()` after
+changing the underlying PySCF method directly; such changes are outside ASE's
+property-cache tracking.
+
 `calc.get_hessian()` explicitly reconverges native float64 SCF and runs the analytic molecular
 Hessian with full auxiliary response by default. It returns a symmetric Cartesian NumPy matrix,
 invalidates force caches after reconvergence and records the reference and timing in

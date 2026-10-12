@@ -238,6 +238,122 @@ def test_ase_geometry_changes_verify_each_scf_and_cache_properties(ase_calculato
     assert mf.scans == 3 and atoms.calc.precision_info is None
 
 
+@pytest.mark.parametrize('policy', ['auto', 'mixed', 'float64'])
+def test_ase_energy_then_forces_reuses_accepted_scf(ase_calculator, policy):
+    from ase import Atoms
+
+    calculator, method_type = ase_calculator
+    mf = method_type()
+    atoms = Atoms('H2', positions=[[0, 0, 0], [0, 0, 0.74]])
+    atoms.calc = calculator(method=mf, precision=policy, grid_response=True, auxbasis_response=True)
+    energy = atoms.get_potential_energy()
+    info = atoms.calc.precision_info
+    assert mf.scans == 1 and not atoms.calc.calculation_info['scf_reused']
+    forces = atoms.get_forces()
+    assert mf.scans == 1 and mf.gradient_flags == [(True, True)]
+    assert atoms.calc.precision_info is info
+    assert atoms.calc.calculation_info['scf_reused']
+    assert atoms.calc.calculation_info['scf_seconds'] == 0.0
+    assert atoms.get_potential_energy() == energy
+    np.testing.assert_array_equal(atoms.get_forces(), forces)
+    assert mf.scans == 1 and len(mf.gradient_flags) == 1
+
+
+@pytest.mark.parametrize('change', ['precision', 'grid_response', 'auxbasis_response', 'reset'])
+def test_ase_settings_and_reset_invalidate_energy_only_state(ase_calculator, change):
+    from ase import Atoms
+
+    calculator, method_type = ase_calculator
+    mf = method_type()
+    atoms = Atoms('H2', positions=[[0, 0, 0], [0, 0, 0.74]])
+    atoms.calc = calculator(method=mf, precision='mixed', grid_response=True, auxbasis_response=True)
+    atoms.get_potential_energy()
+    if change == 'reset':
+        atoms.calc.reset()
+    else:
+        atoms.calc.set(**{change: 'float64' if change == 'precision' else False})
+    atoms.get_forces()
+    assert mf.scans == 2 and not atoms.calc.calculation_info['scf_reused']
+    assert mf.gradient_flags == [(change != 'grid_response', change != 'auxbasis_response')]
+
+
+@pytest.mark.parametrize('change', ['positions', 'numbers', 'cell', 'initial_charges', 'initial_magmoms'])
+def test_ase_changed_atoms_cannot_reuse_energy_only_state(ase_calculator, change):
+    from ase import Atoms
+
+    calculator, method_type = ase_calculator
+    mf = method_type()
+    atoms = Atoms('H2', positions=[[0, 0, 0], [0, 0, 0.74]])
+    atoms.calc = calculator(method=mf, precision='mixed')
+    atoms.get_potential_energy()
+    if change == 'positions':
+        atoms.positions[1, 2] += 0.01
+    elif change == 'numbers':
+        atoms.set_atomic_numbers([2, 2])
+    elif change == 'cell':
+        atoms.set_cell([5, 5, 5])
+    elif change == 'initial_charges':
+        atoms.set_initial_charges([0.1, -0.1])
+    else:
+        atoms.set_initial_magnetic_moments([1, -1])
+    # Compare the saved atoms even if a direct caller incorrectly reports no changes.
+    atoms.calc.calculate(atoms, properties=['forces'], system_changes=[])
+    assert mf.scans == 2 and not atoms.calc.calculation_info['scf_reused']
+
+
+@pytest.mark.parametrize('change', ['convergence', 'energy', 'scanner'])
+def test_ase_changed_electronic_state_is_not_reused(ase_calculator, change):
+    from ase import Atoms
+
+    calculator, method_type = ase_calculator
+    mf = method_type()
+    atoms = Atoms('H2', positions=[[0, 0, 0], [0, 0, 0.74]])
+    atoms.calc = calculator(method=mf, precision='mixed')
+    atoms.get_potential_energy()
+    if change == 'convergence':
+        mf.converged = False
+    elif change == 'energy':
+        mf.e_tot -= 0.1
+    else:
+        mf = atoms.calc.method_scan = method_type()
+    previous_scans = mf.scans
+    atoms.get_forces()
+    assert mf.scans == previous_scans + 1 and not atoms.calc.calculation_info['scf_reused']
+
+
+def test_ase_explicit_recalculation_does_not_reuse_scf(ase_calculator):
+    from ase import Atoms
+
+    calculator, method_type = ase_calculator
+    mf = method_type()
+    atoms = Atoms('H2', positions=[[0, 0, 0], [0, 0, 0.74]])
+    atoms.calc = calculator(method=mf, precision='mixed')
+    atoms.get_potential_energy()
+    atoms.calc.calculate(properties=['forces'])
+    assert mf.scans == 2 and not atoms.calc.calculation_info['scf_reused']
+
+
+def test_ase_failed_force_evaluation_invalidates_reuse_and_old_forces(ase_calculator, monkeypatch):
+    from ase import Atoms
+
+    calculator, method_type = ase_calculator
+    mf = method_type()
+    atoms = Atoms('H2', positions=[[0, 0, 0], [0, 0, 0.74]])
+    atoms.calc = calculator(method=mf, precision='mixed')
+    atoms.get_forces()
+
+    def fail():
+        raise RuntimeError('Gradient failed')
+
+    with monkeypatch.context() as patch:
+        patch.setattr(mf, 'Gradients', lambda: SimpleNamespace(kernel=fail))
+        with pytest.raises(RuntimeError, match='Gradient failed'):
+            atoms.calc.calculate(properties=['forces'], system_changes=[])
+    assert 'forces' not in atoms.calc.results and mf.scans == 1
+    atoms.get_forces()
+    assert mf.scans == 2 and not atoms.calc.calculation_info['scf_reused']
+
+
 def test_ase_rejects_unknown_precision_and_response_types(ase_calculator):
     calculator, method_type = ase_calculator
     with pytest.raises(ValueError, match='precision'):
@@ -335,6 +451,31 @@ def test_ase_hessian_reference_failure_stops_without_cached_results(ase_calculat
     assert atoms.calc.results == {} and atoms.calc.hessian_info is None
 
 
+def test_ase_hessian_reconvergence_invalidates_same_energy_scf_state(ase_calculator, monkeypatch):
+    from ase import Atoms
+
+    calculator, method_type = ase_calculator
+    mf = method_type()
+    atoms = Atoms('H2', positions=[[0, 0, 0], [0, 0, 0.74]])
+    atoms.calc = calculator(method=mf, precision='mixed')
+    energy = atoms.get_potential_energy()
+    verification = atoms.calc.precision_info
+
+    def kernel(dm0):
+        mf.converged = True
+        return mf.e_tot
+
+    with monkeypatch.context() as patch:
+        patch.setattr(mf, 'kernel', kernel)
+        patch.setattr(mf, 'Hessian', lambda: SimpleNamespace(
+            auxbasis_response=0, kernel=lambda: np.zeros((2, 2, 3, 3))), raising=False)
+        atoms.calc.get_hessian()
+    assert atoms.get_potential_energy() == energy and mf.scans == 1
+    atoms.get_forces()
+    assert mf.scans == 2 and atoms.calc.precision_info is not verification
+    assert not atoms.calc.calculation_info['scf_reused']
+
+
 def test_initial_density_is_passed_to_native_scf(precision, monkeypatch):
     module, _, _ = precision
     mf = _MeanField()
@@ -380,6 +521,11 @@ def test_ase_failed_verification_retains_diagnostics_without_stale_results(ase_c
         atoms.calc.calculate(properties=['forces'])
     assert atoms.calc.results == {}
     assert not atoms.calc.precision_info['accepted']
+    scans = atoms.calc.method_scan.scans
+    monkeypatch.setattr(module, '_full_check', lambda *args: _check(True))
+    atoms.get_forces()
+    assert atoms.calc.method_scan.scans == scans + 1
+    assert atoms.calc.precision_info['accepted'] and not atoms.calc.calculation_info['scf_reused']
 
 
 def test_ase_defaults_to_verified_mixed_for_supported_gpu_dft(ase_calculator):

@@ -45,9 +45,16 @@ def test_ase_energy_force_and_warm_geometry_agreement(charge):
     for displacement in (0.0, 0.015):
         baseline.positions[1, 0] += displacement
         mixed.positions[:] = baseline.positions
+        reference_energy = baseline.get_potential_energy()
+        energy = mixed.get_potential_energy()
+        verified = mixed.calc.precision_info
         reference_forces = baseline.get_forces()
         forces = mixed.get_forces()
-        assert abs(mixed.get_potential_energy() - baseline.get_potential_energy()) < 1e-7
+        assert abs(energy - reference_energy) < 1e-7
+        assert mixed.get_potential_energy() == energy and baseline.get_potential_energy() == reference_energy
+        assert baseline.calc.calculation_info['scf_reused'] and mixed.calc.calculation_info['scf_reused']
+        assert baseline.calc.calculation_info['scf_seconds'] == mixed.calc.calculation_info['scf_seconds'] == 0.0
+        assert mixed.calc.precision_info is verified
         np.testing.assert_allclose(forces, reference_forces, atol=1e-5, rtol=0)
         assert isinstance(forces, np.ndarray)
         assert mixed.calc.precision_info['accepted']
