@@ -75,6 +75,7 @@ def main():
     parser.add_argument('--mode', choices=('micro', 'scf', 'all'), default='all')
     parser.add_argument('--forces', action='store_true')
     parser.add_argument('--trace-library', type=Path)
+    parser.add_argument('--cublas-library', type=Path, help='Require this exact loaded cuBLAS library')
     args = parser.parse_args()
     artifact = args.output.with_suffix('')
     if args.repeats < 1 or args.output.exists() or artifact.exists():
@@ -110,8 +111,15 @@ def main():
                     if 'libcublas.so.' in line})
     if len(paths) != 1:
         raise RuntimeError('Cannot identify the loaded cuBLAS library')
+    if args.cublas_library is not None and Path(paths[0]).resolve() != args.cublas_library.resolve():
+        raise RuntimeError(f'Loaded cuBLAS {paths[0]} differs from required {args.cublas_library}')
     library = ctypes.CDLL(paths[0])
     handle = cp.cuda.device.get_cublas_handle()
+    api_version = cublas.getVersion(handle)
+    package_version = version('nvidia-cublas')
+    major, minor, patch = [int(part) for part in package_version.split('.')[:3]]
+    if api_version != major * 10000 + minor * 100 + patch:
+        raise RuntimeError(f'Loaded cuBLAS API {api_version} differs from package {package_version}')
     settings = {}
     for name in ('cublasGetEmulationStrategy', 'cublasGetFixedPointEmulationMantissaControl',
                  'cublasGetFixedPointEmulationMaxMantissaBitCount', 'cublasGetFixedPointEmulationMantissaBitOffset'):
@@ -131,7 +139,7 @@ def main():
         'gpu': physical, 'cpu_affinity': sorted(os.sched_getaffinity(0)), 'threadpools': threadpool_info(),
         'versions': {name: version(name) for name in ('pyscf', 'gpu4pyscf-cuda13x', 'cupy-cuda13x', 'numpy', 'nvidia-cublas')},
         'cublas': {'path': paths[0], 'sha256': hashlib.sha256(Path(paths[0]).read_bytes()).hexdigest(),
-                   'api_version': cublas.getVersion(handle), 'settings': settings,
+                   'api_version': api_version, 'settings': settings,
                    'environment': {name: os.environ.get(name) for name in (
                        'CUBLAS_EMULATION_STRATEGY', 'CUBLAS_EMULATE_DOUBLE_PRECISION',
                        'CUBLAS_FIXEDPOINT_EMULATION_MANTISSA_BIT_COUNT',

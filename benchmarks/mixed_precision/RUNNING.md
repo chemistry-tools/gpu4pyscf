@@ -145,11 +145,30 @@ FP64 inputs and outputs. Optional `--trace-library` records separate CUPTI calls
 after timing, as above. Those traces identify kernels, not whole-SCF utilization.
 
 For a private library comparison, install a pinned cuBLAS package into a new directory
-outside the environment, then prepend its `nvidia/cu13/lib` to `LD_LIBRARY_PATH`
-and its installation root to `PYTHONPATH` **before starting Python**. Preserve the
-original library paths and test this configuration separately. CUDA toolkit and
-cuBLAS package versions are different: the tested CUDA 13.4 Update 1 library is
-`nvidia-cublas==13.8.0.4`; `13.6.1.10` predates Ozaki-II. The
+outside the environment and preserve the original library paths. CuPy 14.2 uses
+cuda-pathfinder, which prioritizes installed wheels over `LD_LIBRARY_PATH` and does
+not use `PYTHONPATH` to find these libraries. Explicitly preload **both** private
+cuBLAS libraries before Python starts, then require the expected loaded path:
+
+```sh
+dft_cublas_root=/outside/checkout/cublas138
+taskset -c 4-7 python -m pip install --only-binary=:all: --no-deps \
+  --target "$dft_cublas_root" nvidia-cublas==13.8.0.4
+export PYTHONPATH="$dft_cublas_root${PYTHONPATH:+:$PYTHONPATH}"
+export LD_LIBRARY_PATH="$dft_cublas_root/nvidia/cu13/lib:$LD_LIBRARY_PATH"
+export LD_PRELOAD="$dft_cublas_root/nvidia/cu13/lib/libcublasLt.so.13:$dft_cublas_root/nvidia/cu13/lib/libcublas.so.13${LD_PRELOAD:+:$LD_PRELOAD}"
+CUBLAS_EMULATION_STRATEGY=eager taskset -c 4-7 python \
+  /absolute/path/to/gpu4pyscf/benchmarks/mixed_precision/fp64_emulation_benchmark.py \
+  --extension-root /absolute/path/to/gpu4pyscf --forces --repeats 3 \
+  --cublas-library "$dft_cublas_root/nvidia/cu13/lib/libcublas.so.13" \
+  --output /outside/checkout/fp64-cublas138-eager.json
+```
+
+The harness rejects loaded API/package version mismatches before numerical runs,
+and rejects a path mismatch when `--cublas-library` is supplied. Test this
+configuration separately. CUDA toolkit and cuBLAS package versions are different:
+the tested CUDA 13.4 Update 1 library is `nvidia-cublas==13.8.0.4`;
+`13.6.1.10` predates Ozaki-II. The
 [release notes](https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html)
 describe Ozaki-II selection on Ampere and newer GPUs and the newer workspace pool.
 Do not replace shared runtime libraries or interpret a package upgrade as a whole
