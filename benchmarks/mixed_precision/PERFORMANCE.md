@@ -304,16 +304,22 @@ Completed size comparisons, in seconds:
 | Naphthalene, C10H8 | 442 | 13.8.0.4 | 81.1440 | 27.5676 | 30.6855 | 40.8705 |
 | Pyrene, C16H10 | 682 | 13.1.1.3 | 188.9984 | 71.4960 | 75.9034 | 89.5331 |
 | Pyrene, C16H10 | 682 | 13.8.0.4 | 188.9207 | 71.2234 | 75.4702 | 87.6566 |
+| Coronene, C24H12 | 996 | 13.1.1.3 | 422.8105 | 201.1731 | 205.6005 | 216.7567 |
 
 For naphthalene, grid emulation increases SCF time by 10.7–11.3%, while broader
 main-handle coverage increases it by 36.2–48.3%. Pyrene's increases are 6.0–6.2%
-and 23.1–25.2%. The smaller overhead at 682 orbitals does not yet
-establish a speedup. These completed runs retain all basis orbitals and ten SCF
-iterations. Naphthalene energy errors are below `7e-13` Hartree and force-component
+and 23.1–25.2%. Installed-library coronene increases are 2.2% and 7.7%,
+respectively; its existing mixed path is 2.10× faster than the single native
+reference. None of these completed comparisons establishes an emulation speedup.
+All basis orbitals are retained. Naphthalene and pyrene take ten SCF iterations;
+coronene takes ten natively and eleven in every mixed/emulated repeat.
+Naphthalene energy errors are below `7e-13` Hartree and force-component
 errors below `1.7e-5` eV/Angstrom, without recovery.
 The completed pyrene comparison has energy errors below `7.9e-10` Hartree and
 force-component errors below `1.93e-4` eV/Angstrom, within the original comparison
-thresholds. This is fixed-geometry energy/force coverage, not Hessian or TS validation.
+thresholds. Installed-library coronene energy errors are below `2.3e-10` Hartree
+and force-component errors below `7.8e-5` eV/Angstrom, without recovery.
+This is fixed-geometry energy/force coverage, not Hessian or TS validation.
 
 The observed full/range-separated density-fitting buffers for naphthalene and
 pyrene remain on the GPU. Pyrene stores approximately 3.32 GiB across the two
@@ -323,7 +329,11 @@ as a three-run optimizer/workflow measurement. The initial 13.1 naphthalene
 placement formatter did not handle array lists; its zero-byte storage fields are
 unavailable, not evidence of zero use. Its numerical/timing results are unaffected,
 and the original snapshot plus an explicit reporting note are retained. Later
-reports use the corrected formatter.
+reports use the corrected formatter. Coronene keeps 6.67 GiB of full-range
+density-fitting buffers on the GPU and 2.88 GiB of range-separated buffers in
+CPU-backed storage. Its native first-repeat force calls take approximately
+140.3 seconds in all variants. This case therefore also exercises the native
+memory-placement path when both caches and working memory cannot fit on the card.
 
 Raw reports and logs remain outside Git. Library selection is checked against the
 loaded path, API and package metadata; the shared environment is unchanged.
