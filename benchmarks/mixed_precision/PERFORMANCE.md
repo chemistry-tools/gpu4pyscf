@@ -199,6 +199,62 @@ A full native build of the fork's later master changes remains unverified. Raw r
 fields, source snapshots and logs are retained outside Git. The benchmarked gradient source
 SHA256 is `7450bda807002d78cfa14f8d7737c24003521aca021d910998a42442d9d65328`.
 
+## Fused float64 VV10 pair response
+
+The full-response gradient computes U/W/E and the explicit coordinate derivative in one
+float64 pair traversal. It retains the native pair expressions and accumulation order for
+U/W/E. Antisymmetry of the weighted coordinate pair derivative combines the two atom
+contributions, followed by a deterministic atom reduction without floating-point atomics.
+The CuPy/NVRTC kernel is cached per device; no input fields or forces are cached.
+
+Frozen fields from the synthetic force profiles above were compared with both original native
+pair calls and their final atom-by-grid reduction. These are three-call wall-time medians,
+including allocation/reduction, after compilation, with all calculations sequential on GPU 1
+and four CPUs:
+
+| Molecule | Active points | Native pairs + reduction, s | Fused, s | Speedup |
+| --- | ---: | ---: | ---: | ---: |
+| Pyrene | 283,670 | 18.1755 | 12.5266 | 1.451× |
+| Coronene | 393,810 | 35.7813 | 24.7116 | 1.448× |
+
+All captured U/W/E fields matched bit for bit. Maximum coordinate-response differences were
+`1.02e-16`/`1.83e-16` Hartree/Bohr. The response intermediate shrank from 168.81/324.49 MiB
+to 6.49/9.01 MiB, respectively. Testing 64/128/256-thread tiles showed no clear benefit over
+128 threads; that remains the default. These pair timings alone are not whole-gradient gains.
+
+Three alternating complete-gradient calls then compared the validated density-first path
+with that same path plus fused VV10. Each pair shared one accepted density, with identical
+geometry, full basis, grid levels, response terms and reconstructed DF buffers:
+
+| Molecule | Density-first, s | Plus fused VV10, s | Speedup | Additional force reduction |
+| --- | ---: | ---: | ---: | ---: |
+| Pyrene | 49.3816 | 43.6452 | 1.131× | 11.6% |
+| Coronene | 110.0534 | 98.9623 | 1.112× | 10.1% |
+
+Pyrene baseline samples were 49.4736, 49.3816 and 49.3607 seconds; fused samples were 43.6536,
+43.6452 and 43.6397 seconds. Coronene baseline samples were 109.8401, 110.0594 and 110.0534
+seconds; fused samples were 98.6789, 99.0123 and 98.9623 seconds. Maximum differences from
+the first baseline gradient were `4.27e-12`/`2.94e-13` Hartree/Bohr, including baseline repeat
+variation. The larger difference is about `2.20e-10` eV/Å. Native SCF verification passed
+without fallback, and all 682/996 basis functions were retained.
+
+The single shared SCF runs took 72.5729/202.4917 seconds. Adding those to the gradient medians
+gives estimated additional energy-plus-force reductions of 4.7%/3.5%. Relative to the original
+force medians reported above, both changes together reduce forces by approximately 30%; those
+original and current medians come from separate benchmark batches under the same protocol.
+These sums do not establish fresh whole-workflow timing medians.
+
+All 112 focused checks passed, plus three ASE checks with fused VV10 active. Coverage includes
+native U/W/E and coordinate-response comparisons, independently differentiated pair energies,
+full neutral/open-shell forces and energy finite differences, partial tiles, signed/zero weights,
+empty atom groups, independent CUDA streams, SCF reuse and geometry changes. Core Ruff and
+GitHub checks passed. Only the reviewed gradient sites were adapted into the matching installed
+release; remaining numerical Python/native code was retained. The new CuPy kernel itself was
+compiled and tested directly from its production source. A complete native rebuild of the
+broader fork remains unverified. Validation datasets were held out, and raw snapshots, fields,
+reports and logs remain outside Git. The new kernel module SHA256 is
+`bea0d52af4cbfb3053a8a36efc42afbd4467e49ce44f6e898546b94ff07ab62a`.
+
 ## ASE property reuse
 
 The `optimisation-v1` branch combines the verified mixed-precision path and grid
