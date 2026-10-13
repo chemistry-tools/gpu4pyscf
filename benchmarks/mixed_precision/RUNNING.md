@@ -191,8 +191,9 @@ Cartesian/spherical hybrid forces and independent finite-difference energies.
 ## Symmetric float64 tau products
 
 The native integrator uses signed symmetric rank updates for identical real float64 AO
-fields with more than 512 active orbitals. Small, distinct, complex, noncontiguous or
-nonfinite inputs retain the general bilinear product. Early mixed SCF retains its original
+fields with more than 512 active orbitals. Eligible medium blocks use the direct triangular
+path below; distinct, complex, noncontiguous or nonfinite inputs retain the general bilinear
+product. Early mixed SCF retains its original
 float32 products; final verification and recovery use the float64 path.
 Native RKS/UKS tasks reserve one bounded stack workspace. Standalone callers release a
 direct CUDA allocation instead of caching differently sized large buffers. Finite checks
@@ -213,15 +214,38 @@ the shared lock; alternate the two modes between repeats:
 ```sh
 taskset -c 4-7 /tmp/gpu4pyscf-native-env/bin/python \
   /absolute/path/to/gpu4pyscf/benchmarks/mixed_precision/native_tau_benchmark.py \
-  --case ethyl-4-acetamidobenzoate --tau baseline \
+  --case ethyl-4-acetamidobenzoate --tau baseline --triangle baseline \
   --require-gpu-source /tmp/gpu4pyscf-native-env/lib/python3.12/site-packages/gpu4pyscf \
   --output /tmp/organic-tau-baseline.json
 taskset -c 4-7 /tmp/gpu4pyscf-native-env/bin/python \
   /absolute/path/to/gpu4pyscf/benchmarks/mixed_precision/native_tau_benchmark.py \
-  --case ethyl-4-acetamidobenzoate --tau symmetric \
+  --case ethyl-4-acetamidobenzoate --tau symmetric --triangle baseline \
   --require-gpu-source /tmp/gpu4pyscf-native-env/lib/python3.12/site-packages/gpu4pyscf \
   --output /tmp/organic-tau-symmetric.json
 ```
 
 Whole-workflow timing includes fresh SCF and one complete force evaluation. Grid-only
 measurements do not establish a whole-workflow speedup. Validation datasets remain held out.
+
+## Direct medium-sized float64 tau products
+
+`_tau_triangle.py` evaluates one matrix triangle directly with signed float64 weighted
+products and mirrors its result. Shared-memory tiles replace the three full products
+without splitting positive/negative weights or allocating stacked AO fields. Native
+dispatch selects it only on compute capability 8.6 within the measured orbital/grid
+range defined in that module. Compatibility, finite-field and output-alias guards
+preserve the original fallbacks. Early float32 SCF products keep their existing dispatch.
+
+Run `test_tau_triangle.py` with the opt-in native checks. It includes partially filled
+tiles, signed/zero weights, range and architecture guards, aliased outputs, independent
+CUDA streams and unchanged early float32 products. Its complete organic and open-shell
+checks explicitly exercise the kernel below the production size guard, compare full
+forces, and check energy finite differences at stricter correctness-only tolerances.
+
+For fresh ASE comparisons against the preceding optimized engine, keep `--tau symmetric`
+in both runs and alternate `--triangle baseline` with `--triangle native`. The default
+is `native`; reports record both settings and all eligible triangle calls. The baseline
+switch affects only this direct medium-block path in the benchmark process. A case can
+legitimately have no eligible triangle blocks, so inspect the recorded coverage before
+attributing a timing change to the kernel. The full native package, four-CPU limits and
+shared sequential lock are required as above.

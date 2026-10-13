@@ -7,6 +7,7 @@ on:
       - 'gpu4pyscf/dft/*mixed*py'
       - 'gpu4pyscf/dft/_vv10_grad.py'
       - 'gpu4pyscf/dft/_tau_syrk.py'
+      - 'gpu4pyscf/dft/_tau_triangle.py'
       - 'gpu4pyscf/dft/numint.py'
       - 'gpu4pyscf/grad/rks.py'
       - 'gpu4pyscf/tools/ase_interface.py'
@@ -17,6 +18,7 @@ on:
       - 'gpu4pyscf/dft/*mixed*py'
       - 'gpu4pyscf/dft/_vv10_grad.py'
       - 'gpu4pyscf/dft/_tau_syrk.py'
+      - 'gpu4pyscf/dft/_tau_triangle.py'
       - 'gpu4pyscf/dft/numint.py'
       - 'gpu4pyscf/grad/rks.py'
       - 'gpu4pyscf/tools/ase_interface.py'
@@ -49,6 +51,7 @@ jobs:
           ruff check --config .ruff.toml --select E4,E7,E9,F,I
           gpu4pyscf/dft/mixed_precision.py gpu4pyscf/dft/_mixed_grid.py
           gpu4pyscf/dft/_mixed_vv10.py gpu4pyscf/dft/_vv10_grad.py gpu4pyscf/dft/_tau_syrk.py
+          gpu4pyscf/dft/_tau_triangle.py
           gpu4pyscf/tools/ase_interface.py
           benchmarks/mixed_precision examples/dft/12-mixed_precision_ase.py
       - name: Test defaults, verification, recovery and calculator state without CUDA

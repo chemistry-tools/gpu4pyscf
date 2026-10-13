@@ -44,8 +44,12 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
 - `native_tau_benchmark.py`, `_organic_cases.py`: fresh ASE energy/force comparisons at the
   pinned recipe; generic mixed-atom organics and a fixed larger organic geometry.
 
-Use physical GPU 1 only and at most four logical CPUs, including builds and tests. Run all
-computational jobs sequentially. Keep benchmark outputs and environments outside the checkout;
+Use physical GPU 1 and at most four logical CPUs for direct performance comparisons,
+including builds. Run timed comparisons sequentially under the shared benchmark lock.
+Independent correctness checks may use the other host GPUs, with four separate logical
+CPUs per GPU and no competing workload on the selected device. Finish those checks before
+timed comparisons so host contention does not affect their results.
+Keep benchmark outputs and environments outside the checkout;
 never overwrite or delete earlier evidence. Preserve unrelated branches and working-tree changes.
 
 Keep validation datasets held out from tuning and implementation decisions. Designated development
