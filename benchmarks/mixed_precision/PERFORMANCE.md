@@ -557,3 +557,68 @@ provenance remain outside Git under the 20261013 performance artifacts: `native-
 `native-tau-memory-checks-19`, `native-tau-ase-20`, `native-tau-checks-21`,
 `native-tau-installed-22.json` and `native-tau-comparison-23.json`. Earlier attempts remain
 retained. The exact source archive and engine manifest establish the tested implementation.
+
+## Current mixed-atom organic bottlenecks
+
+Fresh paired plain/profile ASE calls on 2026-10-13 use the final native tau installation
+above, the production recipe and fixed public development geometries. Each case runs in
+a separate process; energy is followed by unchanged-geometry float64 forces. All numerical
+work is sequential under the shared lock on GPU 1 with four CPUs. No engine code or
+scientific settings changed for these measurements.
+
+| Generic molecule | Orbitals | Plain SCF, s | Plain forces, s | Plain energy + forces, s |
+| --- | ---: | ---: | ---: | ---: |
+| Acetamide | 196 | 6.8404 | 3.3213 | 10.1623 |
+| Pyridine | 267 | 10.6839 | 4.8247 | 15.5092 |
+| DMSO | 214 | 7.7445 | 4.1262 | 11.8713 |
+| Acetyl fluoride | 181 | 5.4866 | 2.6049 | 8.0919 |
+| Acetyl chloride | 187 | 5.9873 | 2.9424 | 8.9303 |
+| C11H13NO3 organic | 681 | 76.2537 | 28.1144 | 104.3687 |
+
+These are single fresh timing samples, not speedup comparisons. Component profiles add
+synchronization and Python profiling: total overhead is 5.74% for the larger organic and
+9.81–13.22% for the smaller cases. The profiler instruments the private NumInt namespace
+after precision dispatch is installed, retaining the native mixed calculation. Across the
+panel, ordinary SCF grid integration accounts for 32.4–40.0% of profiled call time; SCF
+VV10 integration plus its complete force response accounts for 31.6–38.7%.
+
+The larger organic's 110.3632-second profiled call has these disjoint parent costs. SCF
+rows include final verification; its cost must not be added again.
+
+| Component | Seconds | Share of profiled call |
+| --- | ---: | ---: |
+| Ordinary SCF grid integration | 44.1358 | 40.0% |
+| SCF VV10 integration | 23.2848 | 21.1% |
+| Full VV10 force response | 16.5672 | 15.0% |
+| SCF Coulomb/exchange, including DF setup | 13.2288 | 12.0% |
+| Ordinary full-response XC forces | 7.2106 | 6.5% |
+| DF Coulomb/exchange forces | 4.4688 | 4.0% |
+
+Within ordinary integration, float64 tau products take **23.1789 seconds**. Only 1.7973
+seconds use symmetric products. The 384–512 active-orbital block range accounts for 22.3787
+seconds of the float64 ordinary matrix products, including both tau and other potential
+terms; these blocks fall below the current tau guard. Typical costly products have
+438–505 active orbitals and 4,096 grid points. This makes medium-sized float64 products
+the first target for actual-field kernel/dispatch comparisons. Lowering the guard alone
+is not established as beneficial and requires measurement, since its small-block fallback
+was selected for performance.
+
+Within VV10 forces, the pair traversal takes **14.3972 seconds** over 304,066 active points,
+or 86.9% of the complete VV10 response. The final float64 verification takes **15.6689
+seconds**, including 10.3969 seconds of VV10 integration; the native VV10 field evaluation
+itself takes 9.7483 seconds. Exact pair-kernel improvements would therefore help both
+verification and forces. Grid-weight response across ordinary and VV10 forces is only
+**0.4202 seconds** (0.38% of the call), making it a lower-priority target.
+
+All 12 calls pass verification, retain every basis orbital and reuse the accepted SCF
+state for forces. No case needs recovery at production tolerances; DMSO's earlier recovery
+under stricter correctness tolerances is not a production bottleneck in this panel. Plain
+and profiled runs have identical cycle counts (9–12), energy differences below `6.83e-13`
+Hartree and force differences below `1.96e-8` Hartree/Bohr. All 12 native-library hashes
+match the verified installation, and every run uses the same profiler source hash.
+
+Raw timing reports, component timings, product shapes, accepted states and Python profiles
+remain outside Git under `20261013/organic-profile-25` with profiler
+`organic-profile-harness-24.py`. The ordinary-component precision labels describe the
+grid controller; `precision_info.vv10_precisions` records the independent VV10 schedule.
+The batch completed successfully and released GPU 1 and the shared lock.
