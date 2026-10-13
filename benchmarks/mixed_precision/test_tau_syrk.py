@@ -166,6 +166,48 @@ def test_finite_guard_reduces_without_materializing_large_masks(monkeypatch):
     assert not _tau_syrk._eligible(ao, ao, weights, None)
 
 
+def test_nlc_weight_response_budgets_direct_allocations_and_preserves_forces(monkeypatch):
+    import numpy as np
+    from pyscf import gto
+
+    from gpu4pyscf import dft
+    from gpu4pyscf.grad import rks
+    from gpu4pyscf.hessian import rks as hessian_rks
+    from gpu4pyscf.scf import hf
+
+    monkeypatch.setattr(hf, 'overlap_zero_eigenvalue_threshold', 1e-10)
+    mol = gto.M(atom='O 0 0 0; H .7586 0 .5043; H -.7586 0 .5043', basis='def2-tzvpd', verbose=0)
+    mf = dft.RKS(mol, xc='wb97m-v').density_fit(auxbasis='def2-universal-jkfit')
+    mf.grids.level, mf.nlcgrids.level = 5, 3
+    mf.conv_tol, mf.conv_tol_grad, mf.chkfile = 1e-11, 1e-7, None
+    mf.kernel()
+    assert mf.converged
+    gradient = mf.nuc_grad_method()
+    gradient.grid_response = gradient.auxbasis_response = True
+    dm = mf.make_rdm1()
+    reference = rks._get_denlc(gradient, mol, dm)
+    requests, batches = [], []
+    free_bytes = 1024 * 1024
+    original_weights = hessian_rks.get_dweight_dA
+
+    def available(exclude_memory_pool=False):
+        requests.append(exclude_memory_pool)
+        return free_bytes if exclude_memory_pool else 2**40
+
+    def weights(mol, grids, grid_range=None):
+        batches.append(grid_range[1] - grid_range[0])
+        return original_weights(mol, grids, grid_range)
+
+    monkeypatch.setattr(rks, 'get_avail_mem', available)
+    monkeypatch.setattr(hessian_rks, 'get_dweight_dA', weights)
+    actual = rks._get_denlc(gradient, mol, dm)
+    assert requests and all(requests)
+    limit = int(free_bytes * 0.5) // (6 * mol.natm * 8) // 16 * 16
+    assert len(batches) > 1 and max(batches) <= limit
+    for result, expected in zip(actual, reference):
+        np.testing.assert_allclose(result, expected, atol=2e-11, rtol=2e-11)
+
+
 def test_private_tau_keeps_float32_products_and_restores_dispatch(monkeypatch):
     import cupy as cp
     import numpy as np

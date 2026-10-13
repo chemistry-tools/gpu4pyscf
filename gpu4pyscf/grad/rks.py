@@ -700,14 +700,17 @@ def get_nlc_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=
     de_grid_response_weight = cupy.zeros((natm, 3))
     dweightdA_right = rho_i * (beta + E_i)
 
-    available_gpu_memory = get_avail_mem()
+    # Large grid-response arrays bypass CuPy's pool. Cached pool blocks are not
+    # available to those direct CUDA allocations while the raw and masked arrays
+    # coexist, so budget against actual device-free memory.
+    available_gpu_memory = get_avail_mem(exclude_memory_pool=True)
     available_gpu_memory = int(available_gpu_memory * 0.5) # Don't use too much gpu memory
     ao_nbytes_per_grid = ((2*3) * natm) * 8
     ngrids_per_batch = int(available_gpu_memory / ao_nbytes_per_grid)
     if ngrids_per_batch < 16:
-        raise MemoryError(f"Out of GPU memory for NLC energy first derivative, available gpu memory = {get_avail_mem()}"
+        raise MemoryError(f"Out of GPU memory for NLC energy first derivative, available gpu memory = {get_avail_mem(exclude_memory_pool=True)}"
                           f" bytes, nao = {nao}, natm = {natm}, ngrids (nonzero rho) = {ngrids}")
-    ngrids_per_batch = (ngrids_per_batch + 16 - 1) // 16 * 16
+    ngrids_per_batch = ngrids_per_batch // 16 * 16
 
     g0_nonzero = 0
     for g0_full in range(0, ngrids_full, ngrids_per_batch):
