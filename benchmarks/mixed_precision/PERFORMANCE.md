@@ -622,3 +622,102 @@ remain outside Git under `20261013/organic-profile-25` with profiler
 `organic-profile-harness-24.py`. The ordinary-component precision labels describe the
 grid controller; `precision_info.vv10_precisions` records the independent VV10 schedule.
 The batch completed successfully and released GPU 1 and the shared lock.
+
+## Direct float64 tau products for medium organic blocks
+
+The current symmetric BLAS path is not faster below its size guard. On 15 retained,
+unmodified AO/weight blocks from the verified C11H13NO3 density, forcing that path was
+slower than the original three float64 GEMMs at every sampled shape. For 438 orbitals
+and 4,096 points, it took 15.806 versus 11.624 milliseconds; for 505 orbitals, 16.084
+versus 15.439 milliseconds. The existing 512-orbital guard remains unchanged.
+
+`_tau_triangle.py` instead contracts signed weights directly with float64 fused multiply
+adds, computes one matrix triangle and mirrors it. Five tile/thread layouts were compared
+on the same actual fields. The selected 16 × 16 tile needs no stacked AO allocation and
+uses padded shared memory. It is 1.65–1.98× faster on the sampled 400–506-orbital blocks.
+Maximum actual-field matrix error is `2.78e-16` Hartree. Twelve additional actual-field
+prefix checks at 2,048, 3,073 and 4,096 points find 1.63–2.12× speedups, including the
+partial final tile, with the same maximum error.
+
+Native dispatch enables this path only on compute capability 8.6 for 384–512 active
+orbitals and 2,048–4,096 grid points. Identical, contiguous, finite real float64 fields
+are required, and aliased output storage retains the original product. Other sizes,
+architectures and unsupported layouts keep their existing dispatch. Early mixed SCF
+retains its original float32 products; large blocks retain symmetric BLAS. No precision
+schedule, grid, pruning, convergence setting, response term or geometry changed.
+
+Three alternating same-density complete ordinary-grid pairs took a median **4.2861 →
+3.3136 seconds**, a 22.69% reduction. The candidate handled 153 of 232 blocks. Electron
+count and XC energy agreed, and maximum complete potential-matrix differences were
+`2.67e-15` Hartree. These fixed-density integration timings are separate from full SCF.
+
+### Fresh ASE call comparisons
+
+The baseline disables only the direct medium-block kernel; both modes retain the existing
+large-block symmetric products and every previous optimization. Each independent process
+runs fresh verified mixed SCF, then unchanged-geometry native float64 forces through ASE.
+Two alternating pairs cover the larger organic; pyrene and coronene have one matched
+pair each. Five smaller mixed-atom organics also have one pair each at the production guard.
+
+| Generic molecule | Baseline energy + forces, s | Direct medium tau, s | Reduction |
+| --- | ---: | ---: | ---: |
+| C11H13NO3 organic, 681 orbitals | 105.8807 | 98.5395 | 6.93% |
+| Pyrene, 682 orbitals | 98.5302 | 94.1228 | 4.47% |
+| Coronene, 996 orbitals | 249.5507 | 243.7387 | 2.33% |
+
+The organic's SCF median is **77.5002 → 70.0468 seconds**, a 9.62% reduction. Complete
+forces remain approximately unchanged at 28.38/28.49 seconds. Both runs retain 112
+large-block symmetric calls; the new path handles 1,224 medium blocks. All four organic
+calls converge in 12 cycles, need no recovery and reuse the accepted SCF state for forces.
+Maximum energy spread is `4.55e-13` Hartree; maximum force difference is `1.80e-8`
+Hartree/Bohr. These are additional gains over the preceding optimized native installation,
+not comparisons against pristine upstream or a change in SCF precision.
+
+Pyrene SCF takes 70.0722 → 65.7007 seconds (6.24% reduction); coronene takes 185.3709 →
+179.5620 seconds (3.13%). The new kernel handles 744/777 blocks respectively, with identical
+10/11 cycle counts and no recovery. Complete force times remain approximately unchanged.
+Maximum energy differences are `6.26e-12`/`9.10e-13` Hartree and maximum force differences
+are `8.88e-8`/`3.15e-7` Hartree/Bohr. Independent SCF force differences include stopping and
+trajectory variation; the same-density matrix comparisons and stricter derivative checks
+above are separate correctness evidence.
+
+| Smaller generic organic | Baseline energy + forces, s | Native dispatch, s | Triangle calls |
+| --- | ---: | ---: | ---: |
+| Acetamide | 10.2200 | 9.9836 | 0 |
+| Pyridine | 15.4943 | 15.5371 | 0 |
+| DMSO | 11.6736 | 11.6927 | 0 |
+| Acetyl fluoride | 8.1068 | 8.1096 | 0 |
+| Acetyl chloride | 8.7871 | 8.8295 | 0 |
+
+The small molecules have no eligible production blocks; their timing variation is not
+evidence of a kernel gain. Their correctness tests explicitly lower the guard and verify
+accelerated forces separately. All 18 complete ASE calls pass verification, retain every
+orbital, need no recovery and reuse SCF for forces. The five small-organic pairs preserve
+their 9–10 cycles and differ by at most `3.42e-13` Hartree and `2.38e-8` Hartree/Bohr.
+
+### Native installation and correctness
+
+The normal isolated wheel installs engine commit `d2c5d0f`. Its independent audit matches
+all **535 engine Python/data files**, the 12 unchanged compiled native-library hashes and
+the active local LibXC 7.0.0 hash. The wheel SHA256 is
+`9da8d3dca9d30c6251af3771c996d0f11fcc7ed825569a894b0df649b11f6bff`.
+The new CUDA kernel compiles through CuPy NVRTC on the selected GPU; native library
+sources did not change and match the retained complete sm86 build.
+
+The installation passes **185 checks**, including all 35 new signed-product, partial-tile,
+range/architecture/alias guard, stream, allocation, early-float32 and mixed-atom/open-shell
+checks. Complete-force comparisons cover N/O/S/F/Cl chemistry, with independent energy
+finite differences and stricter correctness-only SCF tolerances. Existing symmetric,
+ASE verification/recovery/reuse, full grid/DF response and VV10 checks also pass. The first
+suite's three reference-gradient tests failed because the harness pointed to a nonexistent
+baseline path; correcting it to the retained matching `native-build-01/fork` source and
+rerunning those three checks resolved the setup failure. Both attempts remain retained.
+
+All numerical measurements here run sequentially on physical GPU 1 (RTX 3080 10 GB),
+with affinity `[4,5,6,7]` and four OpenMP/BLAS threads. Validation datasets are held out.
+Actual fields, prototype layouts, complete-grid comparisons, wheel/source provenance,
+initial/repaired checks and fresh ASE reports remain outside Git under the 20261013
+performance artifacts: `tau-actual-fields-27`, `tau-medium-triangle-28`,
+`tau-medium-grid-29`, `native-package-triangle-30`, `native-triangle-installed-31.json`,
+`native-triangle-validation-32`, `tau-triangle-tail-33` and `native-triangle-ase-34`.
+The final batch completes successfully and releases GPU 1 and the shared benchmark lock.

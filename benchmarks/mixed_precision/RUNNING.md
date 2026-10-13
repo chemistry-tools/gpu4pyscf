@@ -16,7 +16,10 @@ export LD_LIBRARY_PATH=/tmp/gpu4pyscf-bench-env/lib/python3.12/site-packages/nvi
 The harness requires physical GPU 1 and exactly four available logical CPUs, defaulting to
 `4,5,6,7`. It verifies the GPU PCI identity, applies CPU affinity before numerical imports and
 sets PySCF/OpenMP/BLAS thread limits. Choose four allowed CPU IDs near GPU 1 with `--cpus` if
-this host uses a different CPU topology. Never run benchmarks, tests or builds simultaneously.
+this host uses a different CPU topology. Keep timed comparisons isolated from tests and
+builds, and run them sequentially under the shared lock. Independent correctness checks may
+use other compatible host GPUs with four separate logical CPUs per GPU; finish those checks
+before measuring timings and do not compare elapsed times across different GPUs.
 Keep raw results outside the checkout and use new output paths for every run.
 
 ## Installed release and source checkout
