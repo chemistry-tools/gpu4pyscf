@@ -28,6 +28,7 @@ from gpu4pyscf.lib.cupy_helper import (
     grouped_dot, grouped_gemm, reduce_to_device, take_last2d, ndarray,
     batched_vec_norm2, batched_vec_dot, MEMPOOL_THRESHOLD)
 from gpu4pyscf.dft import xc_deriv, libxc
+from gpu4pyscf.dft._tau_syrk import _eligible as _tau_syrk_eligible, _symmetric_tau
 from gpu4pyscf.lib import logger
 from gpu4pyscf.lib.multi_gpu import lru_cache
 from gpu4pyscf import __config__
@@ -2480,6 +2481,12 @@ def _scale_ao(ao, wv, out=None):
 
 def _tau_dot(bra, ket, wv, buf=None, out=None):
     '''1/2 <nabla i| v | nabla j>'''
+    if _tau_syrk_eligible(bra, ket, wv, out):
+        return _symmetric_tau(bra, wv, out=out)
+    return _tau_dot_full(bra, ket, wv, buf=buf, out=out)
+
+def _tau_dot_full(bra, ket, wv, buf=None, out=None):
+    '''General bilinear tau product, also preserving the mixed grid arithmetic.'''
     # einsum('g,xig,xjg->ij', .5*wv, bra[1:4], ket[1:4])
     wv = cupy.asarray(.5 * wv)
     out = contract('ig,jg->ij', bra[1], _scale_ao(ket[1], wv, out=buf), out=out)

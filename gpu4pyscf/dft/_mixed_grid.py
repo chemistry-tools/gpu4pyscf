@@ -96,6 +96,15 @@ def _make_contract(original, controller):
     return contract
 
 
+def _make_tau_dot(symmetric, full, controller):
+    """Keep the existing three float32 products until the grid switches to float64."""
+    def tau_dot(bra, ket, weights, buf=None, out=None):
+        product = full if controller.use_float32 else symmetric
+        return product(bra, ket, weights, buf=buf, out=out)
+
+    return tau_dot
+
+
 class _GridPrecision:
     def __init__(self, use_float32):
         self.use_float32 = use_float32

@@ -28,7 +28,7 @@ def _precision_context(mf):
     import cupy
 
     from gpu4pyscf.dft import numint
-    from gpu4pyscf.dft._mixed_grid import _GridPrecision, _make_contract
+    from gpu4pyscf.dft._mixed_grid import _GridPrecision, _make_contract, _make_tau_dot
     from gpu4pyscf.dft._mixed_vv10 import _AdaptiveVV10
 
     if numint.num_devices != 1 or cupy.cuda.runtime.getDeviceCount() != 1:
@@ -43,6 +43,10 @@ def _precision_context(mf):
             '_vv10nlc': vv10,
         },
     )
+    # Older installed-release adapters have no symmetric tau path. For the native
+    # engine, both alternatives retain this instance's private contract dispatch.
+    if '_tau_dot_full' in private:
+        private['_tau_dot'] = _make_tau_dot(private['_tau_dot'], private['_tau_dot_full'], grid)
     originals = {}
     try:
         for name in ('nr_rks', 'nr_uks', 'nr_nlc_vxc'):

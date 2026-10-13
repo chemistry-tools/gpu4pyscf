@@ -36,6 +36,8 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
   response, with atom-ordered labels and deterministic reductions. No SCF field cache.
 - `vv10_response_experiment.py`, `test_vv10_response.py`: native field/response comparisons,
   independent coordinate finite differences, partial tiles, signed weights and CUDA streams.
+- `gpu4pyscf/dft/_tau_syrk.py`, `test_tau_syrk.py`: signed symmetric float64 tau products,
+  stream/error restoration, early float32 dispatch and organic SCF/force/finite-difference checks.
 
 Use physical GPU 1 only and at most four logical CPUs, including builds and tests. Run all
 computational jobs sequentially. Keep benchmark outputs and environments outside the checkout;
@@ -43,6 +45,11 @@ never overwrite or delete earlier evidence. Preserve unrelated branches and work
 
 Keep validation datasets held out from tuning and implementation decisions. Designated development
 test data and synthetic molecules may be used; do not copy private inputs or results into fixtures.
+Every numerical optimization also needs mixed-atom organic checks, including nitrogen, oxygen,
+sulfur and halogen chemistry. `test_tau_syrk.py` includes acetamide, pyridine, DMSO, acetyl fluoride
+and acetyl chloride from ASE's built-in geometries. Exercise the accelerated path explicitly in
+small-molecule correctness tests and include a larger generic organic that reaches its size guard
+in performance comparisons. Hydrocarbon-only benchmarks do not satisfy this coverage.
 
 Preserve geometries, atom order, total charge, multiplicity, functional, basis, grids, tolerance,
 cycle budget and full nonlocal correlation when comparing performance. Report approximate-only

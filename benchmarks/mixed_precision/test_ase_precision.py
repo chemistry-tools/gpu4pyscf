@@ -165,6 +165,27 @@ def test_private_dispatch_leaves_original_functions_untouched():
     assert first['_dispatch_outer'](1) == 11 and second['_dispatch_outer'](1) == 21
 
 
+def test_tau_dispatch_preserves_early_float32_and_forwards_buffers():
+    module = _load('grid_under_test', 'gpu4pyscf/dft/_mixed_grid.py')
+    controller = SimpleNamespace(use_float32=True)
+    calls = []
+
+    def product(name):
+        def call(*args, **kwargs):
+            calls.append((name, args, kwargs))
+            return name
+        return call
+
+    tau_dot = module._make_tau_dot(product('symmetric'), product('full'), controller)
+    fields, weights, buffer, out = (object() for _ in range(4))
+    assert tau_dot(fields, fields, weights, buf=buffer, out=out) == 'full'
+    controller.use_float32 = False
+    assert tau_dot(fields, fields, weights, buf=buffer, out=out) == 'symmetric'
+    assert calls == [
+        (name, (fields, fields, weights), {'buf': buffer, 'out': out}) for name in ('full', 'symmetric')
+    ]
+
+
 @pytest.fixture
 def ase_calculator(precision, monkeypatch):
     from pyscf import gto, lib
