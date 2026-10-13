@@ -173,7 +173,9 @@ def test_symmetric_tau_complete_scf_forces_and_energy_differences(case, monkeypa
     )
     mf = (dft.RKS if multiplicity == 1 else dft.UKS)(mol, xc='wb97m-v').density_fit(auxbasis='def2-universal-jkfit')
     mf.grids.level, mf.nlcgrids.level = 5, 3
-    mf.conv_tol, mf.conv_tol_grad, mf.chkfile = 1e-11, 1e-5, None
+    # Force agreement requires tighter orbital convergence than production's
+    # energy acceptance. Keep the stricter setting confined to correctness tests.
+    mf.conv_tol, mf.conv_tol_grad, mf.chkfile = 1e-11, 1e-7, None
     monkeypatch.setattr(_tau_syrk, '_MIN_ORBITALS', 10**6)
     reference_energy = mixed_precision.run_verified_scf(mf)
     gradient = mf.nuc_grad_method()

@@ -187,3 +187,38 @@ For native derivative checks, set `DFT_GPU_TEST=1` and `DFT_REFERENCE_DF_GRADIEN
 retained baseline source before running `test_native_df_response.py` sequentially. These
 checks cover full/long/short-range operators, nonsymmetric densities, auxiliary response,
 Cartesian/spherical hybrid forces and independent finite-difference energies.
+
+## Symmetric float64 tau products
+
+The native integrator uses signed symmetric rank updates for identical real float64 AO
+fields with more than 512 active orbitals. Small, distinct, complex, noncontiguous or
+nonfinite inputs retain the general bilinear product. Early mixed SCF retains its original
+float32 products; final verification and recovery use the float64 path.
+
+Run `test_tau_syrk.py` with `DFT_GPU_TEST=1` alongside the native checks. Its complete SCF,
+force and finite-difference panel includes nitrogen, oxygen, sulfur, fluorine and chlorine
+organics. The correctness tests exercise the symmetric path even on small molecules.
+`_organic_cases.py` owns the generic panel; the larger ethyl-4-acetamidobenzoate geometry
+and its deterministic generation provenance are in `organic_geometry.json`.
+
+`native_tau_benchmark.py` measures fresh ASE energy-then-force requests at the fixed recipe.
+It records accepted SCF verification, reuse, forces, source/native hashes and the actual
+symmetric-kernel calls. The baseline option disables only the symmetric tau path in its
+isolated benchmark process. Use matching native libraries and separate processes under
+the shared lock; alternate the two modes between repeats:
+
+```sh
+taskset -c 4-7 /tmp/gpu4pyscf-native-env/bin/python \
+  /absolute/path/to/gpu4pyscf/benchmarks/mixed_precision/native_tau_benchmark.py \
+  --case ethyl-4-acetamidobenzoate --tau baseline \
+  --require-gpu-source /tmp/gpu4pyscf-native-env/lib/python3.12/site-packages/gpu4pyscf \
+  --output /tmp/organic-tau-baseline.json
+taskset -c 4-7 /tmp/gpu4pyscf-native-env/bin/python \
+  /absolute/path/to/gpu4pyscf/benchmarks/mixed_precision/native_tau_benchmark.py \
+  --case ethyl-4-acetamidobenzoate --tau symmetric \
+  --require-gpu-source /tmp/gpu4pyscf-native-env/lib/python3.12/site-packages/gpu4pyscf \
+  --output /tmp/organic-tau-symmetric.json
+```
+
+Whole-workflow timing includes fresh SCF and one complete force evaluation. Grid-only
+measurements do not establish a whole-workflow speedup. Validation datasets remain held out.

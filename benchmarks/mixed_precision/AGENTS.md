@@ -38,6 +38,8 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
   independent coordinate finite differences, partial tiles, signed weights and CUDA streams.
 - `gpu4pyscf/dft/_tau_syrk.py`, `test_tau_syrk.py`: signed symmetric float64 tau products,
   stream/error restoration, early float32 dispatch and organic SCF/force/finite-difference checks.
+- `native_tau_benchmark.py`, `_organic_cases.py`: fresh ASE energy/force comparisons at the
+  pinned recipe; generic mixed-atom organics and a fixed larger organic geometry.
 
 Use physical GPU 1 only and at most four logical CPUs, including builds and tests. Run all
 computational jobs sequentially. Keep benchmark outputs and environments outside the checkout;
