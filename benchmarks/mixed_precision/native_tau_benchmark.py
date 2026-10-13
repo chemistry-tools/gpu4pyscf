@@ -88,6 +88,12 @@ def main():
         cp.cuda.get_current_stream().synchronize()
         energy_seconds = time.perf_counter() - started
         energy_info, precision_info = dict(atoms.calc.calculation_info), atoms.calc.precision_info
+        pool = cp.get_default_memory_pool()
+        memory_before_forces = {
+            'device_free_bytes': int(cp.cuda.runtime.memGetInfo()[0]),
+            'pool_used_bytes': int(pool.used_bytes()),
+            'pool_cached_bytes': int(pool.free_bytes()),
+        }
         if not precision_info['accepted']:
             raise RuntimeError('SCF must pass full float64 verification')
         started = time.perf_counter()
@@ -128,6 +134,7 @@ def main():
             'forces_hartree_bohr': (forces * BOHR / HARTREE2EV).tolist(),
             'precision_info': precision_info,
             'force_calculation_info': atoms.calc.calculation_info,
+            'memory_before_forces': memory_before_forces,
             'nao': mol.nao,
             'effective_orbitals': int(current.mo_coeff.shape[-1]),
             'grid_points': len(current.grids.weights),
