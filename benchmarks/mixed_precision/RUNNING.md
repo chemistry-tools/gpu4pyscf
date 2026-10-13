@@ -194,6 +194,9 @@ The native integrator uses signed symmetric rank updates for identical real floa
 fields with more than 512 active orbitals. Small, distinct, complex, noncontiguous or
 nonfinite inputs retain the general bilinear product. Early mixed SCF retains its original
 float32 products; final verification and recovery use the float64 path.
+Native RKS/UKS tasks reserve one bounded stack workspace. Standalone callers release a
+direct CUDA allocation instead of caching differently sized large buffers. Finite checks
+use a fused reduction, avoiding large temporary masks that can exhaust memory before forces.
 
 Run `test_tau_syrk.py` with `DFT_GPU_TEST=1` alongside the native checks. Its complete SCF,
 force and finite-difference panel includes nitrogen, oxygen, sulfur, fluorine and chlorine

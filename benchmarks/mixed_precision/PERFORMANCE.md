@@ -316,9 +316,11 @@ launcher are retained outside Git. The tested wheel SHA256 is
 On 2026-10-12–13, fresh profiles of the optimized native installation separated SCF,
 the final float64 check and complete force evaluation. The same synthetic cases, recipe,
 full basis, GPU 1 and four-CPU limits were retained. These synchronized timings are
-inclusive; parent and child rows must not be added together. Profiling increased SCF
-overhead and can change its iteration trajectory, so speed comparisons use separate
-unprofiled runs.
+inclusive; parent and child rows must not be added together. The module-level task wrapper
+in these early profiles bypassed the private float32 grid dispatch; their SCF cost breakdown
+does not represent production mixed SCF. The force and final float64-check timings below
+remain useful. Speed comparisons use the separate unprofiled runs, which retained the
+actual precision schedule. The later tau profile instruments the private namespace directly.
 
 | Native force component | Pyrene, s | Coronene, s |
 | --- | ---: | ---: |
@@ -475,3 +477,83 @@ are retained outside Git under `df-profile-next-06`, `df-schedule-next-07/08/10/
 `df-ovalene-next-09`, `native-package-df-next-12/13` and `native-df-forces-next-14`.
 The exact committed source archive and `native-df-installed-next-15.json` retain the final
 installed-source and dependency checks. GPU 1 was idle after all sequential calculations.
+
+## Symmetric float64 tau products in native SCF
+
+The 2026-10-13 implementation stacks the three AO derivatives into signed weighted Gram
+products. Separate positive and negative weights allow float64 symmetric rank updates;
+one matrix triangle is calculated and mirrored. Identical contiguous real fields with more
+than 512 active orbitals use this path. Small, distinct, complex, noncontiguous or nonfinite
+inputs retain the original bilinear products. Early mixed SCF retains its original three
+float32 products and precision schedule. Full float64 verification/recovery and all native
+force response terms remain required.
+
+A fresh profile of the preceding native engine instruments its private NumInt namespace,
+retaining 5,424 float32 and 5,424 float64 grid products. Pyrene's synchronized SCF/force calls
+took 73.26/28.45 seconds; float64 tau products accounted for 20.89 seconds, including 3.49
+seconds in verification. These are inclusive profile costs, not independent timing samples.
+The earlier prototype's actual-grid potential differences were below `2.3e-15` Hartree.
+
+### Memory and mixed-atom validation
+
+The first implementation passed its small-molecule checks but exhausted memory in coronene's
+subsequent VV10 gradient. Tau tasks now reserve one bounded workspace; standalone calls
+release direct allocations and finite checks fuse their reduction without large masks.
+The remaining gradient failure exposed a native allocator mismatch: grid-response batching
+counted cached pool memory, while large allocations bypassed that pool. VV10 weight-response
+batches now use actual free device memory, retaining the conservative half-memory budget
+and rounding batch lengths down to their alignment. Grid points and response terms are
+unchanged. A regression deliberately separates virtual pool capacity from device-free
+memory, forcing multiple batches and comparing the complete VV10 response.
+
+The permanent generic panel includes acetamide, pyridine, DMSO, acetyl fluoride and acetyl
+chloride, covering C/H/N/O/S/F/Cl. Small-molecule correctness checks force the symmetric path,
+so its size guard cannot hide missing coverage. The larger fixed C11H13NO3 organic geometry
+also exercises the production guard. Initial force comparisons at orbital tolerance `1e-5`
+found `1–2e-7` Hartree/Bohr differences in pyridine/DMSO; tighter correctness-only convergence
+at `1e-7` separated SCF stopping variation from the matrix calculation. Production thresholds
+remain `1e-8` Hartree and `1e-4` orbital gradient. Validation datasets were held out.
+
+### Fresh native ASE comparisons
+
+Each timing covers a fresh verified mixed SCF followed by native float64 forces at unchanged
+geometry through ASE. The force request reuses the accepted SCF state. The baseline retains
+all preceding optimizations and disables only symmetric tau products; both modes use the
+corrected device-free-memory gradient budget. These are additional gains over the previous
+optimized path, not comparisons with pristine upstream.
+
+| Generic molecule | Baseline energy + forces, s | Symmetric tau, s | Reduction |
+| --- | ---: | ---: | ---: |
+| Pyrene, 682 orbitals | 100.5015 | 98.3582 | 2.13% |
+| Coronene, 996 orbitals | 265.3642 | 246.4477 | 7.13% |
+| C11H13NO3 organic, 681 orbitals | 106.8444 | 106.6395 | 0.19% |
+
+Pyrene uses the medians of two alternating fresh pairs. Coronene and the larger organic use
+one fresh pair each. Pyrene SCF medians were 71.9902 → 69.9641 seconds; coronene SCF took
+201.7543 → 182.9636 seconds, a 9.31% reduction. Force times were approximately unchanged.
+The organic's 0.19% difference is within timing variation; no material speedup is established.
+Its spatially sparse blocks triggered only 112 symmetric calls, versus 498 per pyrene run
+and 1,470 for coronene. The benefit depends on active orbital blocks, not total atom count.
+
+All runs retained every basis orbital, used the same recipe, converged in 10/11/12 cycles
+for pyrene/coronene/organic, and passed final verification without recovery. Maximum energy
+differences across fresh runs were `2.39e-12`, `7.96e-13` and zero Hartree. Maximum complete-force
+differences were `1.42e-7`, `2.98e-7` and `2.17e-8` Hartree/Bohr. These independent-SCF force
+differences include stopping/trajectory variation; they are separate from shared-density
+matrix comparisons and tighter-converged correctness checks.
+
+The final installation passed **150 checks**, covering native fields, SCF verification and
+recovery, ASE reuse, signed products, streams, failed BLAS restoration, bounded workspaces,
+actual-memory gradient batching, mixed-atom forces and energy finite differences. The
+installation audit matched all **534 engine Python/data files** to commit `ef55661`, all
+12 native-library hashes to the earlier complete build, and the local LibXC 7.0.0 hash.
+The final wheel SHA256 is
+`45aeaa47b6cd3481a970b2bbcdf66fe16bf639d154defd8136ce9ff9da5420f4`.
+
+All numerical work ran sequentially on physical GPU 1 (RTX 3080 10 GB), with affinity
+`[4,5,6,7]` and four OpenMP/BLAS threads. No compiler or native-library sources changed.
+Raw reports, accepted states, failed-allocation diagnostics and corrected installation
+provenance remain outside Git under the 20261013 performance artifacts: `native-package-tau-18`,
+`native-tau-memory-checks-19`, `native-tau-ase-20`, `native-tau-checks-21`,
+`native-tau-installed-22.json` and `native-tau-comparison-23.json`. Earlier attempts remain
+retained. The exact source archive and engine manifest establish the tested implementation.
