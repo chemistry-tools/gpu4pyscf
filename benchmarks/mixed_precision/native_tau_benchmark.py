@@ -74,9 +74,9 @@ def main():
     original_min, original_tau = _tau_syrk._MIN_ORBITALS, numint._symmetric_tau
     calls = []
 
-    def counted(ao, weights, out=None):
+    def counted(ao, weights, buf=None, out=None):
         calls.append([int(ao.shape[1]), int(ao.shape[2])])
-        return original_tau(ao, weights, out=out)
+        return original_tau(ao, weights, buf=buf, out=out)
 
     numint._symmetric_tau = counted
     if args.tau == 'baseline':

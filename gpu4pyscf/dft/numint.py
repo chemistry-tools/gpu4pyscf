@@ -28,7 +28,8 @@ from gpu4pyscf.lib.cupy_helper import (
     grouped_dot, grouped_gemm, reduce_to_device, take_last2d, ndarray,
     batched_vec_norm2, batched_vec_dot, MEMPOOL_THRESHOLD)
 from gpu4pyscf.dft import xc_deriv, libxc
-from gpu4pyscf.dft._tau_syrk import _eligible as _tau_syrk_eligible, _symmetric_tau
+from gpu4pyscf.dft._tau_syrk import (
+    _eligible as _tau_syrk_eligible, _symmetric_tau, _workspace_size as _tau_workspace_size)
 from gpu4pyscf.lib import logger
 from gpu4pyscf.lib.multi_gpu import lru_cache
 from gpu4pyscf import __config__
@@ -464,14 +465,15 @@ def _nr_rks_task(ni, mol, grids, xc_code, dm, mo_coeff, mo_occ,
             rho_tot = cupy.empty([5,ngrids_local])
 
         if mo_coeff is None:
-            buf = cupy.empty(MIN_BLK_SIZE * nao)
+            buf = cupy.empty(_tau_workspace_size(nao, MIN_BLK_SIZE) if xctype == 'MGGA' else MIN_BLK_SIZE * nao)
             dm_mask_buf = cupy.empty(nao*nao)
         else:
             mo_coeff = cupy.asarray(mo_coeff[:,mo_occ>0], order='C')
             mo_coeff *= mo_occ[mo_occ>0]**.5
             nocc = mo_coeff.shape[1]
             mo_buf = cupy.empty(nao*nocc)
-            buf = cupy.empty(MIN_BLK_SIZE * max(2*nocc, nao))
+            bufsize = _tau_workspace_size(nao, MIN_BLK_SIZE) if xctype == 'MGGA' else MIN_BLK_SIZE * nao
+            buf = cupy.empty(max(MIN_BLK_SIZE * 2*nocc, bufsize))
 
         p0 = p1 = 0
         for ao_mask, idx, weight, _ in ni.block_loop(
@@ -874,7 +876,7 @@ def _nr_uks_task(ni, mol, grids, xc_code, dms, mo_coeff, mo_occ,
             rho_tot = cupy.empty([2, nset, 5, ngrids_local])
 
         if mo_coeff is None:
-            buf = cupy.empty(MIN_BLK_SIZE * nao)
+            buf = cupy.empty(_tau_workspace_size(nao, MIN_BLK_SIZE) if xctype == 'MGGA' else MIN_BLK_SIZE * nao)
             dm_mask_buf = cupy.empty(nao*nao)
         else:
             mo_coeff_alpha = cupy.asarray(mo_coeff[0][:, mo_occ[0]>0], order='C')
@@ -884,7 +886,8 @@ def _nr_uks_task(ni, mol, grids, xc_code, dms, mo_coeff, mo_occ,
             nocc_alpha = mo_coeff_alpha.shape[1]
             nocc_beta = mo_coeff_beta.shape[1]
             mo_buf = cupy.empty(nao*max(nocc_alpha, nocc_beta))
-            buf= cupy.empty(MIN_BLK_SIZE * max(2*nocc_alpha, 2*nocc_beta, nao))
+            bufsize = _tau_workspace_size(nao, MIN_BLK_SIZE) if xctype == 'MGGA' else MIN_BLK_SIZE * nao
+            buf = cupy.empty(max(MIN_BLK_SIZE * max(2*nocc_alpha, 2*nocc_beta), bufsize))
 
         p0 = p1 = 0
         for ao_mask, idx, weight, _ in ni.block_loop(_sorted_mol, grids, nao, ao_deriv,
@@ -2482,7 +2485,7 @@ def _scale_ao(ao, wv, out=None):
 def _tau_dot(bra, ket, wv, buf=None, out=None):
     '''1/2 <nabla i| v | nabla j>'''
     if _tau_syrk_eligible(bra, ket, wv, out):
-        return _symmetric_tau(bra, wv, out=out)
+        return _symmetric_tau(bra, wv, buf=buf, out=out)
     return _tau_dot_full(bra, ket, wv, buf=buf, out=out)
 
 def _tau_dot_full(bra, ket, wv, buf=None, out=None):

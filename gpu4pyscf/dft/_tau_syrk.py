@@ -31,6 +31,22 @@ def _kernels(device):
     return cp.RawKernel(_SOURCE, 'scaled_tau'), cp.RawKernel(_SOURCE, 'mirror_tau')
 
 
+@lru_cache(maxsize=16)
+def _finite_kernel(device):
+    import cupy as cp
+
+    # Fuse the finite check and reduction instead of caching a large boolean
+    # array for every changing AO block shape in the device memory pool.
+    return cp.ReductionKernel(
+        'float64 x', 'bool finite', 'isfinite(x)', 'a && b', 'finite = a', 'true', 'tau_all_finite'
+    )
+
+
+def _workspace_size(nao, ngrids):
+    """Reserve one bounded task buffer for the three stacked derivatives."""
+    return (3 * nao if nao > _MIN_ORBITALS else nao) * ngrids
+
+
 def _eligible(bra, ket, weights, out):
     import cupy as cp
 
@@ -62,10 +78,11 @@ def _eligible(bra, ket, weights, out):
         return False
     # Splitting signed weights must not discard nonfinite or zero-times-NaN
     # contributions that the original products would propagate.
-    return bool(cp.isfinite(weights).all()) and bool(cp.isfinite(bra[1:4]).all())
+    finite = _finite_kernel(cp.cuda.Device().id)
+    return bool(finite(weights)) and bool(finite(bra[1:4]))
 
 
-def _symmetric_tau(ao, weights, out=None):
+def _symmetric_tau(ao, weights, buf=None, out=None):
     """Form half the signed weighted Gram matrix, including all three derivatives."""
     import cupy as cp
     import numpy as np
@@ -74,6 +91,14 @@ def _symmetric_tau(ao, weights, out=None):
     m, k = ao.shape[1:]
     if out is None:
         out = cp.empty((m, m), dtype=cp.float64)
+    size = m * 3 * k
+    if isinstance(buf, cp.ndarray) and buf.dtype == cp.float64 and buf.flags.c_contiguous and buf.size >= size:
+        workspace = buf.reshape(-1)[:size]
+    else:
+        # Standalone callers must not fill the pool with differently sized
+        # multi-megabyte blocks that later large direct allocations cannot reclaim.
+        memory = cp.cuda.Memory(size * 8)
+        workspace = cp.ndarray((size,), dtype=cp.float64, memptr=cp.cuda.MemoryPointer(memory, 0))
     scale = cp.sqrt(cp.abs(weights))
     groups = ((cp.nonzero(weights > 0)[0], 0.5), (cp.nonzero(weights < 0)[0], -0.5))
     scaled_kernel, mirror_kernel = _kernels(cp.cuda.Device().id)
@@ -89,7 +114,7 @@ def _symmetric_tau(ao, weights, out=None):
             n = len(indices)
             if not n:
                 continue
-            scaled = cp.empty((m, 3 * n), dtype=cp.float64)
+            scaled = workspace[: m * 3 * n].reshape(m, 3 * n)
             scaled_kernel(
                 ((scaled.size + 255) // 256,),
                 (256,),

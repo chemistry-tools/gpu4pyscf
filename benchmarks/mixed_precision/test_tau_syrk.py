@@ -125,6 +125,47 @@ def test_syrk_restores_blas_settings_on_failure(monkeypatch):
     assert cublas.getPointerMode(handle) == previous_pointer
 
 
+def test_tau_reuses_bounded_workspace_without_allocating_stacked_fields(monkeypatch):
+    import cupy as cp
+    import numpy as np
+    from cupy_backends.cuda.libs import cublas
+
+    from gpu4pyscf.dft import _tau_syrk, numint
+
+    monkeypatch.setattr(_tau_syrk, '_MIN_ORBITALS', 0)
+    rng = np.random.default_rng(1305)
+    ao, weights = cp.asarray(rng.normal(size=(4, 19, 83))), cp.asarray(rng.normal(size=83))
+    expected = numint._tau_dot_full(ao, ao, weights)
+    workspace, out = cp.empty(19 * 3 * 83), cp.empty((19, 19))
+    _tau_syrk._symmetric_tau(ao, weights, buf=workspace, out=out)
+    original_syrk, pointers = cublas.dsyrk, []
+
+    def syrk(*args):
+        pointers.append(args[6])
+        return original_syrk(*args)
+
+    monkeypatch.setattr(cublas, 'dsyrk', syrk)
+    actual = _tau_syrk._symmetric_tau(ao, weights, buf=workspace, out=out)
+    assert pointers == [workspace.data.ptr, workspace.data.ptr]
+    cp.testing.assert_allclose(actual, expected, atol=2e-12, rtol=2e-12)
+
+
+def test_finite_guard_reduces_without_materializing_large_masks(monkeypatch):
+    import cupy as cp
+
+    from gpu4pyscf.dft import _tau_syrk
+
+    ao, weights = cp.ones((4, 513, 17)), cp.ones(17)
+
+    def materialized_mask(*args, **kwargs):
+        raise AssertionError('AO finite checks must not allocate a full boolean mask')
+
+    monkeypatch.setattr(cp, 'isfinite', materialized_mask)
+    assert _tau_syrk._eligible(ao, ao, weights, None)
+    ao[1, 0, 0] = cp.inf
+    assert not _tau_syrk._eligible(ao, ao, weights, None)
+
+
 def test_private_tau_keeps_float32_products_and_restores_dispatch(monkeypatch):
     import cupy as cp
     import numpy as np
