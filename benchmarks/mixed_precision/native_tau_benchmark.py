@@ -16,6 +16,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--case', required=True)
     parser.add_argument('--tau', choices=('baseline', 'symmetric'), required=True)
+    parser.add_argument('--triangle', choices=('baseline', 'native'), default='native')
     parser.add_argument('--require-gpu-source', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
@@ -38,7 +39,7 @@ def main():
 
     import gpu4pyscf
     from gpu4pyscf import dft
-    from gpu4pyscf.dft import _tau_syrk, numint
+    from gpu4pyscf.dft import _tau_syrk, _tau_triangle, numint
     from gpu4pyscf.scf import hf
     from gpu4pyscf.tools.ase_interface import PySCF
 
@@ -72,15 +73,24 @@ def main():
     atoms = Atoms(mol.elements, positions=mol.atom_coords(unit='Angstrom'))
     atoms.calc = PySCF(method=mf, precision='auto', grid_response=True, auxbasis_response=True)
     original_min, original_tau = _tau_syrk._MIN_ORBITALS, numint._symmetric_tau
-    calls = []
+    original_triangle_min, original_triangle = _tau_triangle._MIN_ORBITALS, numint._triangular_tau
+    calls, triangle_calls = [], []
 
     def counted(ao, weights, buf=None, out=None):
         calls.append([int(ao.shape[1]), int(ao.shape[2])])
         return original_tau(ao, weights, buf=buf, out=out)
 
     numint._symmetric_tau = counted
+
+    def counted_triangle(ao, weights, out=None):
+        triangle_calls.append([int(ao.shape[1]), int(ao.shape[2])])
+        return original_triangle(ao, weights, out=out)
+
+    numint._triangular_tau = counted_triangle
     if args.tau == 'baseline':
         _tau_syrk._MIN_ORBITALS = 10**6
+    if args.triangle == 'baseline':
+        _tau_triangle._MIN_ORBITALS = 10**6
     try:
         cp.cuda.get_current_stream().synchronize()
         started = time.perf_counter()
@@ -107,11 +117,14 @@ def main():
             raise RuntimeError('The full basis must be retained')
         if (args.tau == 'symmetric') != bool(calls):
             raise RuntimeError('The requested tau implementation was not exercised')
+        if args.triangle == 'baseline' and triangle_calls:
+            raise RuntimeError('Disabled triangular tau products must not run')
         state = artifact / 'scf.npz'
         np.savez(state, mo_coeff=current.mo_coeff.get(), mo_occ=current.mo_occ.get(), mo_energy=current.mo_energy.get())
         report = {
             'case': args.case,
             'tau': args.tau,
+            'triangle': args.triangle,
             'geometry_angstrom': atom,
             'charge': charge,
             'multiplicity': multiplicity,
@@ -140,6 +153,7 @@ def main():
             'grid_points': len(current.grids.weights),
             'nlc_grid_points': len(current.nlcgrids.weights),
             'tau_syrk_calls': calls,
+            'tau_triangle_calls': triangle_calls,
             'state_sha256': hashlib.sha256(state.read_bytes()).hexdigest(),
             'cpu_affinity': sorted(os.sched_getaffinity(0)),
             'gpu_pci': cp.cuda.Device(0).pci_bus_id,
@@ -147,6 +161,7 @@ def main():
             'sources': _source_provenance(gpu4pyscf, numint.libgdft),
             'native_hashes': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in source.glob('lib/*.so')},
             'tau_sha256': hashlib.sha256(Path(_tau_syrk.__file__).read_bytes()).hexdigest(),
+            'triangle_sha256': hashlib.sha256(Path(_tau_triangle.__file__).read_bytes()).hexdigest(),
             'numint_sha256': hashlib.sha256(Path(numint.__file__).read_bytes()).hexdigest(),
             'benchmark_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         }
@@ -158,6 +173,7 @@ def main():
                     for key in (
                         'case',
                         'tau',
+                        'triangle',
                         'energy_hartree',
                         'scf_seconds',
                         'force_seconds',
@@ -169,6 +185,7 @@ def main():
         )
     finally:
         _tau_syrk._MIN_ORBITALS, numint._symmetric_tau = original_min, original_tau
+        _tau_triangle._MIN_ORBITALS, numint._triangular_tau = original_triangle_min, original_triangle
 
 
 if __name__ == '__main__':

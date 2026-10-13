@@ -47,9 +47,11 @@ def _workspace_size(nao, ngrids):
     return (3 * nao if nao > _MIN_ORBITALS else nao) * ngrids
 
 
-def _eligible(bra, ket, weights, out):
+def _eligible(bra, ket, weights, out, *, minimum=None):
     import cupy as cp
 
+    if minimum is None:
+        minimum = _MIN_ORBITALS
     # Small blocks are faster with the original three products. Distinct fields
     # require the general bilinear product, even when their values happen to agree.
     if (
@@ -58,7 +60,7 @@ def _eligible(bra, ket, weights, out):
         or bra.dtype != cp.float64
         or bra.ndim != 3
         or bra.shape[0] < 4
-        or bra.shape[1] <= _MIN_ORBITALS
+        or bra.shape[1] <= minimum
         or not bra.shape[2]
         or not bra.flags.c_contiguous
         or not isinstance(weights, cp.ndarray)

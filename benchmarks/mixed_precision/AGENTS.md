@@ -38,6 +38,9 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
   independent coordinate finite differences, partial tiles, signed weights and CUDA streams.
 - `gpu4pyscf/dft/_tau_syrk.py`, `test_tau_syrk.py`: signed symmetric float64 tau products,
   stream/error restoration, early float32 dispatch and organic SCF/force/finite-difference checks.
+- `gpu4pyscf/dft/_tau_triangle.py`, `test_tau_triangle.py`: direct signed float64 triangular
+  products for measured medium blocks on compute capability 8.6, compatibility/alias guards,
+  partial tiles, streams, unchanged early float32 dispatch and mixed-atom derivative checks.
 - `native_tau_benchmark.py`, `_organic_cases.py`: fresh ASE energy/force comparisons at the
   pinned recipe; generic mixed-atom organics and a fixed larger organic geometry.
 

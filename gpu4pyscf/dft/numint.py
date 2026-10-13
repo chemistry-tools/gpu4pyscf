@@ -30,6 +30,7 @@ from gpu4pyscf.lib.cupy_helper import (
 from gpu4pyscf.dft import xc_deriv, libxc
 from gpu4pyscf.dft._tau_syrk import (
     _eligible as _tau_syrk_eligible, _symmetric_tau, _workspace_size as _tau_workspace_size)
+from gpu4pyscf.dft._tau_triangle import _eligible as _tau_triangle_eligible, _triangular_tau
 from gpu4pyscf.lib import logger
 from gpu4pyscf.lib.multi_gpu import lru_cache
 from gpu4pyscf import __config__
@@ -2484,6 +2485,8 @@ def _scale_ao(ao, wv, out=None):
 
 def _tau_dot(bra, ket, wv, buf=None, out=None):
     '''1/2 <nabla i| v | nabla j>'''
+    if _tau_triangle_eligible(bra, ket, wv, out):
+        return _triangular_tau(bra, wv, out=out)
     if _tau_syrk_eligible(bra, ket, wv, out):
         return _symmetric_tau(bra, wv, buf=buf, out=out)
     return _tau_dot_full(bra, ket, wv, buf=buf, out=out)
