@@ -23,10 +23,10 @@ def test_source_provenance_uses_active_overlay_and_exchange_helpers(tmp_path):
     (package / '__init__.py').symlink_to(original / '__init__.py')
     names = ('dft/numint.py', 'dft/libxc.py', 'dft/gen_grid.py', 'scf/hf.py',
              'df/df_jk.py', 'df/_jk_contraction.py', 'df/_mixed_jk.py', 'df/_int8_gram.py',
-             'df/df.py', 'df/_mapped_transfer.py')
+             'df/df.py', 'df/_mapped_transfer.py', 'df/grad/rhf.py', 'df/grad/uhf.py', 'df/_response_products.py')
     for name in names:
         target = package / name
-        target.parent.mkdir(exist_ok=True)
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text('active source: ' + name)
     native = original / 'libnative.so'
     native.write_bytes(b'matching native library')
@@ -37,7 +37,7 @@ def test_source_provenance_uses_active_overlay_and_exchange_helpers(tmp_path):
         (package / 'df/_mixed_jk.py').read_bytes()).hexdigest()
     assert report['source_sha256']['gpu4pyscf/df/_int8_gram.py'] == hashlib.sha256(
         (package / 'df/_int8_gram.py').read_bytes()).hexdigest()
-    for name in ('df/df.py', 'df/_mapped_transfer.py'):
+    for name in ('df/df.py', 'df/_mapped_transfer.py', 'df/grad/rhf.py', 'df/grad/uhf.py', 'df/_response_products.py'):
         assert report['source_sha256']['gpu4pyscf/'+name] == hashlib.sha256(
             (package/name).read_bytes()).hexdigest()
     assert report['native_library_sha256'] == hashlib.sha256(native.read_bytes()).hexdigest()

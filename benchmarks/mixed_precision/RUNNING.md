@@ -200,6 +200,34 @@ retained baseline source before running `test_native_df_response.py` sequentiall
 checks cover full/long/short-range operators, nonsymmetric densities, auxiliary response,
 Cartesian/spherical hybrid forces and independent finite-difference energies.
 
+## Native auxiliary-response products
+
+On a single RTX 3080, native DF gradients can use two float64 products in
+`gpu4pyscf/df/_response_products.py`. Cartesian auxiliary coefficients with one
+nonzero per row and column use the native sparse basis transform in metric
+construction. The eigensystem and linear-dependence cutoff are unchanged.
+Symmetric occupied-factor densities use one triangle of the auxiliary Gram
+product and mirror it. Native auxiliary-contiguous and row-contiguous layouts
+feed cuBLAS directly, including supported positive leading strides.
+
+These paths are automatic in eligible gradients, including explicit float64
+calculations. They do not use reduced precision. General/nonsymmetric factors,
+incompatible layouts, nonfinite data and unsupported hardware retain native
+products. Matrix sizes and memory headroom bound the sparse-transform dispatch.
+The general right-hand-side solver remains available with its original behavior.
+
+Run `test_response_products.py` with `DFT_GPU_TEST=1` and
+`DFT_REFERENCE_DF_GRADIENT` pointing to the retained matching original gradient
+source. Tests cover both Gram layouts, pitched input, signed accumulation,
+alias and stream guards, error restoration, bitwise metric comparisons, complete
+mixed-element/open-shell forces, range-separated operators, nonsymmetric
+densities and energy finite differences. Complete-call performance comparisons
+need unchanged recipes and both grid and auxiliary response enabled.
+
+For unrestricted derivatives, also set `DFT_REFERENCE_UHF_DF_GRADIENT` to the
+matching original `df/grad/uhf.py`. Both spin Gram products are checked before
+updating output, preserving the native unrestricted exchange scaling.
+
 ## Mapped density-fitting transfers
 
 Single-GPU RTX 3080 builds that keep fitted integrals in mapped host storage

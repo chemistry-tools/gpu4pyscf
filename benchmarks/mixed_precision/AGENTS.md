@@ -28,6 +28,16 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
   stream-owned scratch buffer overlaps the previous copy with the next integral
   batch; error exits finish copies before releasing their owners. Tests compare
   complete host tensors bit for bit on the mixed-element and open-shell panel.
+- `gpu4pyscf/df/_response_products.py`, `test_response_products.py`: native float64
+  auxiliary-response products. Sorted Cartesian scaled-permutation coefficients
+  use the existing sparse basis transform around the unchanged metric solver;
+  its generic right-hand sides retain the original projection. Symmetric real
+  auxiliary Gram updates use SYRK directly on supported native/pitched layouts,
+  without packing the occupied-pair tensor. Guards preserve general density,
+  layout, complex, nonfinite and other-device fallbacks. Complete-force checks
+  require `DFT_REFERENCE_DF_GRADIENT` and `DFT_REFERENCE_UHF_DF_GRADIENT` and
+  explicitly force both fast paths on
+  mixed-element and open-shell molecules, with independent finite differences.
 - `gpu4pyscf/df/_int8_gram.py`, `test_int8_exchange.py`: nine-slice real Gram
   products on compute capability 8.6, a single shared slice buffer, bounded
   workspaces, exact INT32 partial sums and float64 reconstruction. Checks include

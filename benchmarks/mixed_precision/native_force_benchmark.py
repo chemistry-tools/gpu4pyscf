@@ -17,8 +17,11 @@ from gpu_performance import _resources, _source_provenance
 
 
 @contextlib.contextmanager
-def _reference_df(path):
-    from gpu4pyscf.df.grad import rhf
+def _reference_df(path, *, unrestricted=False):
+    if unrestricted:
+        from gpu4pyscf.df.grad import uhf as rhf
+    else:
+        from gpu4pyscf.df.grad import rhf
 
     tree = ast.parse(path.read_text())
     node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_jk_energy_per_atom')

@@ -12,6 +12,9 @@ on:
       - 'gpu4pyscf/df/df_jk.py'
       - 'gpu4pyscf/df/df.py'
       - 'gpu4pyscf/df/_mapped_transfer.py'
+      - 'gpu4pyscf/df/grad/rhf.py'
+      - 'gpu4pyscf/df/grad/uhf.py'
+      - 'gpu4pyscf/df/_response_products.py'
       - 'gpu4pyscf/df/_jk_contraction.py'
       - 'gpu4pyscf/df/_mixed_jk.py'
       - 'gpu4pyscf/df/_int8_gram.py'
@@ -29,6 +32,9 @@ on:
       - 'gpu4pyscf/df/df_jk.py'
       - 'gpu4pyscf/df/df.py'
       - 'gpu4pyscf/df/_mapped_transfer.py'
+      - 'gpu4pyscf/df/grad/rhf.py'
+      - 'gpu4pyscf/df/grad/uhf.py'
+      - 'gpu4pyscf/df/_response_products.py'
       - 'gpu4pyscf/df/_jk_contraction.py'
       - 'gpu4pyscf/df/_mixed_jk.py'
       - 'gpu4pyscf/df/_int8_gram.py'
@@ -66,6 +72,7 @@ jobs:
           gpu4pyscf/dft/_tau_triangle.py
           gpu4pyscf/df/_jk_contraction.py gpu4pyscf/df/_mixed_jk.py gpu4pyscf/df/_int8_gram.py
           gpu4pyscf/df/_mapped_transfer.py
+          gpu4pyscf/df/_response_products.py
           gpu4pyscf/tools/ase_interface.py
           benchmarks/mixed_precision examples/dft/12-mixed_precision_ase.py
       - name: Test defaults, verification, recovery and calculator state without CUDA
@@ -80,3 +87,4 @@ jobs:
           benchmarks/mixed_precision/test_df_exchange.py
           benchmarks/mixed_precision/test_int8_exchange.py
           benchmarks/mixed_precision/test_mapped_transfer.py
+          benchmarks/mixed_precision/test_response_products.py

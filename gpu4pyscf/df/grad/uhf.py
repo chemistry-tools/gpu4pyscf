@@ -25,6 +25,7 @@ from gpu4pyscf.df.int3c2e_bdiv import (
     _split_l_ctr_pattern, argsort_aux, get_ao_pair_loc, int2c2e_ip1_per_atom,
     SHM_SIZE, LMAX, L_AUX_MAX, THREADS, libvhf_rys, Int3c2eOpt, int2c2e)
 from gpu4pyscf.df import df_jk
+from gpu4pyscf.df._response_products import _SparseAuxTransform, _symmetric_aux_gram
 from gpu4pyscf.gto.mole import SortedMole
 from gpu4pyscf.scf.jk import _check_rsh_factors
 
@@ -104,13 +105,14 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1, hermi=0,
     aux_coeff, tmp = cp.empty_like(aux_coeff), aux_coeff
     aux_coeff[aux_sorting] = tmp
     tmp = None
+    aux_transform = _SparseAuxTransform.create(auxmol, aux_sorting, aux_coeff)
 
     j2c = int2c2e(auxmol, omega=omega, lr_factor=lr_factor, sr_factor=sr_factor)
-    if mol.omega <= 0 and not auxmol.mol.cart:
-        metric = aux_coeff.dot(_gen_metric_solver(j2c, 'CD')(aux_coeff.T))
-    else:
-        metric = aux_coeff.dot(_gen_metric_solver(j2c, 'ED')(aux_coeff.T))
-    j2c = aux_coeff = None
+    decompose = 'CD' if mol.omega <= 0 and not auxmol.mol.cart else 'ED'
+    projector = aux_transform.project_rhs if aux_transform is not None else None
+    solution = _gen_metric_solver(j2c, decompose, _rhs_projector=projector)(aux_coeff.T)
+    metric = aux_coeff.dot(solution) if aux_transform is None else aux_transform.apply(solution)
+    j2c = aux_coeff = solution = aux_transform = projector = None
     dm_oo = contract('uv,nvij->nuij', metric, j3c_oo)
     metric = j3c_oo = None
     if j_factor != 0:
@@ -208,8 +210,11 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1, hermi=0,
         else:
             dm_aux = auxvec[:,None] * auxvec
         if dm_factor_l is dm_factor_r:
-            dm_aux = contract('nrij,nsij->rs', dm_oo, dm_oo,
-                              alpha=-k_factor, beta=j_factor, out=dm_aux)
+            updated = _symmetric_aux_gram(dm_oo, dm_aux, -k_factor, j_factor)
+            if updated is None:
+                updated = contract('nrij,nsij->rs', dm_oo, dm_oo,
+                                   alpha=-k_factor, beta=j_factor, out=dm_aux)
+            dm_aux = updated
         else:
             dm_aux = contract('nrij,nsji->rs', dm_oo, dm_oo,
                               alpha=-k_factor, beta=j_factor, out=dm_aux)
