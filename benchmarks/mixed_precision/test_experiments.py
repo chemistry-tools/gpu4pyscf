@@ -6,11 +6,35 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-from gpu_performance import THREAD_VARIABLES, _resources, _settings
+from gpu_performance import THREAD_VARIABLES, _resources, _settings, _source_provenance
 
 gpu = pytest.mark.skipif(os.getenv('DFT_GPU_TEST') != '1', reason='opt-in CUDA experiment')
+
+
+def test_source_provenance_uses_active_overlay_and_exchange_helpers(tmp_path):
+    original = tmp_path / 'original/gpu4pyscf'
+    original.mkdir(parents=True)
+    (original / '__init__.py').write_text('original package')
+    package = tmp_path / 'overlay/gpu4pyscf'
+    package.mkdir(parents=True)
+    (package / '__init__.py').symlink_to(original / '__init__.py')
+    names = ('dft/numint.py', 'dft/libxc.py', 'dft/gen_grid.py', 'scf/hf.py',
+             'df/df_jk.py', 'df/_jk_contraction.py', 'df/_mixed_jk.py')
+    for name in names:
+        target = package / name
+        target.parent.mkdir(exist_ok=True)
+        target.write_text('active source: ' + name)
+    native = original / 'libnative.so'
+    native.write_bytes(b'matching native library')
+    module = SimpleNamespace(__file__=str(package / '__init__.py'), __version__='test')
+    report = _source_provenance(module, SimpleNamespace(_name=str(native)))
+    assert report['module'] == str(package / '__init__.py')
+    assert report['source_sha256']['gpu4pyscf/df/_mixed_jk.py'] == hashlib.sha256(
+        (package / 'df/_mixed_jk.py').read_bytes()).hexdigest()
+    assert report['native_library_sha256'] == hashlib.sha256(native.read_bytes()).hexdigest()
 
 
 def test_four_cpu_limit(monkeypatch):

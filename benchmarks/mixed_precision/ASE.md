@@ -19,7 +19,9 @@ hessian = atoms.calc.get_hessian(atoms, auxbasis_response=2)  # (3N, 3N), eV/Ang
 The default `precision="auto"` selects verified mixed SCF for supported molecular GPU DFT
 and native float64 for other methods. `precision="float64"` explicitly forces native SCF. Each new geometry starts a fresh precision
 schedule, while the normal scanner reuses the previous density. Grid products use float32 for
-at most five SCF iterations; VV10 pair products, when present, use float32 partial sums combined in float64.
+at most five SCF iterations; eligible density-fitted global-hybrid GGAs use early
+float32 exchange products on the same schedule. VV10 pair products, when present,
+use float32 partial sums combined in float64.
 The calculator then computes the original float64 energy and physical Fock. Acceptance requires
 both the original energy tolerance and orbital-gradient tolerance. The accepted float64 energy
 is stored on the method and returned to ASE.
@@ -29,12 +31,16 @@ using the remaining original cycle budget. At most 20 approximate iterations are
 at least half of the budget initially reserved for recovery. Failed float64 convergence raises
 an error. The optimizer's geometry and history are retained; the whole optimizer is not restarted.
 
-Integration dispatch is private to the method's NumInt instance. Module-level kernels and other
+Integration and exchange dispatch are private to the method's NumInt and fitting instances. Module-level kernels and other
 calculator instances remain unchanged. Native float64 routines are restored before gradients
 or Hessians run. `grid_response` and `auxbasis_response` are optional explicit gradient controls;
 `None` retains their native defaults. `calc.precision_info` records checks, fallback and cycles;
 `calc.calculation_info` separates SCF and force timing. `calc.set(precision="float64")` clears
 cached ASE results before the next calculation.
+
+`calc.precision_info['df_exchange_contraction_calls']` reports float32 and float64
+exchange-product counts. Integral construction, final verification and derivatives
+retain float64; no optimizer restart or extra calculator setting is required.
 
 An energy-only request followed by forces at unchanged atoms reuses the accepted
 SCF state and its precision verification; derivatives still use native float64.

@@ -17,6 +17,12 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
 - `test_gga_density.py`: adaptive float64 RKS GGA density products, fractional
   occupations and tagged-orbital identity. Sparse AO blocks can use one density/AO
   product instead of four occupied-orbital projections.
+- `gpu4pyscf/df/_jk_contraction.py`, `test_df_exchange.py`: symmetric float64
+  exchange updates, general-output accumulation, alias and stream guards, complete
+  mixed-atom J/K comparisons and verified RKS/UKS SCF checks.
+- `gpu4pyscf/df/_mixed_jk.py`: per-instance early float32 exchange for native
+  density-fitted global-hybrid GGAs, sharing the five-cycle grid schedule and
+  returning to native float64 before verification and derivatives.
 - `vv10_experiment.py`: scoped VV10 adapters and CuPy pair-kernel/compiler comparisons. Adapted
   from upstream v1.8.1 `gpu4pyscf/lib/gdft/vv10.cu`, under the repository's Apache-2.0 license.
 - `grid_experiment.py`: scoped grid matrix products and single-GPU task-dispatch experiments.

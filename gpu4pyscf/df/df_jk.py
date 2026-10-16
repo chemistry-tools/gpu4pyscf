@@ -32,6 +32,7 @@ from gpu4pyscf.scf.jk import _check_rsh_factors
 from gpu4pyscf.scf import ghf
 from gpu4pyscf.lib.cupy_helper import asarray, ndarray, get_avail_mem
 from gpu4pyscf.lib import multi_gpu
+from gpu4pyscf.df._jk_contraction import _symmetric_k_update
 num_devices = multi_gpu.num_devices
 
 def density_fit(mf, auxbasis=None, with_df=None, only_dfj=False):
@@ -493,6 +494,12 @@ class _DFHF:
             obj.spin_samples = self.spin_samples
         return obj
 
+def _k_gram(rhok, out):
+    if not _symmetric_k_update(rhok, out):
+        contract('nikL,njkL->nij', rhok, rhok, beta=1, out=out)
+    return out
+
+
 def get_jk(dfobj, dms, hermi=0, with_j=True, with_k=True,
            omega=None, lr_factor=None, sr_factor=None):
     '''
@@ -583,7 +590,7 @@ def get_jk(dfobj, dms, hermi=0, with_j=True, with_k=True,
                         for i0, i1 in lib.prange(0, n_dm, dm_batch_size):
                             rhok = ndarray((i1-i0,nao,nocc,nL), buffer=buf)
                             contract('Lij,njk->nikL', cderi, factor_l[s,i0:i1], out=rhok)
-                            contract('nikL,njkL->nij', rhok, rhok, beta=1, out=vk[s,i0:i1])
+                            _k_gram(rhok, vk[s,i0:i1])
                     elif dm_factor_mode == 1:
                         for i0, i1 in lib.prange(0, n_dm, dm_batch_size):
                             rhok, rhok1 = ndarray((2,i1-i0,nao,nocc,nL), buffer=buf)

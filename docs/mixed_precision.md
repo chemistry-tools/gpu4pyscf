@@ -3,8 +3,9 @@
 This fork provides verified mixed precision for molecular RKS/UKS on one visible GPU,
 including B3LYP and VV10 functionals. Early grid matrix products and, when present,
 VV10 pair products use float32, followed by verification with
-native float64 energy and physical Fock. AO fields, densities, XC, exchange and
-orbital diagonalization retain float64. Numerical settings are configured on the
+native float64 energy and physical Fock. Density-fitted global-hybrid GGAs also use
+float32 exchange products for the first five iterations, with float64 accumulation.
+AO fields, densities, XC, integrals and orbital diagonalization retain float64. Numerical settings are configured on the
 mean-field object and preserved by the precision runner.
 
 Grid contractions reuse float32 scratch within each worker thread and CUDA stream,
@@ -58,6 +59,13 @@ NumInt dispatch, the callback and the original cycle budget are restored on ever
 exit. The accepted flag remains false on failure. There are no module-level patches.
 Custom NumInt overrides, custom convergence callbacks, periodic methods and multiple
 visible GPUs are currently unsupported and rejected explicitly.
+
+The exchange dispatch is private to the density-fitting instance. It uses explicit
+float32 products, releases conversion buffers when switching to float64 and restores
+the native method before derivatives. The report's `df_exchange_contraction_calls`
+records both precisions; zero counts identify calculations outside this path's
+global-hybrid GGA and native density-fitting guards. Float64 real symmetric exchange
+products use a triangular BLAS update for sufficiently large contiguous blocks.
 
 ## ASE optimizers and analytic Hessians
 

@@ -85,7 +85,8 @@ def _checkout_revision(root):
 
 
 def _source_provenance(module, native_library):
-    root = Path(module.__file__).resolve().parents[1]
+    module_path = Path(module.__file__).absolute()
+    root = module_path.parents[1]
     sources = (
         'gpu4pyscf/dft/numint.py',
         'gpu4pyscf/dft/libxc.py',
@@ -93,9 +94,11 @@ def _source_provenance(module, native_library):
         'gpu4pyscf/scf/hf.py',
         'gpu4pyscf/df/df_jk.py',
     )
+    optional = ('gpu4pyscf/df/_jk_contraction.py', 'gpu4pyscf/df/_mixed_jk.py')
+    sources += tuple(name for name in optional if (root / name).is_file())
     native_path = Path(native_library._name).resolve()
     return {
-        'module': str(Path(module.__file__).resolve()),
+        'module': str(module_path),
         'module_version': module.__version__,
         'checkout_revision': _checkout_revision(root),
         'source_sha256': {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in sources},

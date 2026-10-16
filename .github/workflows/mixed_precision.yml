@@ -9,6 +9,9 @@ on:
       - 'gpu4pyscf/dft/_tau_syrk.py'
       - 'gpu4pyscf/dft/_tau_triangle.py'
       - 'gpu4pyscf/dft/numint.py'
+      - 'gpu4pyscf/df/df_jk.py'
+      - 'gpu4pyscf/df/_jk_contraction.py'
+      - 'gpu4pyscf/df/_mixed_jk.py'
       - 'gpu4pyscf/grad/rks.py'
       - 'gpu4pyscf/tools/ase_interface.py'
       - 'benchmarks/mixed_precision/**'
@@ -20,6 +23,9 @@ on:
       - 'gpu4pyscf/dft/_tau_syrk.py'
       - 'gpu4pyscf/dft/_tau_triangle.py'
       - 'gpu4pyscf/dft/numint.py'
+      - 'gpu4pyscf/df/df_jk.py'
+      - 'gpu4pyscf/df/_jk_contraction.py'
+      - 'gpu4pyscf/df/_mixed_jk.py'
       - 'gpu4pyscf/grad/rks.py'
       - 'gpu4pyscf/tools/ase_interface.py'
       - 'benchmarks/mixed_precision/**'
@@ -52,6 +58,7 @@ jobs:
           gpu4pyscf/dft/mixed_precision.py gpu4pyscf/dft/_mixed_grid.py
           gpu4pyscf/dft/_mixed_vv10.py gpu4pyscf/dft/_vv10_grad.py gpu4pyscf/dft/_tau_syrk.py
           gpu4pyscf/dft/_tau_triangle.py
+          gpu4pyscf/df/_jk_contraction.py gpu4pyscf/df/_mixed_jk.py
           gpu4pyscf/tools/ase_interface.py
           benchmarks/mixed_precision examples/dft/12-mixed_precision_ase.py
       - name: Test defaults, verification, recovery and calculator state without CUDA
@@ -63,3 +70,4 @@ jobs:
           benchmarks/mixed_precision/test_organic_cases.py
           benchmarks/mixed_precision/test_semilocal_precision.py
           benchmarks/mixed_precision/test_gga_density.py
+          benchmarks/mixed_precision/test_df_exchange.py

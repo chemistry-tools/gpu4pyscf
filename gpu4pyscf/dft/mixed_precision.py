@@ -27,6 +27,7 @@ def _private_functions(namespace, replacements):
 def _precision_context(mf):
     import cupy
 
+    from gpu4pyscf.df._mixed_jk import _exchange_context
     from gpu4pyscf.dft import numint
     from gpu4pyscf.dft._mixed_grid import _GridPrecision, _make_ao_dot, _make_contract, _make_tau_dot
     from gpu4pyscf.dft._mixed_vv10 import _AdaptiveVV10
@@ -59,7 +60,9 @@ def _precision_context(mf):
                 raise ValueError(f'Mixed precision does not support a custom NumInt.{name}')
             originals[name] = (name in ni.__dict__, ni.__dict__.get(name))
             setattr(ni, name, MethodType(private[name], ni))
-        yield grid, vv10
+        with _exchange_context(mf, grid) as exchange:
+            grid._df_exchange = exchange
+            yield grid, vv10
     finally:
         for name, (had_attribute, previous) in originals.items():
             if had_attribute:
@@ -193,6 +196,11 @@ def run_verified_scf(mf, calculate=None, *, dm0=None):
             info['grid_contraction_calls'] = {
                 'float32': grid.float32_calls,
                 'float64': grid.float64_calls,
+            }
+            exchange = getattr(grid, '_df_exchange', None)
+            info['df_exchange_contraction_calls'] = {
+                'float32': exchange.float32_calls if exchange is not None else 0,
+                'float64': exchange.float64_calls if exchange is not None else 0,
             }
             info['vv10_precisions'] = vv10.precisions.copy()
             if not check['passed']:
