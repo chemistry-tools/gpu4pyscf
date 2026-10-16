@@ -772,3 +772,64 @@ products; the timing table retains the exact `658ccf8` source provenance.
 Raw states, paired reports and source/native guards remain outside Git under
 `b3lyp-force-response-native-20261016-v3`, `b3lyp-force-fixed-density-20261016-v1`,
 `b3lyp-projection-native-20261016-v2` and `b3lyp-projection-final-20261016-v1`.
+
+
+## Native exact-zero float64 DF whitening
+
+Implementation `f04c720` applies the existing auxiliary inverse in bounded output-column
+blocks, omitting exactly zero coefficient rows while retaining the remaining rows' original
+order. This is a native float64 setup optimization; the inverse values, SCF precision schedules,
+verification/recovery thresholds, derivatives and scientific recipe are unchanged. Automatic
+dispatch currently targets single-device compute capability 8.6. Unsupported, dense, eigenvalue
+and nonfinite cases retain the original product. The helper owns its buffers for one build and
+bounds compact coefficients plus gather scratch to 512 MiB.
+
+The baseline is `cf49707` with all preceding optimizations. Fresh processes alternate the original
+and new whitening paths on physical GPU 1 (RTX 3080 10 GB), with four CPUs, affinity 4–7 and both
+shared locks. Each timed call includes fresh density-fitting setup, verified mixed SCF and complete
+native float64 forces, with grid and auxiliary response. The recipe is the B3LYP/VWN-RPA,
+Cartesian `6-31g*`, `def2-universal-jkfit`, `1e-8` Hartree / `1e-5` gradient recipe above.
+
+| Development molecule / grid | Original setup, s | New setup, s | Original energy + forces, s | New energy + forces, s | Whole-call reduction |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Circumcoronene, 846 orbitals, TC-style grid | 32.14 | 22.00 | 98.79 | 88.77 | 10.14% |
+| N/O organic trimer, 753 orbitals, TC-style grid | 11.99 | 7.68 | 59.60 | 55.36 | 7.11% |
+| Circumcoronene, 846 orbitals, native level 3 | 32.14 | 21.88 | 109.37 | 99.03 | 9.45% |
+
+The first two rows are medians of three alternating pairs. The last row is one fresh pair.
+The TC-style construction follows the retained TeraChem comparison and has 438,780 physical
+points for circumcoronene; ordinary native level 3 has 938,916. This experiment changes neither
+grid within a pair, and the production grid default remains unchanged. Setup reductions are
+31.55%, 35.95% and 31.91%, respectively. Circumcoronene retains 14 SCF iterations and the organic
+15; forces are approximately unchanged in elapsed time. These are additional gains over the
+previous optimized engine, not comparisons with pristine upstream.
+
+Deferred CUDA-event profiling preserves computation/copy overlap. The large-system whitening
+operation, including the new gather and finite checks, takes **14.97 seconds**, versus **24.72
+seconds** for the original dense product: a **39.45% reduction**. Block preparation takes 0.006
+seconds and the retained coefficient fraction is 54.92%. Measured coefficient/scratch storage is
+273.38 MiB. The 8.53 GB host tensor still takes approximately 3.36 seconds to allocate; actual
+host copies take 0.78 seconds, largely overlapped with computation. Nested wait times are not
+additional transfer costs. Profiled runs are separate from the timing medians above.
+
+All 14 calls pass unchanged native float64 verification without recovery. Each first optimized
+case/grid also rebuilds the original dense integrals outside timing and independently checks
+the accepted state and its complete forces. Maximum final-energy differences are `3.02e-10`
+Hartree; the largest same-density original-force difference is `8.18e-12` eV/Angstrom.
+Independent accepted SCF states retain ordinary stopping/trajectory variation.
+
+The implementation passes 106 local CPU checks and a 40-check host suite comprising 12 plan
+checks and 28 opt-in CUDA checks. Coverage includes N/O/S/F/Cl and open-shell chemistry,
+host/GPU storage, same-density original forces, energy finite differences, zero/partial blocks,
+nonfinite/alias guards and BLAS stream/state restoration. Individual inverse-derived factors
+can differ through float64 cancellation; physical fitted integrals, independent native energies
+and forces determine acceptance. The final independent-energy correctness bound is `1e-9`
+Hartree, stricter than production verification; tight solver convergence is retained for
+derivative comparisons. Initial strict-factor/reconstruction failures, native-repeat controls
+and unsuccessful alignment refinements remain retained alongside the final passing evidence.
+
+All 15 staged product-source hashes match `f04c720`, and each complete call checks the base
+535-file source/data manifest and 12 matching native-library hashes. Validation datasets stay
+held out. Raw timings, numerical states, failed/final attempts and provenance remain outside
+Git under `b3lyp-whitening-native-20261016-v2`; the original/final direct profiles are retained
+under `b3lyp-setup-profile-20261016-v1` and `b3lyp-whitening-profile-20261016-v1`.
