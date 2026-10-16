@@ -112,7 +112,8 @@ DFT_GPU_TEST=1 CUDA_VISIBLE_DEVICES=1 taskset -c 4-7 python -m pytest -q \
 `test_semilocal_precision.py` adds B3LYP/Cartesian 6-31G* checks on nitrogen, oxygen,
 sulfur, fluorine and chlorine organics, an open-shell case, LDA/GGA/meta-GGA coverage
 and a force finite difference. It requires the current native grid-product dispatch.
-Independent force comparisons use direct integrals. Density-fitted checks compare
+Independent force comparisons use direct integrals with tighter correctness-only
+screening and convergence. Density-fitted checks compare
 SCF energies/densities and complete forces at an identical accepted density: the
 existing Cartesian DF derivative path can amplify tiny differences between independently
 converged densities. These checks do not establish independent DF force agreement.

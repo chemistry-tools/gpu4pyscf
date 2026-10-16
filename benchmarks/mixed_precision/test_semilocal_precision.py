@@ -50,8 +50,11 @@ def _calculator(atoms, xc, precision, *, charge=0, multiplicity=1, density_fit=F
     # Independent SCF paths need tighter orbital convergence for force comparisons.
     # Production tolerances are configured by the caller and are not changed.
     mf.conv_tol, mf.conv_tol_grad = 1e-11, 1e-9
+    # Tight screening keeps incremental J/K drift below the residual checked here.
+    mf.direct_scf_tol = 1e-15
     mf.max_cycle, mf.chkfile = 100, None
-    return PySCF(method=mf, precision=precision, grid_response=True, auxbasis_response=True)
+    return PySCF(method=mf, precision=precision, grid_response=True,
+                 auxbasis_response=True if density_fit else None)
 
 
 @pytest.mark.parametrize('case,xc,charge,multiplicity', [
