@@ -21,7 +21,7 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
   exchange updates, general-output accumulation, alias and stream guards, complete
   mixed-atom J/K comparisons and verified RKS/UKS SCF checks.
 - `gpu4pyscf/df/_mixed_jk.py`: per-instance early float32 exchange for native
-  density-fitted global-hybrid GGAs, sharing the five-cycle grid schedule and
+  density-fitted global-hybrid GGAs, sharing a bounded adaptive grid schedule and
   returning to native float64 before verification and derivatives.
 - `vv10_experiment.py`: scoped VV10 adapters and CuPy pair-kernel/compiler comparisons. Adapted
   from upstream v1.8.1 `gpu4pyscf/lib/gdft/vv10.cu`, under the repository's Apache-2.0 license.

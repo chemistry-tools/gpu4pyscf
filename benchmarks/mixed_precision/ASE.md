@@ -19,8 +19,10 @@ hessian = atoms.calc.get_hessian(atoms, auxbasis_response=2)  # (3N, 3N), eV/Ang
 The default `precision="auto"` selects verified mixed SCF for supported molecular GPU DFT
 and native float64 for other methods. `precision="float64"` explicitly forces native SCF. Each new geometry starts a fresh precision
 schedule, while the normal scanner reuses the previous density. Grid products use float32 for
-at most five SCF iterations; eligible density-fitted global-hybrid GGAs use early
-float32 exchange products on the same schedule. VV10 pair products, when present,
+at most five SCF iterations; eligible density-fitted global-hybrid GGAs adapt the
+shared grid/exchange schedule to convergence progress, with a twelve-iteration cap.
+The [precision guide](../../docs/mixed_precision.md#direct-scf) describes the switch criteria.
+VV10 pair products, when present,
 use float32 partial sums combined in float64.
 The calculator then computes the original float64 energy and physical Fock. Acceptance requires
 both the original energy tolerance and orbital-gradient tolerance. The accepted float64 energy

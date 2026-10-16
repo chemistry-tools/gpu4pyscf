@@ -160,6 +160,8 @@ def run_verified_scf(mf, calculate=None, *, dm0=None):
     mf.converged = False
 
     with _precision_context(mf) as (grid, vv10):
+        adaptive = getattr(grid, '_df_exchange', None) is not None
+        info['grid_precision_schedule'] = 'adaptive_hybrid_gga' if adaptive else 'first_five'
 
         def progress(env):
             records.append(
@@ -170,7 +172,15 @@ def run_verified_scf(mf, calculate=None, *, dm0=None):
                     'orbital_gradient_norm': float(env['norm_gorb']),
                 }
             )
-            if len(records) >= 5:
+            # A global-hybrid GGA can spend most of SCF in exchange products.
+            # Finish the inexpensive search before returning to native fields;
+            # the hard cap leaves float64 iterations in the initial phase.
+            if adaptive:
+                if len(records) >= 12 or (len(records) >= 5
+                        and abs(float(env['e_tot'] - env['last_hf_e'])) < 1e-5
+                        and float(env['norm_gorb']) < 1e-3):
+                    grid.use_float32 = False
+            elif len(records) >= 5:
                 grid.use_float32 = False
             if callable(callback):
                 callback(env)

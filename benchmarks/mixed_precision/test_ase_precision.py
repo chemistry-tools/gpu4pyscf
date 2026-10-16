@@ -245,6 +245,70 @@ def test_non_vv10_failed_verification_recovers_from_current_density(precision, m
     assert mf.mixed_precision_info['fallback_scf'] and mf.mixed_precision_info['accepted']
 
 
+@pytest.mark.parametrize('energy_cycle,gradient_cycle,switch', [
+    (2, 2, 5), (2, 8, 8), (10, 2, 10), (None, 2, 12), (2, None, 12),
+])
+def test_adaptive_exchange_schedule_waits_for_both_residuals_and_is_bounded(
+    precision, monkeypatch, energy_cycle, gradient_cycle, switch
+):
+    module, grid, _ = precision
+    grid._df_exchange = SimpleNamespace(float32_calls=8, float64_calls=4)
+    mf = _MeanField()
+    mf.xc, mf.do_nlc = 'b3lyp', lambda: False
+    observed = []
+
+    def kernel(dm0=None):
+        for cycle in range(16):
+            observed.append(grid.use_float32)
+            energy_settled = energy_cycle is not None and cycle+1 >= energy_cycle
+            gradient_settled = gradient_cycle is not None and cycle+1 >= gradient_cycle
+            energy = mf.e_tot if energy_settled else mf.e_tot+.001
+            mf.callback({'cycle': cycle, 'e_tot': energy, 'last_hf_e': mf.e_tot,
+                         'norm_gorb': 1e-5 if gradient_settled else .1})
+        mf.converged = True
+        return mf.e_tot
+
+    def check(*args):
+        assert not grid.use_float32
+        return _check(True)
+
+    mf.kernel = kernel
+    monkeypatch.setattr(module, '_full_check', check)
+    module.run_verified_scf(mf)
+    assert observed == [True]*switch+[False]*(16-switch)
+    assert mf.mixed_precision_info['grid_precision_schedule'] == 'adaptive_hybrid_gga'
+    assert mf.mixed_precision_info['accepted']
+
+
+def test_adaptive_failed_verification_keeps_recovery_float64_with_small_budget(precision, monkeypatch):
+    module, grid, _ = precision
+    grid._df_exchange = SimpleNamespace(float32_calls=8, float64_calls=4)
+    mf = _MeanField()
+    mf.xc, mf.do_nlc, mf.max_cycle = 'b3lyp', lambda: False, 10
+    observed, checks = [], iter((_check(False), _check(True)))
+
+    def kernel(dm0=None):
+        mf.calls.append((dm0, mf.max_cycle))
+        for cycle in range(mf.max_cycle):
+            observed.append(grid.use_float32)
+            mf.callback({'cycle': cycle, 'e_tot': mf.e_tot, 'last_hf_e': mf.e_tot+1,
+                         'norm_gorb': .1})
+        mf.converged = True
+        return mf.e_tot
+
+    def check(*args):
+        assert not grid.use_float32
+        return next(checks)
+
+    mf.kernel = kernel
+    monkeypatch.setattr(module, '_full_check', check)
+    module.run_verified_scf(mf)
+    assert observed == [True]*5+[False]*5
+    assert mf.calls == [(None, 5), (mf.dm, 5)]
+    assert mf.max_cycle == 10 and mf.callback is None
+    assert mf.mixed_precision_info['fallback_scf'] and mf.mixed_precision_info['accepted']
+
+
 @pytest.fixture
 def ase_calculator(precision, monkeypatch):
     from pyscf import gto, lib

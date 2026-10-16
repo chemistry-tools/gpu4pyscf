@@ -4,7 +4,7 @@ This fork provides verified mixed precision for molecular RKS/UKS on one visible
 including B3LYP and VV10 functionals. Early grid matrix products and, when present,
 VV10 pair products use float32, followed by verification with
 native float64 energy and physical Fock. Density-fitted global-hybrid GGAs also use
-float32 exchange products for the first five iterations, with float64 accumulation.
+float32 exchange products during the early search, with float64 accumulation.
 AO fields, densities, XC, integrals and orbital diagonalization retain float64. Numerical settings are configured on the
 mean-field object and preserved by the precision runner.
 
@@ -44,9 +44,14 @@ scanner callable can instead be supplied as the second argument; it preserves na
 geometry reset and warm density reuse. A callable and an explicit density cannot be
 supplied together. The native callback is retained through all SCF phases.
 
-The runner uses float32 grid products for at most five iterations and float32 VV10
-pair products, when present, during the approximate phase. LDA/GGA products use the
-native float64 matrix path after those early iterations. It caps the first SCF phase at 20 iterations and
+The runner uses float32 grid products for at most five iterations, with an adaptive
+schedule for native density-fitted global-hybrid GGAs. Those methods retain float32
+grid and exchange products until both the energy change falls below `1e-5` Hartree
+and the orbital gradient below `1e-3`, after at least five iterations and at most
+twelve. Once switched, products remain float64, including all verification and recovery.
+These are precision-switch criteria; the caller's SCF acceptance thresholds are unchanged.
+Other methods retain the five-iteration grid schedule. VV10 pair products, when present,
+use float32 during the approximate phase. It caps the first SCF phase at 20 iterations and
 initially reserves half the configured `max_cycle` budget for recovery. After SCF,
 it checks the full float64 energy change against `conv_tol` and the physical orbital
 gradient against `conv_tol_grad`, or `sqrt(conv_tol)` when unset. Passing verification
