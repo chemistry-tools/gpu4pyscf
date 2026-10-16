@@ -94,7 +94,8 @@ def _source_provenance(module, native_library):
         'gpu4pyscf/scf/hf.py',
         'gpu4pyscf/df/df_jk.py',
     )
-    optional = ('gpu4pyscf/df/_jk_contraction.py', 'gpu4pyscf/df/_mixed_jk.py', 'gpu4pyscf/df/_int8_gram.py')
+    optional = ('gpu4pyscf/df/_jk_contraction.py', 'gpu4pyscf/df/_mixed_jk.py', 'gpu4pyscf/df/_int8_gram.py',
+                'gpu4pyscf/df/df.py', 'gpu4pyscf/df/_mapped_transfer.py')
     sources += tuple(name for name in optional if (root / name).is_file())
     native_path = Path(native_library._name).resolve()
     return {

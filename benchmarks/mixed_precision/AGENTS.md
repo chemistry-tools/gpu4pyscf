@@ -23,6 +23,11 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
 - `gpu4pyscf/df/_mixed_jk.py`: per-instance early float32 and later INT8 exchange for native
   density-fitted global-hybrid GGAs, sharing a bounded adaptive grid schedule and
   returning to native float64 before verification and derivatives.
+- `gpu4pyscf/df/_mapped_transfer.py`, `test_mapped_transfer.py`: bounded asynchronous
+  GPU transpose and DMA writes to mapped host density-fitting storage. A single
+  stream-owned scratch buffer overlaps the previous copy with the next integral
+  batch; error exits finish copies before releasing their owners. Tests compare
+  complete host tensors bit for bit on the mixed-element and open-shell panel.
 - `gpu4pyscf/df/_int8_gram.py`, `test_int8_exchange.py`: nine-slice real Gram
   products on compute capability 8.6, a single shared slice buffer, bounded
   workspaces, exact INT32 partial sums and float64 reconstruction. Checks include

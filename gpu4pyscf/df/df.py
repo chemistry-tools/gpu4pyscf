@@ -28,6 +28,7 @@ from gpu4pyscf.lib import utils
 from gpu4pyscf.lib import multi_gpu
 from gpu4pyscf.df import int3c2e_bdiv
 from gpu4pyscf.df import df_jk
+from gpu4pyscf.df._mapped_transfer import _MappedCderiWriter
 from gpu4pyscf.gto.mole import SortedMole
 from gpu4pyscf import __config__
 
@@ -608,24 +609,33 @@ def _cholesky_eri(intopt, *, omega=None, lr_factor=None, sr_factor=None,
             if needs_recontraction:
                 work1 = cp.empty(naux * cderi_batch_size)
 
-            for batch_id in batch_iter:
-                log.debug1('processing cderi batch %d', batch_id)
-                j3c = _eval_j3c(shl_pair_batch_id=batch_id, out=work)
-                cderi_gpu = ndarray((j3c.shape[0], naux), buffer=work2)
-                cderi_gpu = j3c.dot(c, out=cderi_gpu)
-                if needs_recontraction:
-                    cderi_gpu = recontract(batch_id, cderi_gpu, out=work1)
+            writer = (_MappedCderiWriter.create(cderi_cpu, cderi_batch_size)
+                      if num_devices == 1 else None)
+            try:
+                for batch_id in batch_iter:
+                    log.debug1('processing cderi batch %d', batch_id)
+                    j3c = _eval_j3c(shl_pair_batch_id=batch_id, out=work)
+                    cderi_gpu = ndarray((j3c.shape[0], naux), buffer=work2)
+                    cderi_gpu = j3c.dot(c, out=cderi_gpu)
+                    if needs_recontraction:
+                        cderi_gpu = recontract(batch_id, cderi_gpu, out=work1)
 
-                p0, p1 = cderi_offsets[batch_id:batch_id+2]
-                # TODO: async-write to host memory in another stream
-                err = libvhf_rys.transpose_write(
-                    ctypes.cast(cp.cuda.get_current_stream().ptr, ctypes.c_void_p),
-                    cderi_cpu.ctypes,
-                    ctypes.cast(cderi_gpu.data.ptr, ctypes.c_void_p),
-                    ctypes.c_int(naux), ctypes.c_int(cderi_npairs),
-                    ctypes.c_int(p0), ctypes.c_int(p1))
-                if err != 0:
-                    raise RuntimeError('transpose_write cderi_cpu failed')
+                    p0, p1 = cderi_offsets[batch_id:batch_id+2]
+                    if writer is not None:
+                        if writer.enqueue(cderi_gpu, p0, p1):
+                            continue
+                        writer.finish()
+                    err = libvhf_rys.transpose_write(
+                        ctypes.cast(cp.cuda.get_current_stream().ptr, ctypes.c_void_p),
+                        cderi_cpu.ctypes,
+                        ctypes.cast(cderi_gpu.data.ptr, ctypes.c_void_p),
+                        ctypes.c_int(naux), ctypes.c_int(cderi_npairs),
+                        ctypes.c_int(p0), ctypes.c_int(p1))
+                    if err != 0:
+                        raise RuntimeError('transpose_write cderi_cpu failed')
+            finally:
+                if writer is not None:
+                    writer.close()
 
         batch_iter = iter(range(num_batches))
         multi_gpu.run(proc, args=(batch_iter,), non_blocking=True)

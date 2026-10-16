@@ -200,6 +200,25 @@ retained baseline source before running `test_native_df_response.py` sequentiall
 checks cover full/long/short-range operators, nonsymmetric densities, auxiliary response,
 Cartesian/spherical hybrid forces and independent finite-difference energies.
 
+## Mapped density-fitting transfers
+
+Single-GPU RTX 3080 builds that keep fitted integrals in mapped host storage
+can transpose one batch on the GPU and copy it through CUDA DMA. The copy runs
+on a separate stream and can overlap the next batch's integral evaluation and
+matrix product. The scratch buffer is limited to 2 GiB and half the available
+device memory; other devices, small batches and insufficient memory retain
+the native mapped-write kernel. Both paths use the same float64 arithmetic.
+Buffers remain owned until all host writes finish, including error exits.
+
+Run `test_mapped_transfer.py` with `DFT_GPU_TEST=1` in the matching native
+environment. It checks partial and overlapping writes, changing batch sizes,
+NumPy integer offsets, bit preservation, stream ordering and failure cleanup.
+Complete host-backed fitted tensors are compared bit for bit on the N/O/S/F/Cl
+and open-shell panel, followed by native SCF/force comparisons. CPU-only runs
+check the allocation bounds. Large-system timing must include a case whose
+integrals actually spill to host memory; smaller systems can legitimately
+retain the existing GPU-resident path.
+
 ## Symmetric float64 tau products
 
 The native integrator uses signed symmetric rank updates for identical real float64 AO
