@@ -29,6 +29,7 @@ from gpu4pyscf.lib import multi_gpu
 from gpu4pyscf.df import int3c2e_bdiv
 from gpu4pyscf.df import df_jk
 from gpu4pyscf.df._mapped_transfer import _MappedCderiWriter
+from gpu4pyscf.df._whitening import _BlockedWhitening, _whiten
 from gpu4pyscf.gto.mole import SortedMole
 from gpu4pyscf import __config__
 
@@ -612,11 +613,12 @@ def _cholesky_eri(intopt, *, omega=None, lr_factor=None, sr_factor=None,
             writer = (_MappedCderiWriter.create(cderi_cpu, cderi_batch_size)
                       if num_devices == 1 else None)
             try:
+                whitening = _BlockedWhitening.create(c, tag) if num_devices == 1 else None
                 for batch_id in batch_iter:
                     log.debug1('processing cderi batch %d', batch_id)
                     j3c = _eval_j3c(shl_pair_batch_id=batch_id, out=work)
                     cderi_gpu = ndarray((j3c.shape[0], naux), buffer=work2)
-                    cderi_gpu = j3c.dot(c, out=cderi_gpu)
+                    cderi_gpu = _whiten(j3c, c, cderi_gpu, whitening)
                     if needs_recontraction:
                         cderi_gpu = recontract(batch_id, cderi_gpu, out=work1)
 
@@ -663,15 +665,16 @@ def _cholesky_eri(intopt, *, omega=None, lr_factor=None, sr_factor=None,
             if needs_recontraction:
                 work1 = cp.empty(naux_per_device * batch_size)
 
+            whitening = _BlockedWhitening.create(c, tag) if num_devices == 1 else None
             for batch_id in range(num_batches):
                 j3c = _eval_j3c(batch_id, out=work)
                 p0, p1 = cderi_offsets[batch_id:batch_id+2]
                 if needs_recontraction:
                     tmp = ndarray((j3c.shape[0], aux1-aux0), buffer=work1)
-                    tmp = j3c.dot(c, out=tmp)
+                    tmp = _whiten(j3c, c, tmp, whitening)
                     recontract(batch_id, tmp, out=out[p0:p1])
                 else:
-                    j3c.dot(c, out=out[p0:p1])
+                    _whiten(j3c, c, out[p0:p1], whitening)
             return out.T
 
         cderi = multi_gpu.run(proc, non_blocking=True)

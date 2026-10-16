@@ -28,6 +28,13 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
   stream-owned scratch buffer overlaps the previous copy with the next integral
   batch; error exits finish copies before releasing their owners. Tests compare
   complete host tensors bit for bit on the mixed-element and open-shell panel.
+- `gpu4pyscf/df/_whitening.py`, `test_whitening.py`: native float64 auxiliary
+  whitening in column blocks that omit exactly zero coefficient rows, preserving
+  their original reduction order. Single-device compute capability 8.6 builds
+  own bounded coefficient/scratch buffers; dense, eigenvalue, unsupported and
+  nonfinite inputs retain the native product. Checks cover physical fitted
+  integrals, independent native SCF reconstruction, full same-density forces,
+  finite differences, host/GPU storage and BLAS stream/state restoration.
 - `gpu4pyscf/df/_response_products.py`, `test_response_products.py`: native float64
   auxiliary-response products. Sorted Cartesian scaled-permutation coefficients
   use the existing sparse basis transform around the unchanged metric solver;

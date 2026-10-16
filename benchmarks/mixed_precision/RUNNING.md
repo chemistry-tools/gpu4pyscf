@@ -228,6 +228,30 @@ For unrestricted derivatives, also set `DFT_REFERENCE_UHF_DF_GRADIENT` to the
 matching original `df/grad/uhf.py`. Both spin Gram products are checked before
 updating output, preserving the native unrestricted exchange scaling.
 
+## Exact-zero float64 density-fitting whitening
+
+Single-GPU compute capability 8.6 builds can apply the native auxiliary inverse
+in bounded column blocks, omitting only rows whose coefficients are exactly
+zero throughout that block. Remaining reduction rows retain their original
+order. The inverse, integral fields and matrix products remain float64;
+SCF precision scheduling and native verification thresholds do not change.
+The helper owns its coefficient copies and scratch buffer for one build.
+Its workspace limit, minimum size and sparsity guard are defined in
+`gpu4pyscf/df/_whitening.py`. Multiple GPUs, unsupported layouts/devices,
+eigenvalue decompositions, dense matrices and invalid fields retain the
+original product.
+
+Run `test_whitening.py` with `DFT_GPU_TEST=1` in the matching native environment
+under the resource limits above. Tests explicitly exercise the path on N/O/S/F/Cl
+and open-shell molecules, compare host/GPU fitted integrals, independently rebuild
+the original SCF integrals, compare full same-density forces and check energy
+finite differences. Tight SCF convergence fixes the density for derivative
+comparisons; the independent native-energy bound is `1e-9` Hartree, ten times
+stricter than production verification. Individual inverse-derived factors can
+differ through float64 cancellation, so factor identity is not an acceptance
+criterion. Larger complete-call benchmarks must independently disable the new
+helper and rebuild the original integrals before claiming native equivalence.
+
 ## Mapped density-fitting transfers
 
 Single-GPU RTX 3080 builds that keep fitted integrals in mapped host storage

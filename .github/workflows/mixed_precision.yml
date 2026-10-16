@@ -88,3 +88,4 @@ jobs:
           benchmarks/mixed_precision/test_int8_exchange.py
           benchmarks/mixed_precision/test_mapped_transfer.py
           benchmarks/mixed_precision/test_response_products.py
+          benchmarks/mixed_precision/test_whitening.py
