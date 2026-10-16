@@ -383,7 +383,10 @@ def test_projection_phase_labels_follow_products_including_native_fallback(preci
     assert [row['phase'] for row in mf.mixed_precision_info['cycles']] == ['mixed', 'float64', 'mixed']
 
 
-def test_int8_cycles_remain_approximate_and_recovery_never_reenables_them(precision, monkeypatch):
+@pytest.mark.parametrize('unreported_final_products', [False, True])
+def test_int8_cycles_remain_approximate_and_recovery_never_reenables_them(
+    precision, monkeypatch, unreported_final_products
+):
     module, grid, _ = precision
     exchange = grid._df_exchange = _Exchange()
     mf = _MeanField()
@@ -398,6 +401,9 @@ def test_int8_cycles_remain_approximate_and_recovery_never_reenables_them(precis
                 exchange.int8_calls += 1
             mf.callback({'cycle': cycle, 'e_tot': mf.e_tot, 'last_hf_e': mf.e_tot,
                          'norm_gorb': 1e-7})
+        if unreported_final_products and not exchange.native_only:
+            exchange.int8_calls += 1
+            exchange.float32_calls += 1
         mf.converged = True
         return mf.e_tot
 
@@ -410,7 +416,7 @@ def test_int8_cycles_remain_approximate_and_recovery_never_reenables_them(precis
     module.run_verified_scf(mf)
     report = mf.mixed_precision_info
     assert [row['phase'] for row in report['cycles']] == ['mixed']*2+['float64']*2
-    assert report['df_exchange_contraction_calls']['int8'] == 2
+    assert report['df_exchange_contraction_calls']['int8'] == 2 + unreported_final_products
     assert mf.calls == [(None, 20), (mf.dm, 98)]
     assert report['fallback_scf'] and report['accepted']
 

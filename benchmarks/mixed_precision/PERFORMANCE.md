@@ -721,3 +721,54 @@ performance artifacts: `tau-actual-fields-27`, `tau-medium-triangle-28`,
 `tau-medium-grid-29`, `native-package-triangle-30`, `native-triangle-installed-31.json`,
 `native-triangle-validation-32`, `tau-triangle-tail-33` and `native-triangle-ase-34`.
 The final batch completes successfully and releases GPU 1 and the shared benchmark lock.
+
+
+## B3LYP native force products and separate projection scheduling
+
+These measurements use B3LYP with VWN-RPA correlation, Cartesian `6-31g*`,
+`def2-universal-jkfit` density fitting, grid level 3, `1e-8` Hartree energy and
+`1e-5` orbital-gradient tolerances, with full grid and auxiliary-basis response.
+All runs use physical GPU 1 (RTX 3080), four CPUs with affinity 4–7, matching native
+libraries and both shared locks. Geometries stay fixed and validation datasets remain
+held out; the tuning cases are synthetic/development molecules.
+
+Native float64 auxiliary-response products in `6e3c956` use sparse scaled-permutation
+basis transforms and symmetric BLAS Gram updates without packing occupied-pair tensors.
+Relative to `1b45d1f`, complete forces improve by 6.3–8.7% across the three sizes;
+whole-call reductions are 1.1–3.0%. At identical saved densities, the large-system DF
+contributions agree with the retained original within `1.35e-13` Hartree/Bohr,
+comparable to native repeat noise. Both spin channels retain native float64.
+
+The following additional comparison uses projection-schedule commit `658ccf8` against
+`6e3c956`; both already include those force optimizations and INT8 SCF Gram products.
+Grid and exchange projections now have independent float32 searches. Projections
+switch after at least five iterations when the orbital gradient is below `1e-4`, or
+after sixteen iterations. Their scratch buffers survive intervening INT8 Gram blocks.
+Native float64 verification, recovery and derivatives are unchanged.
+
+| Molecule | Previous energy + forces, s | Separate projection schedule, s | Reduction |
+| --- | ---: | ---: | ---: |
+| Circumcoronene, 846 orbitals | 116.49 | 108.96 | 6.47% |
+| Mixed organic, 753 orbitals | 70.22 | 66.47 | 5.34% |
+| Mixed organic, 502 orbitals | 22.59 | 21.77 | 3.61% |
+
+SCF time improves by 8.58%, 8.10% and 5.23%, respectively. All six calls pass the original
+float64 energy/Fock check without recovery, retain all orbitals, and preserve their
+14/15/14 iteration counts. Maximum final-energy differences are `5.46e-12` Hartree.
+These are single fresh pairs, not timing medians or comparisons with pristine upstream.
+Independent accepted states differ in forces by at most `1.22e-4` eV/Angstrom at these
+production thresholds; this is separate from identical-state derivative validation.
+Recipe, geometry, grid ordering, native-library hashes, source boundaries and resources
+match across each pair.
+
+The schedule passes 45 CUDA checks, including mixed N/O/S/F/Cl chemistry, open-shell
+SCF, identical-state native force replay, warm ASE geometry changes, independent energy
+finite differences, stream buffers and cleanup. A subsequent report-only fix accounts for
+SCF products evaluated after the last callback, so native recovery cycles retain accurate
+precision labels. The final state passes 122 CPU checks, repeats 64 state-machine checks
+on the host and passes all 24 exchange CUDA checks again. That bookkeeping fix changes no numerical
+products; the timing table retains the exact `658ccf8` source provenance.
+
+Raw states, paired reports and source/native guards remain outside Git under
+`b3lyp-force-response-native-20261016-v3`, `b3lyp-force-fixed-density-20261016-v1`,
+`b3lyp-projection-native-20261016-v2` and `b3lyp-projection-final-20261016-v1`.

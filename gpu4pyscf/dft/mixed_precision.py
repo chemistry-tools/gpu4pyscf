@@ -213,6 +213,10 @@ def run_verified_scf(mf, calculate=None, *, dm0=None):
             grid.use_float32 = vv10.use_float32 = False
             if exchange is not None:
                 exchange.finish_approximation()
+                # Native SCF can evaluate a final approximate Fock after its last
+                # callback. Do not attribute those products to a recovery cycle.
+                int8_seen = exchange.int8_calls
+                float32_exchange_seen = exchange.float32_calls
             check = _full_check(mf, energy)
             info['initial_verification'] = check.copy()
             if not check['passed']:
