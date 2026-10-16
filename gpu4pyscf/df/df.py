@@ -71,9 +71,10 @@ class DF(lib.StreamObject):
         self._cd_j2c = None
         self._rsh_df = {}
         self._rsh_parameters = None
+        self._sparse_ao_cache = None
 
     __getstate__, __setstate__ = lib.generate_pickle_methods(
-        excludes=('intopt', '_cderi'))
+        excludes=('intopt', '_cderi', '_sparse_ao_cache'))
 
     @property
     def auxbasis(self):
@@ -289,6 +290,7 @@ class DF(lib.StreamObject):
             self.j_engine = None
         self._cderi = None
         self._cderi_idx = None
+        self._sparse_ao_cache = None
         self._cd_j2c = None
         self._rsh_df = {}
         self._rsh_parameters = None

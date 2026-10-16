@@ -106,6 +106,25 @@ and add its `bin` directory to `PATH`. Compiler comparisons use identical inputs
 
 ## Exact force contractions
 
+The sparse density-fitting product checks use both retained pre-sparse DF gradient
+sources to compare complete forces at the same density. Keep these files outside
+the checkout and use the matching native installation described above:
+
+```sh
+DFT_GPU_TEST=1 CUDA_VISIBLE_DEVICES=1 \
+DFT_REFERENCE_DF_GRADIENT=/absolute/path/to/reference/rhf.py \
+DFT_REFERENCE_UHF_DF_GRADIENT=/absolute/path/to/reference/uhf.py \
+taskset -c 4-7 /tmp/gpu4pyscf-bench-env/bin/python -m pytest -q \
+  /absolute/path/to/gpu4pyscf/benchmarks/mixed_precision/test_sparse_products.py
+```
+
+The tests explicitly exercise sparse paths on small molecules, including B3LYP,
+ωB97M-V, mixed elements and an open shell. Production dispatch is restricted to
+compute capability 8.6, at least 256 AOs, sparse enough pair masks and bounded
+workspaces. Unsupported inputs retain native products. The existing SCF precision
+schedule and final float64 acceptance checks are unchanged. Measure complete
+energy-and-force calls separately; a passing kernel test does not establish speed.
+
 `force_benchmark.py` compares the original installed-release gradients with the new density-first
 contraction on idealized synthetic pyrene or coronene. It retains the full functional, basis,
 grids and both response terms. The accepted density is shared by both force implementations;

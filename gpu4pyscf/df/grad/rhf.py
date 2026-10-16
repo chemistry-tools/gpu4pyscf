@@ -27,6 +27,7 @@ from gpu4pyscf.df.int3c2e_bdiv import (
     SHM_SIZE, LMAX, L_AUX_MAX, THREADS, libvhf_rys, Int3c2eOpt, int2c2e)
 from gpu4pyscf.df import df
 from gpu4pyscf.df._response_products import _SparseAuxTransform, _symmetric_aux_gram
+from gpu4pyscf.df._sparse_products import _SparseAOPlan
 from gpu4pyscf.df.df_jk import factorize_dm, _DFHF
 from gpu4pyscf.gto.mole import SortedMole
 from gpu4pyscf.scf.jk import _check_rsh_factors
@@ -107,7 +108,11 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1, hermi=0,
                mem_free*1e-9, nao_pair, naux, batch_size, blksize)
 
     aux0 = aux1 = 0
-    j3c_full = cp.zeros((nao, nao, blksize))
+    sparse_plan = (_SparseAOPlan.create(int3c2e_opt, pair_addresses, nao, width=8)
+                   if hermi == 1 else None)
+    sparse_forward = (sparse_plan.prepare(dm_factor_r[None], panel_size=blksize)
+                      if sparse_plan is not None else None)
+    j3c_full = cp.zeros((nao, nao, blksize)) if sparse_forward is None else None
     buf = cp.empty((batch_size, nao_pair))
     buf1 = cp.empty((blksize, nocc, nao))
     j3c_oo = cp.empty((naux, nocc, nocc))
@@ -117,12 +122,17 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1, hermi=0,
         for k0, k1 in lib.prange(0, naux_in_batch, blksize):
             dk = k1 - k0
             aux0, aux1 = aux1, aux1 + dk
-            j3c = j3c_full[:,:,:dk]
-            j3c[j_addr,i_addr] = j3c[i_addr,j_addr] = compressed[:,k0:k1]
             tmp = ndarray((nocc, nao, dk), buffer=buf1)
-            contract('pqr,pi->iqr', j3c, dm_factor_r, out=tmp)
+            if (sparse_forward is None or not sparse_forward.project_gradient(
+                    compressed[:,k0:k1].T, tmp.transpose(1, 0, 2)[None])):
+                if j3c_full is None:
+                    j3c_full = cp.zeros((nao, nao, blksize))
+                j3c = j3c_full[:,:,:dk]
+                j3c[j_addr,i_addr] = j3c[i_addr,j_addr] = compressed[:,k0:k1]
+                contract('pqr,pi->iqr', j3c, dm_factor_r, out=tmp)
             contract('iqr,qj->rij', tmp, dm_factor_l, out=j3c_oo[aux0:aux1])
     j3c_full = buf = buf1 = eval_j3c = j3c = tmp = compressed = None
+    sparse_forward = None
     t0 = log.timer_debug1('contract dm', *t0)
 
     aux_coeff = cp.asarray(auxmol.ctr_coeff)
@@ -172,9 +182,12 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1, hermi=0,
     int3c2e_envs = int3c2e_opt.int3c2e_envs
     kern = libvhf_rys.sum_ejk_int3c2e_ip1
     aux0 = aux1 = 0
+    sparse_plan = (_SparseAOPlan.create(int3c2e_opt, pair_addresses, nao, symmetric=False, width=32)
+                   if hermi == 1 else None)
+    sparse_back = sparse_plan.prepare(dm_factor_r[None]) if sparse_plan is not None else None
     buf = cp.empty((nao_pair*batch_size))
-    buf1 = cp.empty((blksize, nao, nao))
-    buf2 = cp.empty((blksize, nao, nao))
+    buf1 = cp.empty((blksize, nao, nao)) if sparse_back is None else None
+    buf2 = cp.empty((blksize, nao, nocc if sparse_back is not None else nao))
     ejk = cp.zeros((mol.natm, 3))
     ejk_aux = cp.zeros((mol.natm, 3))
     for kbatch in range(aux_batches):
@@ -184,13 +197,19 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1, hermi=0,
         for k0, k1 in lib.prange(0, naux_in_batch, blksize):
             dk = k1 - k0
             aux0, aux1 = aux1, aux1 + dk
-            dm_tensor = ndarray((nao,nao,dk), buffer=buf1)
             tmp = ndarray((nocc,nao,dk), buffer=buf2)
+            contract('rji,qj->iqr', dm_oo[aux0:aux1], dm_factor_l, out=tmp)
+            if (sparse_back is not None and sparse_back.back(
+                    tmp[None], compressed[:,k0:k1], -.5*k_factor, j_factor,
+                    dm if j_factor else None, auxvec[aux0:aux1] if j_factor else None)):
+                continue
+            if buf1 is None:
+                buf1 = cp.empty((blksize, nao, nao))
+            dm_tensor = ndarray((nao,nao,dk), buffer=buf1)
             beta = 0
             if j_factor != 0:
                 cp.multiply(dm[:,:,None], auxvec[aux0:aux1], out=dm_tensor)
                 beta = j_factor
-            contract('rji,qj->iqr', dm_oo[aux0:aux1], dm_factor_l, out=tmp)
             contract('iqr,pi->pqr', tmp, dm_factor_r, -.5*k_factor, beta, out=dm_tensor)
             if hermi == 1:
                 cp.take(dm_tensor.reshape(-1,dk), pair_addresses, axis=0,
@@ -225,6 +244,7 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1, hermi=0,
         if err != 0:
             raise RuntimeError('int3c2e_ejk_ip1 failed')
     buf = buf1 = buf2 = compressed = dm_tensor = dm_tensor1 = tmp = None
+    sparse_back = None
     if hermi == 1:
         ejk *= 2
         ejk_aux *= 2

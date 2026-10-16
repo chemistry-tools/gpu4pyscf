@@ -35,6 +35,16 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
   nonfinite inputs retain the native product. Checks cover physical fitted
   integrals, independent native SCF reconstruction, full same-density forces,
   finite differences, host/GPU storage and BLAS stream/state restoration.
+- `gpu4pyscf/df/_sparse_products.py`, `test_sparse_products.py`: bounded AO
+  projections from the existing screened DF pair list, plus directed-pair force
+  back projections. Plans retain index metadata only and track exact pair contents,
+  device and stream. Early SCF float32 dispatch follows the existing controller;
+  verification and derivatives stay float64. Short gradient auxiliary panels keep
+  the native reduction because inverse-metric multiplication amplifies last-bit
+  differences. Full same-state force checks require the retained pre-sparse
+  `DFT_REFERENCE_DF_GRADIENT` and `DFT_REFERENCE_UHF_DF_GRADIENT` sources. Cover both
+  B3LYP and range-separated MGGA/VV10, N/O/S/F/Cl, open shells, finite differences
+  and ASE verification/reuse. Whole-call performance requires separate measurements.
 - `gpu4pyscf/df/_response_products.py`, `test_response_products.py`: native float64
   auxiliary-response products. Sorted Cartesian scaled-permutation coefficients
   use the existing sparse basis transform around the unchanged metric solver;

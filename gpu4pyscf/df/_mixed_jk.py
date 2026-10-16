@@ -133,7 +133,23 @@ def _exchange_context(mf, grid):
     def gram(rhok, out):
         return controller.gram(df_jk._k_gram, df_jk.contract, rhok, out)
 
-    private = _private_functions(df_jk.__dict__, {'contract': contract, '_k_gram': gram})
+    def sparse_prepare(dfobj, factors):
+        single = not controller.native_only and (grid.use_float32 or controller.projection_float32)
+        return df_jk._prepare_sparse_exchange(dfobj, factors, single=single)
+
+    def sparse_project(prepared, integrals, out, batch_start):
+        accepted = df_jk._project_sparse_exchange(prepared, integrals, out, batch_start)
+        if accepted:
+            if prepared.single:
+                controller.float32_calls += 1
+            else:
+                controller.float64_calls += 1
+        return accepted
+
+    private = _private_functions(df_jk.__dict__, {
+        'contract': contract, '_k_gram': gram,
+        '_prepare_sparse_exchange': sparse_prepare, '_project_sparse_exchange': sparse_project,
+    })
     original = with_df.get_jk.__func__
     namespace = dict(original.__globals__, df_jk=SimpleNamespace(**private))
     function = FunctionType(original.__code__, namespace, original.__name__, original.__defaults__, original.__closure__)

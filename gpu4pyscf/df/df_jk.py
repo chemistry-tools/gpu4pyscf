@@ -33,6 +33,7 @@ from gpu4pyscf.scf import ghf
 from gpu4pyscf.lib.cupy_helper import asarray, ndarray, get_avail_mem
 from gpu4pyscf.lib import multi_gpu
 from gpu4pyscf.df._jk_contraction import _symmetric_k_update
+from gpu4pyscf.df._sparse_products import _SparseAOPlan
 num_devices = multi_gpu.num_devices
 
 def density_fit(mf, auxbasis=None, with_df=None, only_dfj=False):
@@ -500,6 +501,29 @@ def _k_gram(rhok, out):
     return out
 
 
+def _prepare_sparse_exchange(dfobj, factors, *, single=False):
+    from gpu4pyscf.df.df import DF
+
+    if type(dfobj) is not DF or num_devices != 1 or factors.dtype != cp.float64 or factors.ndim != 3:
+        return None
+    width = 64 if single else 8
+    plan = _SparseAOPlan.create(dfobj, dfobj._cderi_idx[0], factors.shape[1], width=width)
+    return plan.prepare(factors, single=single) if plan is not None else None
+
+
+def _project_sparse_exchange(prepared, integrals, out, batch_start):
+    return prepared.project(integrals, out, batch_start)
+
+
+def _unpack_sparse_fallback(dfobj, integrals):
+    from gpu4pyscf.lib.cupy_helper import fill_symmetric
+
+    work = cp.zeros((dfobj.nao, dfobj.nao, len(integrals)), dtype=integrals.dtype)
+    indices = cp.asarray(dfobj._cderi_idx[0], dtype=cp.int32)
+    fill_symmetric(integrals.T, indices, dfobj.nao, out=work)
+    return work.transpose(2, 0, 1)
+
+
 def get_jk(dfobj, dms, hermi=0, with_j=True, with_k=True,
            omega=None, lr_factor=None, sr_factor=None):
     '''
@@ -554,6 +578,8 @@ def get_jk(dfobj, dms, hermi=0, with_j=True, with_k=True,
         if factor_r is not None:
             factor_r = cp.asarray(factor_r).reshape(nspin,-1,nao,nocc)
 
+        sparse = (_prepare_sparse_exchange(dfobj, factor_l[0])
+                  if with_k and dm_factor_mode == 0 and nspin == 1 else None)
         vj = vk = None
         if with_j:
             _dm_sparse = cp.asarray(dm_sparse)
@@ -578,18 +604,21 @@ def get_jk(dfobj, dms, hermi=0, with_j=True, with_k=True,
                 buf = cp.empty((dm_batch_size+1, blksize * nao*nocc))
                 buf1 = buf[-1]
 
-        for cderi, cderi_tril in dfobj.loop(blksize=blksize, unpack=with_k):
+        for cderi, cderi_tril in dfobj.loop(blksize=blksize, unpack=with_k and sparse is None):
             if with_j:
                 auxvec = contract('np,Lp->nL', _dm_sparse, cderi_tril)
                 contract('nL,Lp->np', auxvec, cderi_tril, beta=1, out=vj)
 
             if with_k:
-                nL = len(cderi)
+                nL = len(cderi) if cderi is not None else len(cderi_tril)
                 for s in range(nspin):
                     if dm_factor_mode == 0:
                         for i0, i1 in lib.prange(0, n_dm, dm_batch_size):
                             rhok = ndarray((i1-i0,nao,nocc,nL), buffer=buf)
-                            contract('Lij,njk->nikL', cderi, factor_l[s,i0:i1], out=rhok)
+                            if sparse is None or not _project_sparse_exchange(sparse, cderi_tril, rhok, i0):
+                                if cderi is None:
+                                    cderi = _unpack_sparse_fallback(dfobj, cderi_tril)
+                                contract('Lij,njk->nikL', cderi, factor_l[s,i0:i1], out=rhok)
                             _k_gram(rhok, vk[s,i0:i1])
                     elif dm_factor_mode == 1:
                         for i0, i1 in lib.prange(0, n_dm, dm_batch_size):

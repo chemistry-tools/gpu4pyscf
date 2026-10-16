@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import contextlib
 import importlib.util
 import os
 from pathlib import Path
@@ -37,7 +39,7 @@ def test_plans_preserve_pair_order_and_sorted_reduction_columns(symmetric, width
     plan = _module()._cpu_plan(addresses, n, width, symmetric)
     lookup = np.full((n, n), -1, dtype=np.int32)
     lookup.flat[addresses] = np.arange(len(addresses))
-    expected = np.maximum(lookup, lookup.T) if symmetric else lookup
+    expected = np.where(lookup.T >= 0, lookup.T, lookup) if symmetric else lookup
     actual = np.full_like(lookup, -1)
     covered = []
     for rows, cols, mapping in plan['groups']:
@@ -112,6 +114,53 @@ def test_projection_matches_native_in_both_packed_layouts(single, transposed, ba
         reference = contraction('Lij,njk->nikL', full.transpose(2, 0, 1), factors, 1., 0.)
         cp.testing.assert_allclose(out, reference, atol=3e-12, rtol=3e-13)
     cp.testing.assert_array_equal(storage[:, :, :, nl:], cp.nan)
+
+
+@gpu
+def test_gradient_panels_keep_short_and_split_reductions_on_native_path(sparse):
+    import cupy as cp
+
+    n, k, nl = 17, 7, 277
+    addresses = cp.asarray(_addresses(n, 1717))
+    plan = sparse._SparseAOPlan.create(SimpleNamespace(), addresses, n, width=8)
+    factors = cp.ones((2, n, k))
+    prepared = plan.prepare(factors, panel_size=nl)
+    assert prepared is not None and prepared.panel == nl
+    packed = cp.ones((nl, len(addresses)))
+    out = cp.full((1, n, k, nl), 13.)
+    assert prepared.project_gradient(packed, out, batch_start=1)
+    expected = cp.empty_like(out)
+    assert prepared.project(packed, expected, batch_start=1)
+    cp.testing.assert_array_equal(out, expected)
+    out.fill(13)
+    for raw in (None, cp.array(1.), packed[0], packed[:15], cp.ones((nl+1, len(addresses)))):
+        assert not prepared.project_gradient(raw, out)
+        cp.testing.assert_array_equal(out, 13)
+    for panel in (0, -1, 1.5, 2**31):
+        assert plan.prepare(factors, panel_size=panel) is None
+
+
+@gpu
+def test_last_bit_differences_in_diagonal_shell_orientations_follow_native_gradient(sparse):
+    import cupy as cp
+
+    from gpu4pyscf.lib.cupy_helper import contract
+
+    n, nl = 17, 11
+    addresses = _addresses(n, 1716)
+    rows, cols = divmod(addresses, n)
+    packed = cp.ones((len(addresses), nl))
+    direct = int(np.flatnonzero(addresses == 1)[0])
+    packed[direct] = np.nextafter(1., 2.)
+    dense = cp.zeros((n, n, nl))
+    dense[cp.asarray(cols), cp.asarray(rows)] = dense[cp.asarray(rows), cp.asarray(cols)] = packed
+    factors = cp.eye(n)[None]
+    expected = contract('pqr,pi->iqr', dense, factors[0])
+    plan = sparse._SparseAOPlan.create(SimpleNamespace(), cp.asarray(addresses), n, width=8)
+    prepared = plan.prepare(factors)
+    out = cp.empty((1, n, n, nl))
+    assert prepared.project(packed.T, out)
+    cp.testing.assert_array_equal(out[0].transpose(1, 0, 2), expected)
 
 
 @gpu
@@ -217,3 +266,130 @@ def test_blas_state_is_restored_on_error_and_current_stream_is_used(sparse, monk
                 prepared.project(packed, out)
         assert (cublas.getStream(handle), cublas.getMathMode(handle), cublas.getPointerMode(handle)) == state
     stream.synchronize()
+
+
+@contextlib.contextmanager
+def _reference_gradients():
+    from gpu4pyscf.df.grad import rhf, uhf
+
+    saved = []
+    try:
+        for module, variable in [(rhf, 'DFT_REFERENCE_DF_GRADIENT'),
+                                 (uhf, 'DFT_REFERENCE_UHF_DF_GRADIENT')]:
+            path = os.getenv(variable)
+            if not path:
+                pytest.fail(f'{variable} must name the retained pre-sparse gradient source')
+            tree = ast.parse(Path(path).read_text())
+            nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+                     and node.name == '_jk_energy_per_atom']
+            assert len(nodes) == 1
+            namespace = dict(module.__dict__)
+            # Only the explicitly retained native function is rebound for comparison.
+            exec(compile(ast.Module(body=nodes, type_ignores=[]), path, 'exec'), namespace)  # noqa: S102
+            saved.append((module, module._jk_energy_per_atom))
+            module._jk_energy_per_atom = namespace['_jk_energy_per_atom']
+        yield
+    finally:
+        for module, original in reversed(saved):
+            module._jk_energy_per_atom = original
+
+
+def _method(atoms, xc, charge=0, multiplicity=1):
+    from pyscf import gto
+
+    from gpu4pyscf import dft
+
+    mol = gto.M(atom=list(zip(atoms.get_chemical_symbols(), atoms.positions)), basis='6-31g*',
+                cart=True, charge=charge, spin=multiplicity-1, verbose=0)
+    mf = (dft.RKS if multiplicity == 1 else dft.UKS)(mol, xc=xc).density_fit(auxbasis='def2-universal-jkfit')
+    mf.grids.level, mf.nlcgrids.level = 0, 0
+    mf.grids.prune = mf.nlcgrids.prune = None
+    mf.small_rho_cutoff = 0
+    mf.conv_tol, mf.conv_tol_grad, mf.max_cycle, mf.chkfile = 1e-11, 1e-8, 150, None
+    return mf
+
+
+@gpu
+@pytest.mark.parametrize('xc', ['b3lyp', 'wb97m-v'])
+@pytest.mark.parametrize('case,charge,multiplicity', [
+    ('CH3CONH2', 0, 1), ('C5H5N', 0, 1), ('C2H6SO', 0, 1),
+    ('CH3COF', 0, 1), ('CH3COCl', 0, 1), ('H2O', 1, 2),
+])
+def test_complete_native_fields_and_forces_on_mixed_atom_panel(case, charge, multiplicity, xc,
+                                                              sparse, monkeypatch):
+    import cupy as cp
+    from ase.build import molecule
+
+    from gpu4pyscf.dft.mixed_precision import _full_check
+
+    atoms = molecule(case)
+    mf = _method(atoms, xc, charge, multiplicity)
+    with monkeypatch.context() as patch:
+        patch.setattr(sparse._SparseAOPlan, 'create', lambda *args, **kwargs: None)
+        reference_energy = mf.kernel()
+    assert mf.converged and mf.mo_coeff.shape[-1] == mf.mol.nao
+    with _reference_gradients():
+        gradient = mf.nuc_grad_method()
+        gradient.grid_response = gradient.auxbasis_response = True
+        reference_gradient = cp.asarray(gradient.kernel())
+    calls = []
+    original_project, original_back = sparse._SparseAOProduct.project, sparse._SparseAOProduct.back
+
+    def project(self, *args):
+        accepted = original_project(self, *args)
+        calls.append(('projection', accepted))
+        return accepted
+
+    def back(self, *args):
+        accepted = original_back(self, *args)
+        calls.append(('back', accepted))
+        return accepted
+
+    monkeypatch.setattr(sparse._SparseAOProduct, 'project', project)
+    monkeypatch.setattr(sparse._SparseAOProduct, 'back', back)
+    check = _full_check(mf, reference_energy)
+    assert check['passed'], check
+    assert abs(check['energy_change_hartree']) < 1e-9
+    assert any(name == 'projection' and accepted for name, accepted in calls)
+    calls.clear()
+    gradient = mf.nuc_grad_method()
+    gradient.grid_response = gradient.auxbasis_response = True
+    actual_gradient = cp.asarray(gradient.kernel())
+    assert any(name == 'projection' and accepted for name, accepted in calls)
+    assert any(name == 'back' and accepted for name, accepted in calls)
+    cp.testing.assert_allclose(actual_gradient, reference_gradient, atol=3e-10, rtol=2e-9)
+    if case in ('CH3CONH2', 'CH3COCl', 'H2O'):
+        from pyscf.data.nist import BOHR
+
+        step = 2e-4
+        energies = []
+        for sign in (-1, 1):
+            displaced = atoms.copy()
+            displaced.positions[0, 0] += sign*step*BOHR
+            other = _method(displaced, xc, charge, multiplicity)
+            energies.append(other.kernel())
+            assert other.converged
+        finite_difference = (energies[1]-energies[0])/(2*step)
+        assert float(actual_gradient[0, 0]) == pytest.approx(finite_difference, abs=2e-5)
+
+
+@gpu
+@pytest.mark.parametrize('xc', ['b3lyp', 'wb97m-v'])
+@pytest.mark.parametrize('charge,multiplicity', [(0, 1), (1, 2)])
+def test_ase_verified_mixed_precision_and_force_reuse(charge, multiplicity, xc, sparse):
+    from ase.build import molecule
+
+    from gpu4pyscf.tools.ase_interface import PySCF
+
+    atoms = molecule('H2O' if charge else 'CH3COCl')
+    atoms.calc = PySCF(method=_method(atoms, xc, charge, multiplicity), precision='auto',
+                      grid_response=True, auxbasis_response=True)
+    energy, forces = atoms.get_potential_energy(), atoms.get_forces()
+    assert np.isfinite(energy) and np.isfinite(forces).all()
+    info = atoms.calc.precision_info
+    assert info['accepted'] and info['final_verification']['passed']
+    assert atoms.calc.calculation_info['scf_reused']
+    assert atoms.calc.calculation_info['scf_seconds'] == 0
+    assert bool(info['vv10_precisions']) == (xc == 'wb97m-v')
+    if xc == 'b3lyp':
+        assert info['df_exchange_contraction_calls']['float32'] > 0
