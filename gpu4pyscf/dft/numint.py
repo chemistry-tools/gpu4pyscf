@@ -427,6 +427,12 @@ def gen_grid_range(ngrids, device_id, blksize=MIN_BLK_SIZE):
         grid_end = grid_start
     return grid_start, grid_end
 
+def _rho_gga_use_dm(nao, nocc):
+    # Four MO projections cost about 4*nocc per AO/grid entry. Leave headroom
+    # for gathering the density submatrix and forming the full density once.
+    return 0 < nao < 3 * nocc
+
+
 def _nr_rks_task(ni, mol, grids, xc_code, dm, mo_coeff, mo_occ,
                  verbose=None, with_lapl=False, device_id=0, hermi=1):
     ''' nr_rks task on given device
@@ -473,29 +479,41 @@ def _nr_rks_task(ni, mol, grids, xc_code, dm, mo_coeff, mo_occ,
             mo_coeff *= mo_occ[mo_occ>0]**.5
             nocc = mo_coeff.shape[1]
             mo_buf = cupy.empty(nao*nocc)
+            dm_mask_buf = None
             bufsize = _tau_workspace_size(nao, MIN_BLK_SIZE) if xctype == 'MGGA' else MIN_BLK_SIZE * nao
             buf = cupy.empty(max(MIN_BLK_SIZE * 2*nocc, bufsize))
 
+        orbital_dm = None
         p0 = p1 = 0
         for ao_mask, idx, weight, _ in ni.block_loop(
                 _sorted_mol, grids, nao, ao_deriv, max_memory=None,
                 grid_range=(grid_start, grid_end)):
             p0, p1 = p1, p1 + weight.size
             nao_sub = len(idx)
-            #TODO: If AO is sparse enough, use density matrix to calculate rho
             if mo_coeff is None:
                 dm_mask = dm_mask_buf[:nao_sub**2].reshape(nao_sub,nao_sub)
                 dm_mask = take_last2d(dm, idx, out=dm_mask)
                 rho_tot[:,p0:p1] = eval_rho(_sorted_mol, ao_mask, dm_mask,
                                             xctype=xctype, hermi=hermi,
                                             with_lapl=with_lapl, buf=buf)
+            elif (xctype == 'GGA' and hermi == 1 and mo_coeff.dtype == cupy.float64
+                  and _rho_gga_use_dm(nao_sub, nocc)):
+                if orbital_dm is None:
+                    # Tagged orbitals, rather than the supplied dm array, define
+                    # the native MO-density path. Preserve that convention.
+                    orbital_dm = mo_coeff.dot(mo_coeff.T)
+                    dm_mask_buf = cupy.empty(nao*nao)
+                dm_mask = dm_mask_buf[:nao_sub**2].reshape(nao_sub,nao_sub)
+                dm_mask = take_last2d(orbital_dm, idx, out=dm_mask)
+                rho_tot[:,p0:p1] = eval_rho(_sorted_mol, ao_mask, dm_mask,
+                                            xctype=xctype, hermi=1, buf=buf)
             else:
                 assert hermi == 1
                 cpos = mo_buf[:nao_sub*nocc].reshape(nao_sub,nocc)
                 cpos = cupy.take(mo_coeff, idx, axis=0, out=cpos)
                 rho_tot[:,p0:p1] = _eval_rho2(ao_mask, cpos, xctype, with_lapl, buf=buf)
         t0 = log.timer_debug1(f'eval rho on Device {device_id}', *t0)
-        dm_mask_buf = mo_buf = mo_coeff = None
+        orbital_dm = dm_mask_buf = mo_buf = mo_coeff = None
 
         weights = cupy.asarray(grids.weights[grid_start:grid_end])
         excsum = 0.0

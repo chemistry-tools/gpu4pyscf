@@ -62,3 +62,4 @@ jobs:
           benchmarks/mixed_precision/test_compare_ase.py
           benchmarks/mixed_precision/test_organic_cases.py
           benchmarks/mixed_precision/test_semilocal_precision.py
+          benchmarks/mixed_precision/test_gga_density.py

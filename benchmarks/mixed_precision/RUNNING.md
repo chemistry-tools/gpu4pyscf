@@ -160,6 +160,15 @@ finite-difference energies with and without the fused pass.
 
 ## Native density-fitting force comparisons
 
+Float64 RKS GGA integration selects a density/AO product when the active AO count
+is less than three times the occupied-orbital count. The density is formed from
+the tagged occupied orbitals, preserving the native integration convention even
+when a caller supplies inconsistent density-array values. Larger blocks retain
+occupied-orbital projection. This dispatch is automatic and does not change grids
+or SCF tolerances. `test_gga_density.py` compares both paths on mixed-atom molecules
+and fractional occupations; run it with `DFT_GPU_TEST=1` in the matching native
+environment before the complete semilocal SCF and force checks.
+
 `native_force_benchmark.py` compares complete forces against a retained `df/grad/rhf.py`
 from the same native-library revision. The reference function runs in the installed native
 module's namespace; all other force code stays identical. Use a properly built installation

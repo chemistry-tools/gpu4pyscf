@@ -14,6 +14,9 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
 - `test_ase_precision.py`, `test_ase_gpu.py`: lifecycle/fallback and real-force checks.
 - `test_semilocal_precision.py`: private LDA/GGA grid products, B3LYP mixed-atom
   RKS/UKS energy and force checks, warm geometry changes and force finite differences.
+- `test_gga_density.py`: adaptive float64 RKS GGA density products, fractional
+  occupations and tagged-orbital identity. Sparse AO blocks can use one density/AO
+  product instead of four occupied-orbital projections.
 - `vv10_experiment.py`: scoped VV10 adapters and CuPy pair-kernel/compiler comparisons. Adapted
   from upstream v1.8.1 `gpu4pyscf/lib/gdft/vv10.cu`, under the repository's Apache-2.0 license.
 - `grid_experiment.py`: scoped grid matrix products and single-GPU task-dispatch experiments.
