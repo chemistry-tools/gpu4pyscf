@@ -1,4 +1,4 @@
-"""Opt-in grid-precision and native-force checks without nonlocal correlation."""
+"""Opt-in ordinary grid-precision and native-force checks."""
 
 from __future__ import annotations
 
@@ -64,6 +64,8 @@ def _calculator(atoms, xc, precision, *, charge=0, multiplicity=1, density_fit=F
     ('H2O', 'lda,vwn', 0, 1),
     ('H2O', 'pbe', 0, 1),
     ('H2O', 'm06-l', 0, 1),
+    ('H2O', 'wb97x-v', 0, 1),
+    ('H2O', '0.2*HF+0.08*LDA_X+0.72*GGA_X_B88,0.81*GGA_C_LYP+0.19*LDA_C_VWN_RPA', 0, 1),
 ])
 def test_semilocal_mixed_scf_and_full_forces(case, xc, charge, multiplicity):
     from ase.build import molecule
@@ -77,7 +79,7 @@ def test_semilocal_mixed_scf_and_full_forces(case, xc, charge, multiplicity):
     assert report['accepted'] and report['final_verification']['passed']
     assert report['grid_contraction_calls']['float32'] > 0
     assert report['grid_contraction_calls']['float64'] > 0
-    assert not report['vv10_precisions']
+    assert bool(report['vv10_precisions']) == bool(mixed.calc.method_scan.do_nlc())
     np.testing.assert_allclose(mixed.get_forces(), reference.get_forces(), atol=1e-5, rtol=0)
     assert mixed.calc.calculation_info['scf_reused']
     if os.getenv('DFT_REFERENCE_GRADIENT') and multiplicity == 1:
