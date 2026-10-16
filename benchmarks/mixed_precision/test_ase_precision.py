@@ -77,6 +77,16 @@ def _check(passed, energy=-1.000000000001):
     }
 
 
+class _Exchange:
+    float32_calls = 8
+    float64_calls = 4
+    int8_calls = 0
+    native_only = False
+
+    def finish_approximation(self):
+        self.native_only = True
+
+
 def test_verified_energy_updates_method_and_restores_callback(precision, monkeypatch):
     module, grid, vv10 = precision
     mf = _MeanField()
@@ -252,7 +262,7 @@ def test_adaptive_exchange_schedule_waits_for_both_residuals_and_is_bounded(
     precision, monkeypatch, energy_cycle, gradient_cycle, switch
 ):
     module, grid, _ = precision
-    grid._df_exchange = SimpleNamespace(float32_calls=8, float64_calls=4)
+    grid._df_exchange = _Exchange()
     mf = _MeanField()
     mf.xc, mf.do_nlc = 'b3lyp', lambda: False
     observed = []
@@ -270,6 +280,7 @@ def test_adaptive_exchange_schedule_waits_for_both_residuals_and_is_bounded(
 
     def check(*args):
         assert not grid.use_float32
+        assert grid._df_exchange.native_only
         return _check(True)
 
     mf.kernel = kernel
@@ -282,7 +293,7 @@ def test_adaptive_exchange_schedule_waits_for_both_residuals_and_is_bounded(
 
 def test_adaptive_failed_verification_keeps_recovery_float64_with_small_budget(precision, monkeypatch):
     module, grid, _ = precision
-    grid._df_exchange = SimpleNamespace(float32_calls=8, float64_calls=4)
+    grid._df_exchange = _Exchange()
     mf = _MeanField()
     mf.xc, mf.do_nlc, mf.max_cycle = 'b3lyp', lambda: False, 10
     observed, checks = [], iter((_check(False), _check(True)))
@@ -298,6 +309,7 @@ def test_adaptive_failed_verification_keeps_recovery_float64_with_small_budget(p
 
     def check(*args):
         assert not grid.use_float32
+        assert grid._df_exchange.native_only
         return next(checks)
 
     mf.kernel = kernel
@@ -307,6 +319,73 @@ def test_adaptive_failed_verification_keeps_recovery_float64_with_small_budget(p
     assert mf.calls == [(None, 5), (mf.dm, 5)]
     assert mf.max_cycle == 10 and mf.callback is None
     assert mf.mixed_precision_info['fallback_scf'] and mf.mixed_precision_info['accepted']
+
+
+def test_int8_cycles_remain_approximate_and_recovery_never_reenables_them(precision, monkeypatch):
+    module, grid, _ = precision
+    exchange = grid._df_exchange = _Exchange()
+    mf = _MeanField()
+    mf.xc, mf.do_nlc = 'b3lyp', lambda: False
+    checks = iter((_check(False), _check(True)))
+
+    def kernel(dm0=None):
+        mf.calls.append((dm0, mf.max_cycle))
+        grid.use_float32 = False
+        for cycle in range(2):
+            if not exchange.native_only:
+                exchange.int8_calls += 1
+            mf.callback({'cycle': cycle, 'e_tot': mf.e_tot, 'last_hf_e': mf.e_tot,
+                         'norm_gorb': 1e-7})
+        mf.converged = True
+        return mf.e_tot
+
+    def check(*args):
+        assert exchange.native_only and not grid.use_float32
+        return next(checks)
+
+    mf.kernel = kernel
+    monkeypatch.setattr(module, '_full_check', check)
+    module.run_verified_scf(mf)
+    report = mf.mixed_precision_info
+    assert [row['phase'] for row in report['cycles']] == ['mixed']*2+['float64']*2
+    assert report['df_exchange_contraction_calls']['int8'] == 2
+    assert mf.calls == [(None, 20), (mf.dm, 98)]
+    assert report['fallback_scf'] and report['accepted']
+
+
+def test_exchange_controller_finishes_and_releases_int8_before_native_calls(monkeypatch):
+    grid_module = _load('grid_under_test', 'gpu4pyscf/dft/_mixed_grid.py')
+    for name in ('gpu4pyscf', 'gpu4pyscf.df', 'gpu4pyscf.dft'):
+        package = ModuleType(name)
+        package.__path__ = []
+        monkeypatch.setitem(sys.modules, name, package)
+    monkeypatch.setitem(sys.modules, 'gpu4pyscf.dft._mixed_grid', grid_module)
+    backend = SimpleNamespace(update=lambda *args: True, released=False)
+
+    def release():
+        backend.released = True
+
+    backend.release = release
+    integer_module = ModuleType('gpu4pyscf.df._int8_gram')
+    integer_module._Int8Gram = lambda: backend
+    monkeypatch.setitem(sys.modules, integer_module.__name__, integer_module)
+    exchange_module = _load('exchange_under_test', 'gpu4pyscf/df/_mixed_jk.py')
+    grid = SimpleNamespace(use_float32=False)
+    exchange = exchange_module._ExchangePrecision(grid)
+    calls = []
+
+    def native(a, out):
+        calls.append(a)
+        return out
+
+    matrix, out = object(), object()
+    assert exchange.gram(native, None, matrix, out) is out
+    assert exchange.int8_calls == 1 and not calls
+    exchange.finish_approximation()
+    assert backend.released and exchange._int8 is None
+    grid.use_float32 = True
+    assert exchange.gram(native, None, matrix, out) is out
+    assert calls == [matrix] and exchange.float64_calls == 1
 
 
 @pytest.fixture

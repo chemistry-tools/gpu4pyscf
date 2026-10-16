@@ -1,4 +1,4 @@
-"""Private early float32 exchange products for verified global-hybrid GGA SCF."""
+"""Private float32 and INT8 exchange products for verified global-hybrid GGA SCF."""
 
 from __future__ import annotations
 
@@ -14,15 +14,28 @@ class _ExchangePrecision:
         self.grid = grid
         self.float32_calls = 0
         self.float64_calls = 0
+        self.int8_calls = 0
+        self.native_only = False
+        self._int8 = None
         self._workspace = local()
         self._accumulator = _GridPrecision(True)
         self._has_scratch = False
 
-    def release(self):
+    def _release_float32(self):
         if self._has_scratch:
             self._workspace = local()
             self._accumulator._release_scratch()
             self._has_scratch = False
+
+    def release(self):
+        self._release_float32()
+        if self._int8 is not None:
+            self._int8.release()
+            self._int8 = None
+
+    def finish_approximation(self):
+        self.native_only = True
+        self.release()
 
     def _scratch(self, a, b, out):
         import cupy as cp
@@ -57,8 +70,8 @@ class _ExchangePrecision:
             or out is None or out.dtype != cp.float64 or kwargs
         ):
             return original(pattern, a, b, alpha=alpha, beta=beta, out=out, **kwargs)
-        if not self.grid.use_float32:
-            self.release()
+        if not self.grid.use_float32 or self.native_only:
+            self._release_float32()
             self.float64_calls += 1
             return original(pattern, a, b, alpha=alpha, beta=beta, out=out)
         from cupy_backends.cuda.libs import cutensor
@@ -73,11 +86,19 @@ class _ExchangePrecision:
         return self._accumulator._accumulate(product, alpha, beta, out)
 
     def gram(self, original, contract, rhok, out):
-        if not self.grid.use_float32:
-            self.release()
-            self.float64_calls += 1
-            return original(rhok, out)
-        return self.contract(contract, 'nikL,njkL->nij', rhok, rhok, beta=1., out=out)
+        if self.grid.use_float32 and not self.native_only:
+            return self.contract(contract, 'nikL,njkL->nij', rhok, rhok, beta=1., out=out)
+        self._release_float32()
+        if not self.native_only:
+            from gpu4pyscf.df._int8_gram import _Int8Gram
+
+            if self._int8 is None:
+                self._int8 = _Int8Gram()
+            if self._int8.update(rhok, out):
+                self.int8_calls += 1
+                return out
+        self.float64_calls += 1
+        return original(rhok, out)
 
 
 @contextmanager

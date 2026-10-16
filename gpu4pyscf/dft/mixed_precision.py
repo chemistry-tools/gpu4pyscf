@@ -160,21 +160,27 @@ def run_verified_scf(mf, calculate=None, *, dm0=None):
     mf.converged = False
 
     with _precision_context(mf) as (grid, vv10):
-        adaptive = getattr(grid, '_df_exchange', None) is not None
+        exchange = getattr(grid, '_df_exchange', None)
+        adaptive = exchange is not None
+        int8_seen = 0
         info['grid_precision_schedule'] = 'adaptive_hybrid_gga' if adaptive else 'first_five'
 
         def progress(env):
+            nonlocal int8_seen
+            int8_calls = getattr(exchange, 'int8_calls', 0)
+            approximate = (vv10.use_float32 if has_nlc else grid.use_float32) or int8_calls > int8_seen
             records.append(
                 {
-                    'phase': 'mixed' if (vv10.use_float32 if has_nlc else grid.use_float32) else 'float64',
+                    'phase': 'mixed' if approximate else 'float64',
                     'cycle': int(env['cycle']) + 1,
                     'energy_hartree': float(env['e_tot']),
                     'orbital_gradient_norm': float(env['norm_gorb']),
                 }
             )
+            int8_seen = int8_calls
             # A global-hybrid GGA can spend most of SCF in exchange products.
-            # Finish the inexpensive search before returning to native fields;
-            # the hard cap leaves float64 iterations in the initial phase.
+            # Bound the float32 search before using float64 grid/projection
+            # products; eligible Gram updates remain approximate until verification.
             if adaptive:
                 if len(records) >= 12 or (len(records) >= 5
                         and abs(float(env['e_tot'] - env['last_hf_e'])) < 1e-5
@@ -191,6 +197,8 @@ def run_verified_scf(mf, calculate=None, *, dm0=None):
             mf.max_cycle = min(20, max(1, budget // 2))
             energy = float(calculate() if calculate is not None else mf.kernel(dm0=dm0))
             grid.use_float32 = vv10.use_float32 = False
+            if exchange is not None:
+                exchange.finish_approximation()
             check = _full_check(mf, energy)
             info['initial_verification'] = check.copy()
             if not check['passed']:
@@ -207,10 +215,10 @@ def run_verified_scf(mf, calculate=None, *, dm0=None):
                 'float32': grid.float32_calls,
                 'float64': grid.float64_calls,
             }
-            exchange = getattr(grid, '_df_exchange', None)
             info['df_exchange_contraction_calls'] = {
                 'float32': exchange.float32_calls if exchange is not None else 0,
                 'float64': exchange.float64_calls if exchange is not None else 0,
+                'int8': exchange.int8_calls if exchange is not None else 0,
             }
             info['vv10_precisions'] = vv10.precisions.copy()
             if not check['passed']:

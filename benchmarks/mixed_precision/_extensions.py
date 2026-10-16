@@ -14,7 +14,7 @@ def load_extensions(root, *, ase=False, forces=False):
     compatibility testing, not evidence of rebuilding the fork's other master changes.
     """
     hashes = {}
-    names = ['dft._mixed_grid', 'dft._mixed_vv10', 'df._mixed_jk', 'dft.mixed_precision']
+    names = ['dft._mixed_grid', 'dft._mixed_vv10', 'df._int8_gram', 'df._mixed_jk', 'dft.mixed_precision']
     if forces:
         names.append('dft._vv10_grad')
     if ase:

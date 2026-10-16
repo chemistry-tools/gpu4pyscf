@@ -5,6 +5,9 @@ including B3LYP and VV10 functionals. Early grid matrix products and, when prese
 VV10 pair products use float32, followed by verification with
 native float64 energy and physical Fock. Density-fitted global-hybrid GGAs also use
 float32 exchange products during the early search, with float64 accumulation.
+On compute capability 8.6, eligible later exchange Gram products use nine INT8
+slices and float64 accumulation. This remains an approximate SCF step; the final
+energy/Fock check, recovery and derivatives use native float64 throughout.
 AO fields, densities, XC, integrals and orbital diagonalization retain float64. Numerical settings are configured on the
 mean-field object and preserved by the precision runner.
 
@@ -48,7 +51,8 @@ The runner uses float32 grid products for at most five iterations, with an adapt
 schedule for native density-fitted global-hybrid GGAs. Those methods retain float32
 grid and exchange products until both the energy change falls below `1e-5` Hartree
 and the orbital gradient below `1e-3`, after at least five iterations and at most
-twelve. Once switched, products remain float64, including all verification and recovery.
+twelve. Once switched, grid and exchange-projection products remain float64;
+eligible Gram products can use the INT8 path until final verification.
 These are precision-switch criteria; the caller's SCF acceptance thresholds are unchanged.
 Other methods retain the five-iteration grid schedule. VV10 pair products, when present,
 use float32 during the approximate phase. It caps the first SCF phase at 20 iterations and
@@ -68,9 +72,22 @@ visible GPUs are currently unsupported and rejected explicitly.
 The exchange dispatch is private to the density-fitting instance. It uses explicit
 float32 products, releases conversion buffers when switching to float64 and restores
 the native method before derivatives. The report's `df_exchange_contraction_calls`
-records both precisions; zero counts identify calculations outside this path's
+records `float32`, `int8` and native `float64` calls; zero counts identify calculations outside this path's
 global-hybrid GGA and native density-fitting guards. Float64 real symmetric exchange
 products use a triangular BLAS update for sufficiently large contiguous blocks.
+
+The INT8 kernel is compiled by CuPy and requires no separate library or global
+interception. It shares one signed seven-bit slice buffer for both sides of the
+Gram product, pads integer matrices and bounds INT32 accumulation against overflow.
+Scratch is bounded to 512 MiB per worker stream, checked against available memory
+and released before native verification. Unsupported devices, layouts, scales and
+larger workspaces retain the native float64 update. Approximate iterations remain
+labelled `mixed` even after grid products switch to float64. Explicit
+`precision="float64"` and ordinary native SCF calls do not use INT8.
+
+The real-matrix splitting follows [ozIMMU](https://github.com/enp1s0/ozIMMU), with
+its MIT notice retained in the specialized kernel source. Native verification is
+independent of this approximate product and never re-enables it during recovery.
 
 ## ASE optimizers and analytic Hessians
 

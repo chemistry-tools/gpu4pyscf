@@ -18,6 +18,15 @@ def symmetric(monkeypatch):
     return _jk_contraction
 
 
+@pytest.fixture
+def integer(monkeypatch):
+    from gpu4pyscf.df import _int8_gram
+
+    monkeypatch.setattr(_int8_gram, '_MIN_ORBITALS', 0)
+    monkeypatch.setattr(_int8_gram, '_MIN_REDUCTION', 0)
+    return _int8_gram
+
+
 @pytest.mark.parametrize('shape', [(1, 17, 7, 11), (2, 33, 9, 13)])
 def test_symmetric_exchange_preserves_general_accumulation(shape, symmetric):
     import cupy as cp
@@ -170,12 +179,34 @@ def test_early_exchange_stream_scratch_and_float64_switch():
 @pytest.mark.parametrize('case,charge,spin', [('CH3CONH2', 0, 0), ('C5H5N', 0, 0),
                                             ('C2H6SO', 0, 0), ('CH3COF', 0, 0),
                                             ('CH3COCl', 0, 0), ('H2O', 1, 1)])
-def test_verified_mixed_exchange_matches_float64_density(case, charge, spin, symmetric, monkeypatch):
+def test_verified_mixed_exchange_matches_float64_density(case, charge, spin, symmetric, integer, monkeypatch):
     import cupy as cp
     from ase.build import molecule
     from test_semilocal_precision import _calculator
 
     from gpu4pyscf.df import df_jk
+    from gpu4pyscf.dft import mixed_precision
+
+    verifying, integer_calls = False, []
+    native_check = mixed_precision._full_check
+    native_update = integer._Int8Gram.update
+
+    def check(*args):
+        nonlocal verifying
+        verifying = True
+        try:
+            return native_check(*args)
+        finally:
+            verifying = False
+
+    def update(*args):
+        assert not verifying, 'Final verification must use the native float64 Gram product'
+        result = native_update(*args)
+        integer_calls.append(result)
+        return result
+
+    monkeypatch.setattr(mixed_precision, '_full_check', check)
+    monkeypatch.setattr(integer._Int8Gram, 'update', update)
 
     native, mixed = molecule(case), molecule(case)
     native.calc = _calculator(native, 'b3lyp', 'float64', charge=charge,
@@ -191,9 +222,56 @@ def test_verified_mixed_exchange_matches_float64_density(case, charge, spin, sym
     assert report['accepted'] and report['final_verification']['passed']
     assert report['df_exchange_contraction_calls']['float32'] > 0
     assert report['df_exchange_contraction_calls']['float64'] > 0
+    assert report['df_exchange_contraction_calls']['int8'] > 0
+    assert integer_calls and all(integer_calls)
     cp.testing.assert_allclose(mixed.calc.method_scan.make_rdm1(),
                                native.calc.method_scan.make_rdm1(), atol=1e-8, rtol=0)
     assert 'get_jk' not in mixed.calc.method_scan.with_df.__dict__
     # Derivatives execute after the private float32 dispatch has been removed.
     assert cp.isfinite(cp.asarray(mixed.get_forces())).all()
     assert mixed.calc.calculation_info['scf_reused']
+
+
+def test_integer_failure_scope_restores_df_and_releases_workspace(integer):
+    import cupy as cp
+    from pyscf import gto
+
+    from gpu4pyscf import dft
+    from gpu4pyscf.dft.mixed_precision import _precision_context
+
+    mol = gto.M(atom='O 0 0 0; H .75 0 .5; H -.75 0 .5', basis='6-31g*', verbose=0)
+    mf = dft.RKS(mol, xc='b3lyp').density_fit()
+    original = mf.with_df.get_jk.__func__
+    with pytest.raises(ArithmeticError, match='integer scope failure'), _precision_context(mf) as (grid, _):
+        grid.use_float32 = False
+        control = grid._df_exchange
+        out = cp.zeros((1, 17, 17))
+        control.gram(lambda *args: out, None, cp.ones((1, 17, 3, 13)), out)
+        assert control.int8_calls == 1
+        backend = control._int8
+        assert backend._workspace.streams
+        raise ArithmeticError('integer scope failure')
+    assert control._int8 is None and not hasattr(backend._workspace, 'streams')
+    assert 'get_jk' not in mf.with_df.__dict__ and mf.with_df.get_jk.__func__ is original
+
+
+def test_integer_scope_restarts_for_changed_geometry_and_reuses_scf_for_forces(integer):
+    from ase.build import molecule
+    from test_semilocal_precision import _calculator
+
+    atoms = molecule('CH3CONH2')
+    atoms.calc = _calculator(atoms, 'b3lyp', 'auto', density_fit=True)
+    atoms.get_potential_energy()
+    first = atoms.calc.precision_info
+    assert first['accepted'] and first['df_exchange_contraction_calls']['int8'] > 0
+    atoms.positions[0, 0] += .08
+    energy = atoms.get_potential_energy()
+    second = atoms.calc.precision_info
+    assert second is not first and second['accepted']
+    assert second['df_exchange_contraction_calls']['int8'] > 0
+    assert 'get_jk' not in atoms.calc.method_scan.with_df.__dict__
+    reference = atoms.copy()
+    reference.calc = _calculator(reference, 'b3lyp', 'float64', density_fit=True)
+    assert abs(energy-reference.get_potential_energy()) < 1e-8
+    atoms.get_forces()
+    assert atoms.calc.precision_info is second and atoms.calc.calculation_info['scf_reused']

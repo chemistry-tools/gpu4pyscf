@@ -20,9 +20,16 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
 - `gpu4pyscf/df/_jk_contraction.py`, `test_df_exchange.py`: symmetric float64
   exchange updates, general-output accumulation, alias and stream guards, complete
   mixed-atom J/K comparisons and verified RKS/UKS SCF checks.
-- `gpu4pyscf/df/_mixed_jk.py`: per-instance early float32 exchange for native
+- `gpu4pyscf/df/_mixed_jk.py`: per-instance early float32 and later INT8 exchange for native
   density-fitted global-hybrid GGAs, sharing a bounded adaptive grid schedule and
   returning to native float64 before verification and derivatives.
+- `gpu4pyscf/df/_int8_gram.py`, `test_int8_exchange.py`: nine-slice real Gram
+  products on compute capability 8.6, a single shared slice buffer, bounded
+  workspaces, exact INT32 partial sums and float64 reconstruction. Checks include
+  an independent Decimal oracle, partial tiles, batched rejection before output
+  mutation, overflow limits, CUDA streams/state restoration and changing shapes.
+  This path is approximate and must be disabled before native SCF verification
+  and recovery; `test_df_exchange.py` forces it on the mixed-element SCF panel.
 - `vv10_experiment.py`: scoped VV10 adapters and CuPy pair-kernel/compiler comparisons. Adapted
   from upstream v1.8.1 `gpu4pyscf/lib/gdft/vv10.cu`, under the repository's Apache-2.0 license.
 - `grid_experiment.py`: scoped grid matrix products and single-GPU task-dispatch experiments.

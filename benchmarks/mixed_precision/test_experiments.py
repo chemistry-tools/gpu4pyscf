@@ -22,7 +22,7 @@ def test_source_provenance_uses_active_overlay_and_exchange_helpers(tmp_path):
     package.mkdir(parents=True)
     (package / '__init__.py').symlink_to(original / '__init__.py')
     names = ('dft/numint.py', 'dft/libxc.py', 'dft/gen_grid.py', 'scf/hf.py',
-             'df/df_jk.py', 'df/_jk_contraction.py', 'df/_mixed_jk.py')
+             'df/df_jk.py', 'df/_jk_contraction.py', 'df/_mixed_jk.py', 'df/_int8_gram.py')
     for name in names:
         target = package / name
         target.parent.mkdir(exist_ok=True)
@@ -34,6 +34,8 @@ def test_source_provenance_uses_active_overlay_and_exchange_helpers(tmp_path):
     assert report['module'] == str(package / '__init__.py')
     assert report['source_sha256']['gpu4pyscf/df/_mixed_jk.py'] == hashlib.sha256(
         (package / 'df/_mixed_jk.py').read_bytes()).hexdigest()
+    assert report['source_sha256']['gpu4pyscf/df/_int8_gram.py'] == hashlib.sha256(
+        (package / 'df/_int8_gram.py').read_bytes()).hexdigest()
     assert report['native_library_sha256'] == hashlib.sha256(native.read_bytes()).hexdigest()
 
 
