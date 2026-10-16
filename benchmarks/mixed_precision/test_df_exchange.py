@@ -182,18 +182,25 @@ def test_early_exchange_stream_scratch_and_float64_switch():
 def test_verified_mixed_exchange_matches_float64_density(case, charge, spin, symmetric, integer, monkeypatch):
     import cupy as cp
     from ase.build import molecule
+    from pyscf.data.nist import BOHR, HARTREE2EV
     from test_semilocal_precision import _calculator
 
-    from gpu4pyscf.df import df_jk
+    from gpu4pyscf.df import _mixed_jk, df_jk
     from gpu4pyscf.dft import mixed_precision
 
-    verifying, integer_calls = False, []
+    verifying, integer_calls, controllers = False, [], []
     native_check = mixed_precision._full_check
     native_update = integer._Int8Gram.update
+    finish = _mixed_jk._ExchangePrecision.finish_approximation
+
+    def finish_approximation(control):
+        finish(control)
+        controllers.append(control)
 
     def check(*args):
         nonlocal verifying
         verifying = True
+        assert controllers and controllers[-1].native_only and not controllers[-1].projection_float32
         try:
             return native_check(*args)
         finally:
@@ -207,6 +214,7 @@ def test_verified_mixed_exchange_matches_float64_density(case, charge, spin, sym
 
     monkeypatch.setattr(mixed_precision, '_full_check', check)
     monkeypatch.setattr(integer._Int8Gram, 'update', update)
+    monkeypatch.setattr(_mixed_jk._ExchangePrecision, 'finish_approximation', finish_approximation)
 
     native, mixed = molecule(case), molecule(case)
     native.calc = _calculator(native, 'b3lyp', 'float64', charge=charge,
@@ -228,8 +236,69 @@ def test_verified_mixed_exchange_matches_float64_density(case, charge, spin, sym
                                native.calc.method_scan.make_rdm1(), atol=1e-8, rtol=0)
     assert 'get_jk' not in mixed.calc.method_scan.with_df.__dict__
     # Derivatives execute after the private float32 dispatch has been removed.
-    assert cp.isfinite(cp.asarray(mixed.get_forces())).all()
+    # Cartesian DF gradients amplify tiny differences between converged states.
+    # Replay the accepted orbitals in a separate, entirely native calculator.
+    reference = native.calc.method_scan
+    for name in ('mo_coeff', 'mo_occ', 'mo_energy'):
+        setattr(reference, name, getattr(mixed.calc.method_scan, name).copy())
+    reference.e_tot = mixed.calc.method_scan.e_tot
+    gradient = reference.Gradients()
+    gradient.grid_response = gradient.auxbasis_response = True
+    reference_forces = -cp.asarray(gradient.kernel()) * HARTREE2EV / BOHR
+    cp.testing.assert_allclose(cp.asarray(mixed.get_forces()), reference_forces, atol=1e-5, rtol=0)
     assert mixed.calc.calculation_info['scf_reused']
+
+
+def test_projection_tail_keeps_scratch_across_int8_gram_and_finishes_natively(integer):
+    import cupy as cp
+    from cupy_backends.cuda.libs import cutensor
+
+    from gpu4pyscf.df._mixed_jk import _ExchangePrecision
+    from gpu4pyscf.lib.cutensor import contraction
+
+    class Grid:
+        use_float32 = False
+
+    control = _ExchangePrecision(Grid())
+    control.projection_float32 = True
+    rng = cp.random.RandomState(1619)
+    a, b = rng.normal(size=(7, 23, 23)), rng.normal(size=(2, 23, 9))
+    output = cp.empty((2, 23, 9, 7))
+    pattern = 'Lij,njk->nikL'
+    expected = contraction(pattern, a.astype(cp.float32), b.astype(cp.float32), 1., 0.,
+                           compute_desc=cutensor.COMPUTE_DESC_32F).astype(cp.float64)
+
+    def gram(rhok, out):
+        return contraction('nikL,njkL->nij', rhok, rhok, alpha=1., beta=1., out=out)
+
+    try:
+        actual = control.contract(contraction, pattern, a, b, out=output)
+        cp.testing.assert_array_equal(actual, expected)
+        scratch = control._workspace.streams
+        pointers = [buffer.data.ptr for _, buffers in scratch.values() for buffer in buffers]
+        accumulated = cp.zeros((2, 23, 23))
+        expected_gram = gram(actual, accumulated.copy())
+        control.gram(gram, contraction, actual, accumulated)
+        assert control.int8_calls == 1 and control.float32_calls == 1
+        cp.testing.assert_allclose(accumulated, expected_gram, atol=1e-10, rtol=2e-13)
+        assert control._workspace.streams is scratch
+        control.contract(contraction, pattern, a, b, out=output)
+        assert [buffer.data.ptr for _, buffers in scratch.values() for buffer in buffers] == pointers
+        control.finish_approximation()
+        assert not control.projection_float32 and not hasattr(control._workspace, 'streams')
+        assert control._int8 is None
+        # Even an externally changed search flag cannot re-enable approximation.
+        control.projection_float32 = control.grid.use_float32 = True
+        actual = control.contract(contraction, pattern, a, b, out=output)
+        cp.testing.assert_allclose(actual, contraction(pattern, a, b, 1., 0.), atol=2e-12, rtol=2e-13)
+        accumulated.fill(0)
+        expected_gram = gram(actual, accumulated.copy())
+        control.gram(gram, contraction, actual, accumulated)
+        cp.testing.assert_allclose(accumulated, expected_gram, atol=2e-12, rtol=2e-13)
+        assert control.float64_calls == 2 and control.int8_calls == 1 and control.float32_calls == 2
+        assert not hasattr(control._workspace, 'streams') and control._int8 is None
+    finally:
+        control.release()
 
 
 def test_integer_failure_scope_restores_df_and_releases_workspace(integer):
@@ -237,6 +306,7 @@ def test_integer_failure_scope_restores_df_and_releases_workspace(integer):
     from pyscf import gto
 
     from gpu4pyscf import dft
+    from gpu4pyscf.df import df_jk
     from gpu4pyscf.dft.mixed_precision import _precision_context
 
     mol = gto.M(atom='O 0 0 0; H .75 0 .5; H -.75 0 .5', basis='6-31g*', verbose=0)
@@ -245,13 +315,18 @@ def test_integer_failure_scope_restores_df_and_releases_workspace(integer):
     with pytest.raises(ArithmeticError, match='integer scope failure'), _precision_context(mf) as (grid, _):
         grid.use_float32 = False
         control = grid._df_exchange
+        control.projection_float32 = True
+        rhok = cp.empty((1, 17, 3, 13))
+        control.contract(df_jk.contract, 'Lij,njk->nikL', cp.ones((13, 17, 17)),
+                         cp.ones((1, 17, 3)), out=rhok)
         out = cp.zeros((1, 17, 17))
-        control.gram(lambda *args: out, None, cp.ones((1, 17, 3, 13)), out)
+        control.gram(lambda *args: out, None, rhok, out)
         assert control.int8_calls == 1
         backend = control._int8
         assert backend._workspace.streams
         raise ArithmeticError('integer scope failure')
     assert control._int8 is None and not hasattr(backend._workspace, 'streams')
+    assert not hasattr(control._workspace, 'streams')
     assert 'get_jk' not in mf.with_df.__dict__ and mf.with_df.get_jk.__func__ is original
 
 

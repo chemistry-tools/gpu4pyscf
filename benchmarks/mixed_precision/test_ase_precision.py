@@ -82,9 +82,11 @@ class _Exchange:
     float64_calls = 4
     int8_calls = 0
     native_only = False
+    projection_float32 = False
 
     def finish_approximation(self):
         self.native_only = True
+        self.projection_float32 = False
 
 
 def test_verified_energy_updates_method_and_restores_callback(precision, monkeypatch):
@@ -296,12 +298,13 @@ def test_adaptive_failed_verification_keeps_recovery_float64_with_small_budget(p
     grid._df_exchange = _Exchange()
     mf = _MeanField()
     mf.xc, mf.do_nlc, mf.max_cycle = 'b3lyp', lambda: False, 10
-    observed, checks = [], iter((_check(False), _check(True)))
+    observed, projections, checks = [], [], iter((_check(False), _check(True)))
 
     def kernel(dm0=None):
         mf.calls.append((dm0, mf.max_cycle))
         for cycle in range(mf.max_cycle):
             observed.append(grid.use_float32)
+            projections.append(grid._df_exchange.projection_float32)
             mf.callback({'cycle': cycle, 'e_tot': mf.e_tot, 'last_hf_e': mf.e_tot+1,
                          'norm_gorb': .1})
         mf.converged = True
@@ -310,15 +313,74 @@ def test_adaptive_failed_verification_keeps_recovery_float64_with_small_budget(p
     def check(*args):
         assert not grid.use_float32
         assert grid._df_exchange.native_only
+        assert not grid._df_exchange.projection_float32
         return next(checks)
 
     mf.kernel = kernel
     monkeypatch.setattr(module, '_full_check', check)
     module.run_verified_scf(mf)
     assert observed == [True]*5+[False]*5
+    assert projections == [True]*5+[False]*5
     assert mf.calls == [(None, 5), (mf.dm, 5)]
     assert mf.max_cycle == 10 and mf.callback is None
     assert mf.mixed_precision_info['fallback_scf'] and mf.mixed_precision_info['accepted']
+
+
+@pytest.mark.parametrize('gradient_cycle,switch', [(2, 5), (9, 9), (None, 16)])
+def test_projection_schedule_is_independent_bounded_and_one_way(precision, monkeypatch, gradient_cycle, switch):
+    module, grid, _ = precision
+    exchange = grid._df_exchange = _Exchange()
+    mf = _MeanField()
+    mf.xc, mf.do_nlc = 'b3lyp', lambda: False
+    observed = []
+
+    def kernel(dm0=None):
+        for cycle in range(20):
+            observed.append((grid.use_float32, exchange.projection_float32))
+            settled = gradient_cycle is not None and cycle+1 >= gradient_cycle
+            # The gradient rises again after the switch; neither schedule re-enables.
+            norm = 1e-5 if settled and cycle < switch else 5e-4
+            mf.callback({'cycle': cycle, 'e_tot': mf.e_tot, 'last_hf_e': mf.e_tot,
+                         'norm_gorb': norm})
+        mf.converged = True
+        return mf.e_tot
+
+    def check(*args):
+        assert exchange.native_only and not exchange.projection_float32 and not grid.use_float32
+        return _check(True)
+
+    mf.kernel = kernel
+    monkeypatch.setattr(module, '_full_check', check)
+    module.run_verified_scf(mf)
+    assert [value[0] for value in observed] == [True]*5+[False]*15
+    assert [value[1] for value in observed] == [True]*switch+[False]*(20-switch)
+    assert mf.mixed_precision_info['df_exchange_projection_schedule'] == {
+        'minimum_cycles': 5, 'maximum_cycles': 16, 'orbital_gradient_threshold': 1e-4,
+    }
+
+
+def test_projection_phase_labels_follow_products_including_native_fallback(precision, monkeypatch):
+    module, grid, _ = precision
+    exchange = grid._df_exchange = _Exchange()
+    exchange.float32_calls = 0
+    mf = _MeanField()
+    mf.xc, mf.do_nlc = 'b3lyp', lambda: False
+
+    def kernel(dm0=None):
+        grid.use_float32 = False
+        for cycle in range(3):
+            assert exchange.projection_float32
+            if cycle != 1:
+                exchange.float32_calls += 1
+            mf.callback({'cycle': cycle, 'e_tot': mf.e_tot, 'last_hf_e': mf.e_tot,
+                         'norm_gorb': .1})
+        mf.converged = True
+        return mf.e_tot
+
+    mf.kernel = kernel
+    monkeypatch.setattr(module, '_full_check', lambda *args: _check(True))
+    module.run_verified_scf(mf)
+    assert [row['phase'] for row in mf.mixed_precision_info['cycles']] == ['mixed', 'float64', 'mixed']
 
 
 def test_int8_cycles_remain_approximate_and_recovery_never_reenables_them(precision, monkeypatch):
@@ -372,6 +434,7 @@ def test_exchange_controller_finishes_and_releases_int8_before_native_calls(monk
     exchange_module = _load('exchange_under_test', 'gpu4pyscf/df/_mixed_jk.py')
     grid = SimpleNamespace(use_float32=False)
     exchange = exchange_module._ExchangePrecision(grid)
+    assert not exchange.projection_float32
     calls = []
 
     def native(a, out):
@@ -381,8 +444,9 @@ def test_exchange_controller_finishes_and_releases_int8_before_native_calls(monk
     matrix, out = object(), object()
     assert exchange.gram(native, None, matrix, out) is out
     assert exchange.int8_calls == 1 and not calls
+    exchange.projection_float32 = True
     exchange.finish_approximation()
-    assert backend.released and exchange._int8 is None
+    assert backend.released and exchange._int8 is None and not exchange.projection_float32
     grid.use_float32 = True
     assert exchange.gram(native, None, matrix, out) is out
     assert calls == [matrix] and exchange.float64_calls == 1

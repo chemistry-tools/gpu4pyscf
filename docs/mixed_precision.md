@@ -49,10 +49,12 @@ supplied together. The native callback is retained through all SCF phases.
 
 The runner uses float32 grid products for at most five iterations, with an adaptive
 schedule for native density-fitted global-hybrid GGAs. Those methods retain float32
-grid and exchange products until both the energy change falls below `1e-5` Hartree
+grid products until both the energy change falls below `1e-5` Hartree
 and the orbital gradient below `1e-3`, after at least five iterations and at most
-twelve. Once switched, grid and exchange-projection products remain float64;
-eligible Gram products can use the INT8 path until final verification.
+twelve. Exchange projections have an independent float32 search: after at least five
+iterations, they switch when the orbital gradient falls below `1e-4`, or after sixteen
+iterations. Neither search re-enables float32 after its switch. Eligible Gram products
+can use the INT8 path after the grid switch until final verification.
 These are precision-switch criteria; the caller's SCF acceptance thresholds are unchanged.
 Other methods retain the five-iteration grid schedule. VV10 pair products, when present,
 use float32 during the approximate phase. It caps the first SCF phase at 20 iterations and
@@ -73,7 +75,9 @@ The exchange dispatch is private to the density-fitting instance. It uses explic
 float32 products, releases conversion buffers when switching to float64 and restores
 the native method before derivatives. The report's `df_exchange_contraction_calls`
 records `float32`, `int8` and native `float64` calls; zero counts identify calculations outside this path's
-global-hybrid GGA and native density-fitting guards. Float64 real symmetric exchange
+global-hybrid GGA and native density-fitting guards. The report also records the
+`df_exchange_projection_schedule` limits; iteration labels follow actual approximate
+exchange calls, including projections after the grid switch. Float64 real symmetric exchange
 products use a triangular BLAS update for sufficiently large contiguous blocks.
 
 The INT8 kernel is compiled by CuPy and requires no separate library or global

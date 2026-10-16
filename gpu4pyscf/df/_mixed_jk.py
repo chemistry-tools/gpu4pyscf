@@ -16,6 +16,7 @@ class _ExchangePrecision:
         self.float64_calls = 0
         self.int8_calls = 0
         self.native_only = False
+        self.projection_float32 = False
         self._int8 = None
         self._workspace = local()
         self._accumulator = _GridPrecision(True)
@@ -35,6 +36,7 @@ class _ExchangePrecision:
 
     def finish_approximation(self):
         self.native_only = True
+        self.projection_float32 = False
         self.release()
 
     def _scratch(self, a, b, out):
@@ -70,7 +72,8 @@ class _ExchangePrecision:
             or out is None or out.dtype != cp.float64 or kwargs
         ):
             return original(pattern, a, b, alpha=alpha, beta=beta, out=out, **kwargs)
-        if not self.grid.use_float32 or self.native_only:
+        approximate = self.grid.use_float32 or (pattern == 'Lij,njk->nikL' and self.projection_float32)
+        if not approximate or self.native_only:
             self._release_float32()
             self.float64_calls += 1
             return original(pattern, a, b, alpha=alpha, beta=beta, out=out)
@@ -88,7 +91,10 @@ class _ExchangePrecision:
     def gram(self, original, contract, rhok, out):
         if self.grid.use_float32 and not self.native_only:
             return self.contract(contract, 'nikL,njkL->nij', rhok, rhok, beta=1., out=out)
-        self._release_float32()
+        # Later Gram products can use INT8 while projections still use float32.
+        # Keep projection buffers across these blocks instead of reallocating them.
+        if not self.projection_float32 or self.native_only:
+            self._release_float32()
         if not self.native_only:
             from gpu4pyscf.df._int8_gram import _Int8Gram
 

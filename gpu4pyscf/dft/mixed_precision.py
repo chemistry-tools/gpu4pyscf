@@ -163,12 +163,23 @@ def run_verified_scf(mf, calculate=None, *, dm0=None):
         exchange = getattr(grid, '_df_exchange', None)
         adaptive = exchange is not None
         int8_seen = 0
+        float32_exchange_seen = 0
+        if adaptive:
+            exchange.projection_float32 = True
         info['grid_precision_schedule'] = 'adaptive_hybrid_gga' if adaptive else 'first_five'
+        info['df_exchange_projection_schedule'] = (
+            {'minimum_cycles': 5, 'maximum_cycles': 16, 'orbital_gradient_threshold': 1e-4}
+            if adaptive else None
+        )
 
         def progress(env):
-            nonlocal int8_seen
+            nonlocal int8_seen, float32_exchange_seen
             int8_calls = getattr(exchange, 'int8_calls', 0)
-            approximate = (vv10.use_float32 if has_nlc else grid.use_float32) or int8_calls > int8_seen
+            float32_exchange_calls = getattr(exchange, 'float32_calls', 0)
+            approximate = (
+                (vv10.use_float32 if has_nlc else grid.use_float32)
+                or int8_calls > int8_seen or float32_exchange_calls > float32_exchange_seen
+            )
             records.append(
                 {
                     'phase': 'mixed' if approximate else 'float64',
@@ -178,14 +189,17 @@ def run_verified_scf(mf, calculate=None, *, dm0=None):
                 }
             )
             int8_seen = int8_calls
+            float32_exchange_seen = float32_exchange_calls
             # A global-hybrid GGA can spend most of SCF in exchange products.
-            # Bound the float32 search before using float64 grid/projection
-            # products; eligible Gram updates remain approximate until verification.
+            # Grid and projection products have separate bounded searches; eligible
+            # Gram updates remain approximate until native verification.
             if adaptive:
                 if len(records) >= 12 or (len(records) >= 5
                         and abs(float(env['e_tot'] - env['last_hf_e'])) < 1e-5
                         and float(env['norm_gorb']) < 1e-3):
                     grid.use_float32 = False
+                if len(records) >= 16 or (len(records) >= 5 and float(env['norm_gorb']) < 1e-4):
+                    exchange.projection_float32 = False
             elif len(records) >= 5:
                 grid.use_float32 = False
             if callable(callback):
