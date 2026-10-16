@@ -418,7 +418,9 @@ def _tau_grad_dot_(ao, wv, accumulate=False, buf=None, out=None):
 
 def _rho_and_dm_ao(ao, dm, xctype):
     '''Evaluate density and retain products for a real, symmetric density matrix.'''
-    ncomp = 1 if xctype == 'LDA' else 4
+    # GGA density gradients need only D*AO[0]; its weighted derivative term
+    # is contracted after XC evaluation instead of retaining three extra products.
+    ncomp = 4 if xctype == 'MGGA' else 1
     dm_ao = cupy.empty_like(ao[:ncomp])
     for component in range(ncomp):
         dm.dot(ao[component], out=dm_ao[component])
@@ -446,7 +448,10 @@ def _contract_grad_response(ao, wv, dm, dm_ao=None):
     if dm_ao is not None:
         # Distribute scalar grid weights over the retained density/AO products.
         # Products are reusable only for exactly real-symmetric density matrices.
-        weighted = numint._scale_ao(dm_ao, wv[:4]) if len(wv) > 1 else dm_ao[0] * wv[0]
+        if len(wv) == 4 and len(dm_ao) == 1:
+            weighted = dm.T.dot(numint._scale_ao(ao[:4], wv))
+        else:
+            weighted = numint._scale_ao(dm_ao, wv[:4]) if len(wv) > 1 else dm_ao[0] * wv[0]
         partial = cupy.einsum('dip,ip->id', ao[1:4], weighted)
         if len(wv) > 1:
             partial += cupy.einsum('dip,ip->id', _make_dR_dao_w(ao, wv[:4]), dm_ao[0])
@@ -492,7 +497,7 @@ def get_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
     dms = cupy.asarray(dms)
     assert dms.ndim == 2
     dms = opt.sort_orbitals(dms, axis=[0,1])
-    reuse_products = (xctype in ('LDA', 'MGGA') and dms.dtype == cupy.float64
+    reuse_products = (xctype in ('LDA', 'GGA', 'MGGA') and dms.dtype == cupy.float64
                       and bool(cupy.array_equal(dms, dms.T)))
 
     de_grid_response_rho = cupy.zeros((natm, 3))

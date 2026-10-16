@@ -1,7 +1,8 @@
 # Verified mixed precision for molecular DFT
 
-This fork accelerates molecular RKS/UKS SCF with VV10 on one visible GPU. Early grid
-matrix products and VV10 pair products use float32, followed by verification with
+This fork provides verified mixed precision for molecular RKS/UKS on one visible GPU,
+including B3LYP and VV10 functionals. Early grid matrix products and, when present,
+VV10 pair products use float32, followed by verification with
 native float64 energy and physical Fock. AO fields, densities, XC, exchange and
 orbital diagonalization retain float64. Numerical settings are configured on the
 mean-field object and preserved by the precision runner.
@@ -43,7 +44,8 @@ geometry reset and warm density reuse. A callable and an explicit density cannot
 supplied together. The native callback is retained through all SCF phases.
 
 The runner uses float32 grid products for at most five iterations and float32 VV10
-pair products during the approximate phase. It caps that phase at 20 iterations and
+pair products, when present, during the approximate phase. LDA/GGA products use the
+native float64 matrix path after those early iterations. It caps the first SCF phase at 20 iterations and
 initially reserves half the configured `max_cycle` budget for recovery. After SCF,
 it checks the full float64 energy change against `conv_tol` and the physical orbital
 gradient against `conv_tol_grad`, or `sqrt(conv_tol)` when unset. Passing verification
@@ -70,11 +72,25 @@ hessian = atoms.calc.get_hessian(atoms, auxbasis_response=2)
 ```
 
 The calculator defaults to `precision="auto"`, selecting verified mixed precision for
-supported GPU VV10 DFT and native float64 for other methods. `precision="float64"`
+supported GPU LDA, GGA and meta-GGA DFT, including hybrids, and native float64 for other methods. `precision="float64"`
 explicitly forces native SCF. Each changed geometry starts a new
 precision schedule and the scanner reuses the last density. SCF fallback retains the
 optimizer's geometry and history. Energies are in eV and NumPy forces in eV/Angstrom.
 Optional gradient response controls retain native defaults when omitted.
+
+The same ASE interface supports B3LYP without a nonlocal term:
+
+```python
+from gpu4pyscf import dft
+
+mf = dft.RKS(mol, xc="b3lyp").density_fit()
+atoms.calc = PySCF(method=mf, grid_response=True, auxbasis_response=True)
+forces = atoms.get_forces()
+```
+
+Its precision report contains grid-product counts and an empty `vv10_precisions` list.
+Non-VV10 support requires the current native grid-product dispatch; the older installed-release
+compatibility adapter supports the original VV10 workflow only.
 
 An energy request followed by forces at unchanged atoms reuses the accepted SCF
 state. The [ASE guide](../benchmarks/mixed_precision/ASE.md) describes invalidation

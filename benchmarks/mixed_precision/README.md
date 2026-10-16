@@ -7,7 +7,7 @@ A failed check triggers float64 reconvergence within the original cycle budget.
 
 The harness, scoped CuPy kernel adapters and pinned [protocol](protocol.json) are self-contained.
 The ASE calculator defaults to `precision="auto"`, selecting verified mixed precision for
-supported GPU VV10 DFT. Its explicit `precision="mixed"` and `precision="float64"` options
+supported molecular GPU DFT. Its explicit `precision="mixed"` and `precision="float64"` options
 control the SCF policy. The native build, full-response forces, geometry reuse and independent
 energy finite differences are checked on synthetic development molecules; validation data
 remains held out.

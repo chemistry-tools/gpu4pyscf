@@ -2,7 +2,7 @@
 
 The [library guide](../../docs/mixed_precision.md) owns the public SCF API and installation boundary.
 
-The GPU4PySCF ASE calculator accepts `precision="mixed"` for molecular RKS/UKS with VV10 on a
+The GPU4PySCF ASE calculator accepts `precision="mixed"` for molecular LDA/GGA/meta-GGA RKS/UKS on a
 single visible GPU. Configure the method with the desired functional, basis, ECP, fitting basis,
 grids, SCF tolerance and cycle budget first; the calculator preserves them.
 
@@ -16,10 +16,10 @@ forces = atoms.get_forces()            # numpy array, eV/Angstrom
 hessian = atoms.calc.get_hessian(atoms, auxbasis_response=2)  # (3N, 3N), eV/Angstrom squared
 ```
 
-The default `precision="auto"` selects verified mixed SCF for supported GPU VV10 DFT
+The default `precision="auto"` selects verified mixed SCF for supported molecular GPU DFT
 and native float64 for other methods. `precision="float64"` explicitly forces native SCF. Each new geometry starts a fresh precision
 schedule, while the normal scanner reuses the previous density. Grid products use float32 for
-at most five SCF iterations; VV10 pair products use float32 partial sums combined in float64.
+at most five SCF iterations; VV10 pair products, when present, use float32 partial sums combined in float64.
 The calculator then computes the original float64 energy and physical Fock. Acceptance requires
 both the original energy tolerance and orbital-gradient tolerance. The accepted float64 energy
 is stored on the method and returned to ASE.
@@ -108,6 +108,14 @@ python -m pytest -q benchmarks/mixed_precision/test_ase_precision.py
 DFT_GPU_TEST=1 CUDA_VISIBLE_DEVICES=1 taskset -c 4-7 python -m pytest -q \
   benchmarks/mixed_precision/test_ase_gpu.py
 ```
+
+`test_semilocal_precision.py` adds B3LYP/Cartesian 6-31G* checks on nitrogen, oxygen,
+sulfur, fluorine and chlorine organics, an open-shell case, LDA/GGA/meta-GGA coverage
+and a force finite difference. It requires the current native grid-product dispatch.
+Independent force comparisons use direct integrals. Density-fitted checks compare
+SCF energies/densities and complete forces at an identical accepted density: the
+existing Cartesian DF derivative path can amplify tiny differences between independently
+converged densities. These checks do not establish independent DF force agreement.
 
 The force checks include neutral and open-shell geometries, warm density reuse and a central
 energy finite difference. They do not generalize to untested molecules or validate a TS/minimum.

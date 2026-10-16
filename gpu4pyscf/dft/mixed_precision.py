@@ -28,7 +28,7 @@ def _precision_context(mf):
     import cupy
 
     from gpu4pyscf.dft import numint
-    from gpu4pyscf.dft._mixed_grid import _GridPrecision, _make_contract, _make_tau_dot
+    from gpu4pyscf.dft._mixed_grid import _GridPrecision, _make_ao_dot, _make_contract, _make_tau_dot
     from gpu4pyscf.dft._mixed_vv10 import _AdaptiveVV10
 
     if numint.num_devices != 1 or cupy.cuda.runtime.getDeviceCount() != 1:
@@ -43,6 +43,10 @@ def _precision_context(mf):
             '_vv10nlc': vv10,
         },
     )
+    if '_dot_ao_ao_dense' in private:
+        private['_dot_ao_ao_dense'] = _make_ao_dot(numint._dot_ao_ao_dense, private['contract'], grid)
+    elif not mf.do_nlc():
+        raise ValueError('LDA/GGA mixed precision requires the native SCF grid-product dispatch')
     # Older installed-release adapters have no symmetric tau path. For the native
     # engine, both alternatives retain this instance's private contract dispatch.
     if '_tau_dot_full' in private:
@@ -98,13 +102,20 @@ def supports_mixed_precision(mf):
     gpu = getattr(mf, 'device', None) == 'gpu' or any(
         cls.__module__.startswith('gpu4pyscf.') for cls in type(mf).__mro__
     )
-    return (
+    eligible = (
         gpu
         and not hasattr(mf, 'cell')
         and hasattr(mf, 'xc')
         and callable(getattr(mf, 'do_nlc', None))
-        and mf.do_nlc()
         and getattr(mf, 'check_convergence', None) is None
+    )
+    if not eligible or mf.do_nlc():
+        return eligible
+    ni = mf._numint
+    integration = getattr(ni.nr_rks, '__func__', ni.nr_rks)
+    return (
+        ni._xc_type(mf.xc) in ('LDA', 'GGA', 'MGGA')
+        and '_dot_ao_ao_dense' in getattr(integration, '__globals__', {})
     )
 
 
@@ -127,8 +138,9 @@ def run_verified_scf(mf, calculate=None, *, dm0=None):
         raise ValueError('Mixed precision requires a GPU4PySCF mean-field object')
     if hasattr(mf, 'cell') or not hasattr(mf, 'xc'):
         raise ValueError('Mixed precision currently supports molecular RKS and UKS only')
-    if not mf.do_nlc():
-        raise ValueError('Mixed precision currently requires a VV10 functional')
+    has_nlc = bool(mf.do_nlc())
+    if not has_nlc and mf._numint._xc_type(mf.xc) not in ('LDA', 'GGA', 'MGGA'):
+        raise ValueError('Mixed precision requires an LDA, GGA or meta-GGA functional')
     if getattr(mf, 'check_convergence', None) is not None:
         raise ValueError('Mixed precision requires the native SCF convergence criteria')
     budget = mf.max_cycle
@@ -149,7 +161,7 @@ def run_verified_scf(mf, calculate=None, *, dm0=None):
         def progress(env):
             records.append(
                 {
-                    'phase': 'mixed' if vv10.use_float32 else 'float64',
+                    'phase': 'mixed' if (vv10.use_float32 if has_nlc else grid.use_float32) else 'float64',
                     'cycle': int(env['cycle']) + 1,
                     'energy_hartree': float(env['e_tot']),
                     'orbital_gradient_norm': float(env['norm_gorb']),

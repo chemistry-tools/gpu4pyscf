@@ -30,6 +30,7 @@ def test_density_and_reused_contractions_match_separate_native_products(xctype, 
     density_ao = ao[0] if xctype == 'LDA' else ao[:4]
     reference_density = numint.eval_rho(None, density_ao, dm, xctype=xctype, hermi=1)
     density, products = rks._rho_and_dm_ao(ao, dm, xctype)
+    assert products.shape[0] == (4 if xctype == 'MGGA' else 1)
     cp.testing.assert_array_equal(density, reference_density)
     reference_force = rks._contract_grad_response(ao, wv, dm)
     force = rks._contract_grad_response(ao, wv, dm, products)
@@ -54,7 +55,7 @@ def _two_pass_reference():
 
 
 @pytest.mark.skipif(not os.getenv('DFT_REFERENCE_GRADIENT'), reason='matching native baseline source required')
-@pytest.mark.parametrize('xc', ['lda,vwn', 'pbe', 'wb97m-v'])
+@pytest.mark.parametrize('xc', ['lda,vwn', 'pbe', 'b3lyp', 'wb97m-v'])
 def test_streaming_complete_forces_and_energy_differences(xc, monkeypatch):
     import numpy as np
     from pyscf import gto

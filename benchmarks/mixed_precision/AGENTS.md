@@ -12,6 +12,8 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
 - `ase_workflow.py`: generic external-input energy/force/optimization/Hessian comparisons.
 - `compare_ase.py`, `test_compare_ase.py`: recipe/source/resource guards and matched-geometry report comparisons.
 - `test_ase_precision.py`, `test_ase_gpu.py`: lifecycle/fallback and real-force checks.
+- `test_semilocal_precision.py`: private LDA/GGA grid products, B3LYP mixed-atom
+  RKS/UKS energy and force checks, warm geometry changes and force finite differences.
 - `vv10_experiment.py`: scoped VV10 adapters and CuPy pair-kernel/compiler comparisons. Adapted
   from upstream v1.8.1 `gpu4pyscf/lib/gdft/vv10.cu`, under the repository's Apache-2.0 license.
 - `grid_experiment.py`: scoped grid matrix products and single-GPU task-dispatch experiments.
@@ -22,8 +24,9 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
   in installed-release gradients; keeps the installed grid loops and native calls intact.
 - `gpu4pyscf/grad/rks.py`: density contraction before AO derivative-matrix formation in full
   RKS XC response and the shared RKS/UKS VV10 response. Full-response RKS streams density
-  and orbital derivatives in one AO pass; real exactly symmetric LDA/MGGA densities reuse
-  block-local density/AO products. Forces remain float64.
+  and orbital derivatives in one AO pass; real exactly symmetric LDA/GGA/MGGA densities reuse
+  block-local density/AO products. GGA retains only the density/AO zeroth-component
+  product and reuses it in the derivative contraction. Forces remain float64.
 - `test_native_grid_response.py`: native density/product comparisons and LDA/GGA/MGGA
   complete-force comparisons plus energy finite differences. Set `DFT_REFERENCE_GRADIENT`
   to a retained matching native baseline source for the complete-force comparisons.

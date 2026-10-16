@@ -47,6 +47,8 @@ class _MeanField:
     converged = False
     callback = None
     e_tot = -1.0
+    _numint = SimpleNamespace(_xc_type=lambda xc: 'GGA',
+                             nr_rks=SimpleNamespace(__globals__={'_dot_ao_ao_dense': None}))
 
     def __init__(self):
         self.calls = []
@@ -184,6 +186,63 @@ def test_tau_dispatch_preserves_early_float32_and_forwards_buffers():
     assert calls == [
         (name, (fields, fields, weights), {'buf': buffer, 'out': out}) for name in ('full', 'symmetric')
     ]
+
+
+def test_lda_gga_product_dispatch_preserves_native_float64_and_output():
+    module = _load('grid_under_test', 'gpu4pyscf/dft/_mixed_grid.py')
+    controller = SimpleNamespace(use_float32=True)
+    calls = []
+
+    def native(bra, ket, out=None):
+        calls.append(('native', bra, ket, out))
+        return out
+
+    def contract(pattern, bra, ket, out=None):
+        calls.append((pattern, bra, ket, out))
+        return out
+
+    bra, ket, out = object(), object(), object()
+    product = module._make_ao_dot(native, contract, controller)
+    assert product(bra, ket, out=out) is out
+    controller.use_float32 = False
+    assert product(bra, ket, out=out) is out
+    assert calls == [('ig,jg->ij', bra, ket, out), ('native', bra, ket, out)]
+
+
+def test_non_vv10_schedule_switches_grid_products_and_checks_native_fields(precision, monkeypatch):
+    module, grid, _ = precision
+    mf = _MeanField()
+    mf.xc, mf.do_nlc = 'b3lyp', lambda: False
+    observed = []
+
+    def kernel(dm0=None):
+        for cycle in range(8):
+            observed.append(grid.use_float32)
+            mf.callback({'cycle': cycle, 'e_tot': mf.e_tot, 'norm_gorb': 1e-7})
+        mf.converged = True
+        return mf.e_tot
+
+    def check(*args):
+        assert not grid.use_float32
+        return _check(True)
+
+    mf.kernel = kernel
+    monkeypatch.setattr(module, '_full_check', check)
+    assert module.run_verified_scf(mf) == -1.000000000001
+    assert observed == [True] * 5 + [False] * 3
+    assert [row['phase'] for row in mf.mixed_precision_info['cycles']] == ['mixed'] * 5 + ['float64'] * 3
+    assert mf.mixed_precision_info['accepted']
+
+
+def test_non_vv10_failed_verification_recovers_from_current_density(precision, monkeypatch):
+    module, _, _ = precision
+    mf = _MeanField()
+    mf.do_nlc = lambda: False
+    checks = iter((_check(False), _check(True)))
+    monkeypatch.setattr(module, '_full_check', lambda *args: next(checks))
+    module.run_verified_scf(mf)
+    assert mf.calls == [(None, 20), (mf.dm, 97)]
+    assert mf.mixed_precision_info['fallback_scf'] and mf.mixed_precision_info['accepted']
 
 
 @pytest.fixture
@@ -561,7 +620,7 @@ def test_ase_defaults_to_verified_mixed_for_supported_gpu_dft(ase_calculator):
     assert atoms.calc.precision_info['accepted']
 
 
-@pytest.mark.parametrize('unsupported', ['cpu', 'no_vv10', 'custom_convergence'])
+@pytest.mark.parametrize('unsupported', ['cpu', 'unsupported_xc', 'legacy_grid', 'custom_convergence'])
 def test_ase_auto_keeps_native_precision_for_unsupported_methods(ase_calculator, unsupported):
     from ase import Atoms
 
@@ -569,8 +628,12 @@ def test_ase_auto_keeps_native_precision_for_unsupported_methods(ase_calculator,
     mf = method_type()
     if unsupported == 'cpu':
         mf.device = 'cpu'
-    elif unsupported == 'no_vv10':
+    elif unsupported == 'unsupported_xc':
         mf.do_nlc = lambda: False
+        mf._numint = SimpleNamespace(_xc_type=lambda xc: 'HF', nr_rks=mf._numint.nr_rks)
+    elif unsupported == 'legacy_grid':
+        mf.do_nlc = lambda: False
+        mf._numint = SimpleNamespace(_xc_type=lambda xc: 'GGA', nr_rks=SimpleNamespace(__globals__={}))
     else:
         mf.check_convergence = lambda env: True
     atoms = Atoms('H2', positions=[[0, 0, 0], [0, 0, 0.74]])
@@ -578,6 +641,21 @@ def test_ase_auto_keeps_native_precision_for_unsupported_methods(ase_calculator,
     atoms.get_forces()
     assert atoms.calc.calculation_info['precision'] == 'float64'
     assert atoms.calc.precision_info is None
+
+
+@pytest.mark.parametrize('xctype', ['LDA', 'GGA', 'MGGA'])
+def test_ase_auto_uses_verified_grid_precision_without_vv10(ase_calculator, xctype):
+    from ase import Atoms
+
+    calculator, method_type = ase_calculator
+    mf = method_type()
+    mf.do_nlc = lambda: False
+    mf._numint = SimpleNamespace(_xc_type=lambda xc: xctype, nr_rks=mf._numint.nr_rks)
+    atoms = Atoms('H2', positions=[[0, 0, 0], [0, 0, 0.74]])
+    atoms.calc = calculator(method=mf)
+    atoms.get_potential_energy()
+    assert atoms.calc.calculation_info['precision'] == 'mixed'
+    assert atoms.calc.precision_info['accepted']
 
 
 def test_precision_setup_failure_invalidates_previous_convergence(precision, monkeypatch):

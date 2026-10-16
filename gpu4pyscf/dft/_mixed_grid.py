@@ -105,6 +105,20 @@ def _make_tau_dot(symmetric, full, controller):
     return tau_dot
 
 
+def _make_ao_dot(original, contract, controller):
+    """Accelerate early LDA/GGA products and retain their native float64 path."""
+    def ao_dot(bra, ket, out=None):
+        if controller.use_float32:
+            return contract('ig,jg->ij', bra, ket, out=out)
+        result = original(bra, ket, out=out)
+        if getattr(bra, 'dtype', None) == getattr(ket, 'dtype', None) == 'float64':
+            controller.float64_calls += 1
+            controller.last_precision = 'float64'
+        return result
+
+    return ao_dot
+
+
 class _GridPrecision:
     def __init__(self, use_float32):
         self.use_float32 = use_float32

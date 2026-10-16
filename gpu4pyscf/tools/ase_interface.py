@@ -134,7 +134,7 @@ class PySCF(Calculator):
 
         method: A PySCF method class
         precision: 'auto' (default), 'float64' or 'mixed'
-            Auto selects verified mixed precision for supported GPU VV10 DFT,
+            Auto selects verified mixed precision for supported molecular GPU DFT,
             and native float64 for other methods. Mixed uses early float32 grid/VV10
             products, verifies float64 fields and reconverges in float64 if necessary.
         grid_response: bool or None

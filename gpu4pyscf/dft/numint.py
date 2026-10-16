@@ -527,10 +527,10 @@ def _nr_rks_task(ni, mol, grids, xc_code, dm, mo_coeff, mo_occ,
             vtmp = cupy.ndarray((nao_sub, nao_sub), memptr=vtmp_buf.data)
             if xctype == 'LDA':
                 aow = _scale_ao(ao_mask, wv[0,p0:p1], out=buf)
-                add_sparse(vmat, ao_mask.dot(aow.T, out=vtmp), idx)
+                add_sparse(vmat, _dot_ao_ao_dense(ao_mask, aow, out=vtmp), idx)
             elif xctype == 'GGA':
                 aow = _scale_ao(ao_mask, wv[:,p0:p1], out=buf)
-                add_sparse(vmat, ao_mask[0].dot(aow.T, out=vtmp), idx)
+                add_sparse(vmat, _dot_ao_ao_dense(ao_mask[0], aow, out=vtmp), idx)
             elif xctype == 'NLC':
                 raise NotImplementedError('NLC')
             elif xctype == 'MGGA':
@@ -954,14 +954,14 @@ def _nr_uks_task(ni, mol, grids, xc_code, dms, mo_coeff, mo_occ,
             for i in range(nset):
                 if xctype == 'LDA':
                     aow_alpha = _scale_ao(ao_mask, wv[i,0,0,p0:p1], out=buf)
-                    add_sparse(vmata[i], ao_mask.dot(aow_alpha.T, out=vtmp), idx)
+                    add_sparse(vmata[i], _dot_ao_ao_dense(ao_mask, aow_alpha, out=vtmp), idx)
                     aow_beta = _scale_ao(ao_mask, wv[i,1,0,p0:p1], out=buf)
-                    add_sparse(vmatb[i], ao_mask.dot(aow_beta.T, out=vtmp), idx)
+                    add_sparse(vmatb[i], _dot_ao_ao_dense(ao_mask, aow_beta, out=vtmp), idx)
                 elif xctype == 'GGA':
                     aow_alpha = _scale_ao(ao_mask, wv[i,0,:,p0:p1], out=buf)
-                    add_sparse(vmata[i], ao_mask[0].dot(aow_alpha.T, out=vtmp), idx)
+                    add_sparse(vmata[i], _dot_ao_ao_dense(ao_mask[0], aow_alpha, out=vtmp), idx)
                     aow_beta = _scale_ao(ao_mask, wv[i,1,:,p0:p1], out=buf)
-                    add_sparse(vmatb[i], ao_mask[0].dot(aow_beta.T, out=vtmp), idx)
+                    add_sparse(vmatb[i], _dot_ao_ao_dense(ao_mask[0], aow_beta, out=vtmp), idx)
                 elif xctype == 'NLC':
                     raise NotImplementedError('NLC')
                 elif xctype == 'MGGA':
@@ -2379,6 +2379,10 @@ def _contract_rho_mgga(bra, ket, rho=None):
 
 def _dot_ao_dm(mol, ao, dm, non0tab, shls_slice, ao_loc, out=None):
     return cupy.dot(dm.T, ao)
+
+def _dot_ao_ao_dense(bra, ket, out=None):
+    '''Dense SCF grid product with an instance-local precision dispatch point.'''
+    return bra.dot(ket.T, out=out)
 
 def _dot_ao_ao(mol, ao1, ao2, non0tab, shls_slice, ao_loc, hermi=0):
     return cupy.dot(ao1, ao2.T)
