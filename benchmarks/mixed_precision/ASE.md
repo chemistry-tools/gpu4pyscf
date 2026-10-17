@@ -20,8 +20,9 @@ The default `precision="auto"` selects verified mixed SCF for supported molecula
 and native float64 for other methods. `precision="float64"` explicitly forces native SCF. Each new geometry starts a fresh precision
 schedule, while the normal scanner reuses the previous density. Grid products use float32 for
 at most five SCF iterations; eligible density-fitted global-hybrid GGAs adapt the
-float32 grid schedule to convergence progress, with a twelve-iteration cap. Exchange
-projections switch independently, after at least five iterations, when the orbital gradient
+float32 grid schedule to convergence progress, with a twelve-iteration cap. Other hybrids,
+including range-separated MGGAs with VV10, retain the first-five grid schedule. Eligible
+density-fitted hybrid exchange projections switch independently, after at least five iterations, when the orbital gradient
 falls below `1e-4`, with a sixteen-iteration cap.
 Eligible later exchange Gram products use the bounded INT8 path on compute capability 8.6.
 Final verification, recovery and forces retain native float64.

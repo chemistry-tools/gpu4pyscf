@@ -21,8 +21,10 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
   exchange updates, general-output accumulation, alias and stream guards, complete
   mixed-atom J/K comparisons and verified RKS/UKS SCF checks.
 - `gpu4pyscf/df/_mixed_jk.py`: per-instance early float32 and later INT8 exchange for native
-  density-fitted global-hybrid GGAs, with separate bounded grid/projection schedules and
-  returning to native float64 before verification and derivatives.
+  density-fitted hybrid GGAs/MGGAs, including range-separated and nonlocal functionals.
+  Projection searches are bounded independently of grids. Only global-hybrid GGAs use
+  adaptive grids; the others keep their original first-five grid schedule. Verification,
+  recovery and derivatives return to native float64.
 - `gpu4pyscf/df/_mapped_transfer.py`, `test_mapped_transfer.py`: bounded asynchronous
   GPU transpose and DMA writes to mapped host density-fitting storage. A single
   stream-owned scratch buffer overlaps the previous copy with the next integral

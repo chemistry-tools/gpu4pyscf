@@ -293,11 +293,13 @@ def test_adaptive_exchange_schedule_waits_for_both_residuals_and_is_bounded(
     assert mf.mixed_precision_info['accepted']
 
 
-def test_adaptive_failed_verification_keeps_recovery_float64_with_small_budget(precision, monkeypatch):
-    module, grid, _ = precision
+@pytest.mark.parametrize('adaptive_grid', [True, False])
+def test_adaptive_failed_verification_keeps_recovery_float64_with_small_budget(precision, monkeypatch, adaptive_grid):
+    module, grid, vv10 = precision
     grid._df_exchange = _Exchange()
+    grid._df_exchange.adaptive_grid = adaptive_grid
     mf = _MeanField()
-    mf.xc, mf.do_nlc, mf.max_cycle = 'b3lyp', lambda: False, 10
+    mf.xc, mf.do_nlc, mf.max_cycle = ('b3lyp' if adaptive_grid else 'wb97m-v'), lambda: not adaptive_grid, 10
     observed, projections, checks = [], [], iter((_check(False), _check(True)))
 
     def kernel(dm0=None):
@@ -312,6 +314,7 @@ def test_adaptive_failed_verification_keeps_recovery_float64_with_small_budget(p
 
     def check(*args):
         assert not grid.use_float32
+        assert not vv10.use_float32
         assert grid._df_exchange.native_only
         assert not grid._df_exchange.projection_float32
         return next(checks)
@@ -357,6 +360,38 @@ def test_projection_schedule_is_independent_bounded_and_one_way(precision, monke
     assert mf.mixed_precision_info['df_exchange_projection_schedule'] == {
         'minimum_cycles': 5, 'maximum_cycles': 16, 'orbital_gradient_threshold': 1e-4,
     }
+
+
+@pytest.mark.parametrize('gradient_cycle,switch', [(2, 5), (9, 9), (None, 16)])
+def test_nonlocal_exchange_preserves_first_five_grid_schedule(precision, monkeypatch, gradient_cycle, switch):
+    module, grid, vv10 = precision
+    exchange = grid._df_exchange = _Exchange()
+    exchange.adaptive_grid = False
+    mf = _MeanField()
+    observed = []
+
+    def kernel(dm0=None):
+        for cycle in range(20):
+            observed.append((grid.use_float32, exchange.projection_float32, vv10.use_float32))
+            settled = gradient_cycle is not None and cycle+1 >= gradient_cycle
+            mf.callback({'cycle': cycle, 'e_tot': mf.e_tot, 'last_hf_e': mf.e_tot,
+                         'norm_gorb': 1e-5 if settled else .1})
+        mf.converged = True
+        return mf.e_tot
+
+    def check(*args):
+        assert exchange.native_only and not exchange.projection_float32
+        assert not grid.use_float32 and not vv10.use_float32
+        return _check(True)
+
+    mf.kernel = kernel
+    monkeypatch.setattr(module, '_full_check', check)
+    module.run_verified_scf(mf)
+    assert [v[0] for v in observed] == [True]*5+[False]*15
+    assert [v[1] for v in observed] == [True]*switch+[False]*(20-switch)
+    assert all(v[2] for v in observed)
+    assert mf.mixed_precision_info['grid_precision_schedule'] == 'first_five'
+    assert mf.mixed_precision_info['accepted']
 
 
 def test_projection_phase_labels_follow_products_including_native_fallback(precision, monkeypatch):

@@ -1,4 +1,4 @@
-"""Private float32 and INT8 exchange products for verified global-hybrid GGA SCF."""
+"""Private float32 and INT8 exchange products for verified hybrid DFT SCF."""
 
 from __future__ import annotations
 
@@ -8,10 +8,11 @@ from types import FunctionType, MethodType, SimpleNamespace
 
 
 class _ExchangePrecision:
-    def __init__(self, grid):
+    def __init__(self, grid, *, adaptive_grid=True):
         from gpu4pyscf.dft._mixed_grid import _GridPrecision
 
         self.grid = grid
+        self.adaptive_grid = adaptive_grid
         self.float32_calls = 0
         self.float64_calls = 0
         self.int8_calls = 0
@@ -117,15 +118,17 @@ def _exchange_context(mf, grid):
         type(with_df) is not df.DF
         or getattr(with_df.get_jk, '__func__', None) is not df.DF.get_jk
         or not hasattr(df_jk, '_k_gram')
-        or mf.do_nlc() or mf._numint._xc_type(mf.xc) != 'GGA'
+        or mf._numint._xc_type(mf.xc) not in ('GGA', 'MGGA')
     ):
         yield None
         return
-    omega, _, hybrid = mf._numint.rsh_and_hybrid_coeff(mf.xc, spin=mf.mol.spin)
-    if omega != 0 or hybrid == 0:
+    omega, alpha, hybrid = mf._numint.rsh_and_hybrid_coeff(mf.xc, spin=mf.mol.spin)
+    if hybrid == 0 and (omega == 0 or alpha == 0):
         yield None
         return
-    controller = _ExchangePrecision(grid)
+    controller = _ExchangePrecision(
+        grid, adaptive_grid=not mf.do_nlc() and mf._numint._xc_type(mf.xc) == 'GGA' and omega == 0,
+    )
 
     def contract(*args, **kwargs):
         return controller.contract(df_jk.contract, *args, **kwargs)

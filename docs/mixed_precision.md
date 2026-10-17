@@ -3,7 +3,7 @@
 This fork provides verified mixed precision for molecular RKS/UKS on one visible GPU,
 including B3LYP and VV10 functionals. Early grid matrix products and, when present,
 VV10 pair products use float32, followed by verification with
-native float64 energy and physical Fock. Density-fitted global-hybrid GGAs also use
+native float64 energy and physical Fock. Density-fitted hybrid GGAs and MGGAs also use
 float32 exchange products during the early search, with float64 accumulation.
 On compute capability 8.6, eligible later exchange Gram products use nine INT8
 slices and float64 accumulation. This remains an approximate SCF step; the final
@@ -51,7 +51,8 @@ The runner uses float32 grid products for at most five iterations, with an adapt
 schedule for native density-fitted global-hybrid GGAs. Those methods retain float32
 grid products until both the energy change falls below `1e-5` Hartree
 and the orbital gradient below `1e-3`, after at least five iterations and at most
-twelve. Exchange projections have an independent float32 search: after at least five
+twelve. Range-separated and nonlocal hybrids keep the five-iteration grid schedule.
+Exchange projections have an independent float32 search: after at least five
 iterations, they switch when the orbital gradient falls below `1e-4`, or after sixteen
 iterations. Neither search re-enables float32 after its switch. Eligible Gram products
 can use the INT8 path after the grid switch until final verification.
@@ -75,7 +76,7 @@ The exchange dispatch is private to the density-fitting instance. It uses explic
 float32 products, releases conversion buffers when switching to float64 and restores
 the native method before derivatives. The report's `df_exchange_contraction_calls`
 records `float32`, `int8` and native `float64` calls; zero counts identify calculations outside this path's
-global-hybrid GGA and native density-fitting guards. The report also records the
+hybrid GGA/MGGA and native density-fitting guards. The report also records the
 `df_exchange_projection_schedule` limits; iteration labels follow actual approximate
 exchange calls, including projections after the grid switch. Float64 real symmetric exchange
 products use a triangular BLAS update for sufficiently large contiguous blocks.

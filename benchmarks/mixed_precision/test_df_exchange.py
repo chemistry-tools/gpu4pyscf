@@ -116,7 +116,8 @@ def test_complete_mixed_atom_density_fitted_jk_matches_full_product(case, symmet
 
 
 @pytest.mark.parametrize('xc,eligible', [('b3lyp', True), ('pbe', False), ('m06-l', False),
-                                       ('cam-b3lyp', False), ('wb97x-v', False)])
+                                       ('cam-b3lyp', True), ('wb97x-v', True),
+                                       ('wb97m-v', True), ('HYB_GGA_XC_LC_WPBE', True)])
 def test_early_exchange_is_private_scoped_and_gated(xc, eligible):
     from pyscf import gto
 
@@ -129,6 +130,8 @@ def test_early_exchange_is_private_scoped_and_gated(xc, eligible):
     original = mf.with_df.get_jk.__func__
     with pytest.raises(RuntimeError, match='scoped test failure'), _precision_context(mf) as (grid, _):
         assert (grid._df_exchange is not None) == eligible
+        if eligible:
+            assert grid._df_exchange.adaptive_grid == (xc == 'b3lyp')
         assert (mf.with_df.get_jk.__func__ is not original) == eligible
         assert other.with_df.get_jk.__func__ is original
         raise RuntimeError('scoped test failure')
@@ -176,10 +179,11 @@ def test_early_exchange_stream_scratch_and_float64_switch():
         assert not hasattr(control._workspace, 'streams')
 
 
+@pytest.mark.parametrize('xc', ['b3lyp', 'cam-b3lyp', 'wb97m-v', 'HYB_GGA_XC_LC_WPBE'])
 @pytest.mark.parametrize('case,charge,spin', [('CH3CONH2', 0, 0), ('C5H5N', 0, 0),
                                             ('C2H6SO', 0, 0), ('CH3COF', 0, 0),
                                             ('CH3COCl', 0, 0), ('H2O', 1, 1)])
-def test_verified_mixed_exchange_matches_float64_density(case, charge, spin, symmetric, integer, monkeypatch):
+def test_verified_mixed_exchange_matches_float64_density(case, charge, spin, xc, symmetric, integer, monkeypatch):
     import cupy as cp
     from ase.build import molecule
     from pyscf.data.nist import BOHR, HARTREE2EV
@@ -217,9 +221,9 @@ def test_verified_mixed_exchange_matches_float64_density(case, charge, spin, sym
     monkeypatch.setattr(_mixed_jk._ExchangePrecision, 'finish_approximation', finish_approximation)
 
     native, mixed = molecule(case), molecule(case)
-    native.calc = _calculator(native, 'b3lyp', 'float64', charge=charge,
+    native.calc = _calculator(native, xc, 'float64', charge=charge,
                               multiplicity=spin+1, density_fit=True)
-    mixed.calc = _calculator(mixed, 'b3lyp', 'mixed', charge=charge,
+    mixed.calc = _calculator(mixed, xc, 'mixed', charge=charge,
                              multiplicity=spin+1, density_fit=True)
     with monkeypatch.context() as patch:
         patch.setattr(df_jk, '_symmetric_k_update', lambda *args: False)

@@ -162,11 +162,12 @@ def run_verified_scf(mf, calculate=None, *, dm0=None):
     with _precision_context(mf) as (grid, vv10):
         exchange = getattr(grid, '_df_exchange', None)
         adaptive = exchange is not None
+        adaptive_grid = adaptive and getattr(exchange, 'adaptive_grid', True)
         int8_seen = 0
         float32_exchange_seen = 0
         if adaptive:
             exchange.projection_float32 = True
-        info['grid_precision_schedule'] = 'adaptive_hybrid_gga' if adaptive else 'first_five'
+        info['grid_precision_schedule'] = 'adaptive_hybrid_gga' if adaptive_grid else 'first_five'
         info['df_exchange_projection_schedule'] = (
             {'minimum_cycles': 5, 'maximum_cycles': 16, 'orbital_gradient_threshold': 1e-4}
             if adaptive else None
@@ -190,18 +191,17 @@ def run_verified_scf(mf, calculate=None, *, dm0=None):
             )
             int8_seen = int8_calls
             float32_exchange_seen = float32_exchange_calls
-            # A global-hybrid GGA can spend most of SCF in exchange products.
-            # Grid and projection products have separate bounded searches; eligible
-            # Gram updates remain approximate until native verification.
-            if adaptive:
+            # Preserve the original grid schedule independently of exchange.
+            # Eligible Gram updates remain approximate until native verification.
+            if adaptive_grid:
                 if len(records) >= 12 or (len(records) >= 5
                         and abs(float(env['e_tot'] - env['last_hf_e'])) < 1e-5
                         and float(env['norm_gorb']) < 1e-3):
                     grid.use_float32 = False
-                if len(records) >= 16 or (len(records) >= 5 and float(env['norm_gorb']) < 1e-4):
-                    exchange.projection_float32 = False
             elif len(records) >= 5:
                 grid.use_float32 = False
+            if adaptive and (len(records) >= 16 or (len(records) >= 5 and float(env['norm_gorb']) < 1e-4)):
+                exchange.projection_float32 = False
             if callable(callback):
                 callback(env)
 

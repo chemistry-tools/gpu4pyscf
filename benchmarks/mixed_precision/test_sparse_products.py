@@ -366,5 +366,5 @@ def test_ase_verified_mixed_precision_and_force_reuse(charge, multiplicity, xc, 
     assert atoms.calc.calculation_info['scf_reused']
     assert atoms.calc.calculation_info['scf_seconds'] == 0
     assert bool(info['vv10_precisions']) == (xc == 'wb97m-v')
-    if xc == 'b3lyp':
-        assert info['df_exchange_contraction_calls']['float32'] > 0
+    assert info['df_exchange_contraction_calls']['float32'] > 0
+    assert info['df_exchange_contraction_calls']['float64'] > 0
