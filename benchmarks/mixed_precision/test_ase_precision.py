@@ -566,7 +566,7 @@ def test_ase_geometry_changes_verify_each_scf_and_cache_properties(ase_calculato
     assert mf.scans == 3 and atoms.calc.precision_info is None
 
 
-@pytest.mark.parametrize('policy', ['auto', 'mixed', 'float64'])
+@pytest.mark.parametrize('policy', ['auto', 'mixed', 'float64', 'vv10'])
 def test_ase_energy_then_forces_reuses_accepted_scf(ase_calculator, policy):
     from ase import Atoms
 
@@ -577,6 +577,8 @@ def test_ase_energy_then_forces_reuses_accepted_scf(ase_calculator, policy):
     energy = atoms.get_potential_energy()
     info = atoms.calc.precision_info
     assert mf.scans == 1 and not atoms.calc.calculation_info['scf_reused']
+    if policy == 'vv10':
+        assert info['precision'] == 'vv10' and info['grid_precision_schedule'] == 'float64'
     forces = atoms.get_forces()
     assert mf.scans == 1 and mf.gradient_flags == [(True, True)]
     assert atoms.calc.precision_info is info
@@ -813,6 +815,47 @@ def test_initial_density_is_passed_to_native_scf(precision, monkeypatch):
     assert mf.calls == [(density, 20)]
     with pytest.raises(ValueError, match='not both'):
         module.run_verified_scf(mf, lambda: 0.0, dm0=density)
+
+
+@pytest.mark.parametrize('recover', [False, True])
+def test_vv10_only_keeps_grids_and_exchange_native(precision, monkeypatch, recover):
+    module, grid, vv10 = precision
+    exchange = _Exchange()
+    grid._df_exchange = exchange
+    mf = _MeanField()
+    checks = iter((_check(False), _check(True)) if recover else (_check(True),))
+    monkeypatch.setattr(module, '_full_check', lambda *args: next(checks))
+    observed = []
+
+    def callback(env):
+        observed.append((grid.use_float32, exchange.native_only, exchange.projection_float32, vv10.use_float32))
+
+    mf.callback = callback
+    module.run_verified_scf(mf, dm0=mf.dm, precision='vv10')
+    assert observed == [(False, True, False, True)] * 3 + ([(False, True, False, False)] * 3 if recover else [])
+    report = mf.mixed_precision_info
+    assert report['precision'] == 'vv10' and report['grid_precision_schedule'] == 'float64'
+    assert report['df_exchange_projection_schedule'] is None
+    assert report['fallback_scf'] == recover and report['accepted']
+    assert mf.callback is callback and mf.max_cycle == 100
+
+
+@pytest.mark.parametrize('policy', ['float32', 'float64', None])
+def test_verified_runner_rejects_unknown_precision(precision, policy):
+    module, _, _ = precision
+    mf = _MeanField()
+    with pytest.raises(ValueError, match='precision'):
+        module.run_verified_scf(mf, precision=policy)
+    assert not mf.calls
+
+
+def test_vv10_only_rejects_method_without_nonlocal_term(precision):
+    module, _, _ = precision
+    mf = _MeanField()
+    mf.do_nlc = lambda: False
+    with pytest.raises(ValueError, match='nonlocal'):
+        module.run_verified_scf(mf, precision='vv10')
+    assert not mf.calls
 
 
 def test_verification_failure_has_distinct_error_type(precision, monkeypatch):

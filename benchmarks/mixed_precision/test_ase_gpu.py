@@ -32,7 +32,8 @@ def _calculator(atoms, charge, precision):
 
 
 @pytest.mark.parametrize('charge', [0, 1])
-def test_ase_energy_force_and_warm_geometry_agreement(charge):
+@pytest.mark.parametrize('precision', ['mixed', 'vv10'])
+def test_ase_energy_force_and_warm_geometry_agreement(charge, precision):
     from ase import Atoms
 
     from gpu4pyscf.dft import numint
@@ -41,7 +42,7 @@ def test_ase_energy_force_and_warm_geometry_agreement(charge):
     baseline = Atoms('OH2', positions=[[0, 0, 0], [0.7586, 0, 0.5043], [-0.7586, 0, 0.5043]])
     mixed = baseline.copy()
     baseline.calc = _calculator(baseline, charge, 'float64')
-    mixed.calc = _calculator(mixed, charge, 'auto' if charge == 0 else 'mixed')
+    mixed.calc = _calculator(mixed, charge, 'auto' if charge == 0 and precision == 'mixed' else precision)
     for displacement in (0.0, 0.015):
         baseline.positions[1, 0] += displacement
         mixed.positions[:] = baseline.positions
@@ -58,17 +59,22 @@ def test_ase_energy_force_and_warm_geometry_agreement(charge):
         np.testing.assert_allclose(forces, reference_forces, atol=1e-5, rtol=0)
         assert isinstance(forces, np.ndarray)
         assert mixed.calc.precision_info['accepted']
-        assert mixed.calc.calculation_info['precision'] == 'mixed'
+        assert mixed.calc.calculation_info['precision'] == precision
+        if precision == 'vv10':
+            assert verified['grid_contraction_calls']['float32'] == 0
+            assert verified['df_exchange_contraction_calls']['float32'] == 0
+            assert verified['df_exchange_contraction_calls']['int8'] == 0
         assert numint._vv10nlc is original_vv10 and numint.contract is original_contract
         assert all(name not in mixed.calc.method_scan._numint.__dict__ for name in ('nr_rks', 'nr_uks', 'nr_nlc_vxc'))
     assert mixed.calc.method_scan.e_tot == mixed.calc.precision_info['final_verification']['float64_energy_hartree']
 
 
-def test_mixed_force_matches_energy_finite_difference():
+@pytest.mark.parametrize('precision', ['mixed', 'vv10'])
+def test_mixed_force_matches_energy_finite_difference(precision):
     from ase import Atoms
 
     atoms = Atoms('OH2', positions=[[0, 0, 0], [0.7586, 0, 0.5043], [-0.7586, 0, 0.5043]])
-    atoms.calc = _calculator(atoms, 0, 'mixed')
+    atoms.calc = _calculator(atoms, 0, precision)
     force = atoms.get_forces()[1, 0]
     original = atoms.positions[1, 0]
     step = 1e-4

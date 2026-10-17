@@ -12,6 +12,8 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
 - `ase_workflow.py`: generic external-input energy/force/optimization/Hessian comparisons.
 - `compare_ase.py`, `test_compare_ase.py`: recipe/source/resource guards and matched-geometry report comparisons.
 - `test_ase_precision.py`, `test_ase_gpu.py`: lifecycle/fallback and real-force checks.
+- `test_vv10_precision.py`: supplied organic density checks for the explicit `vv10`
+  precision policy, with native grids/exchange, N/O/S/F/Cl forces and restored dispatch.
 - `test_semilocal_precision.py`: private LDA/GGA grid products, B3LYP mixed-atom
   RKS/UKS energy and force checks, warm geometry changes and force finite differences.
 - `test_gga_density.py`: adaptive float64 RKS GGA density products, fractional

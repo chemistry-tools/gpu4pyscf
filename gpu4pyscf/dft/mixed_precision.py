@@ -122,17 +122,22 @@ def supports_mixed_precision(mf):
     )
 
 
-def run_verified_scf(mf, calculate=None, *, dm0=None):
+def run_verified_scf(mf, calculate=None, *, dm0=None, precision='mixed'):
     """Run mixed SCF, check float64 fields and reconverge at the same geometry if needed.
 
     ``calculate`` may call a scanner to preserve its normal density reuse and geometry reset.
     All patches are per NumInt instance and restored before returning to derivatives.
     ``dm0`` supplies the native initial density when no scanner callable is used.
+    ``precision='vv10'`` approximates only nonlocal pair products, keeping ordinary
+    integration and exchange in float64. This can preserve rapid convergence from
+    a good initial density. It requires a nonlocal functional.
     ``mf.max_cycle`` remains the total budget across the mixed and float64 phases.
     Verification failures raise ``SCFVerificationError``; CUDA and callback errors propagate.
     """
     if calculate is not None and (not callable(calculate) or dm0 is not None):
         raise ValueError('Use a scanner callable or dm0, not both')
+    if precision not in ('mixed', 'vv10'):
+        raise ValueError("precision must be 'mixed' or 'vv10'")
     # PySCF creates scanner classes in its CPU module even for GPU subclasses.
     gpu_method = getattr(mf, 'device', None) == 'gpu' or any(
         cls.__module__.startswith('gpu4pyscf.') for cls in type(mf).__mro__
@@ -142,6 +147,9 @@ def run_verified_scf(mf, calculate=None, *, dm0=None):
     if hasattr(mf, 'cell') or not hasattr(mf, 'xc'):
         raise ValueError('Mixed precision currently supports molecular RKS and UKS only')
     has_nlc = bool(mf.do_nlc())
+    vv10_only = precision == 'vv10'
+    if vv10_only and not has_nlc:
+        raise ValueError("precision='vv10' requires a nonlocal functional")
     if not has_nlc and mf._numint._xc_type(mf.xc) not in ('LDA', 'GGA', 'MGGA'):
         raise ValueError('Mixed precision requires an LDA, GGA or meta-GGA functional')
     if getattr(mf, 'check_convergence', None) is not None:
@@ -155,19 +163,25 @@ def run_verified_scf(mf, calculate=None, *, dm0=None):
         raise ValueError('conv_tol_grad must be finite and positive')
     callback = mf.callback
     records = []
-    info = {'cycles': records, 'fallback_scf': False, 'accepted': False}
+    info = {'precision': precision, 'cycles': records, 'fallback_scf': False, 'accepted': False}
     mf.mixed_precision_info = info
     mf.converged = False
 
     with _precision_context(mf) as (grid, vv10):
         exchange = getattr(grid, '_df_exchange', None)
-        adaptive = exchange is not None
+        if vv10_only:
+            grid.use_float32 = False
+            if exchange is not None:
+                exchange.finish_approximation()
+        adaptive = exchange is not None and not vv10_only
         adaptive_grid = adaptive and getattr(exchange, 'adaptive_grid', True)
         int8_seen = 0
         float32_exchange_seen = 0
         if adaptive:
             exchange.projection_float32 = True
-        info['grid_precision_schedule'] = 'adaptive_hybrid_gga' if adaptive_grid else 'first_five'
+        info['grid_precision_schedule'] = (
+            'float64' if vv10_only else 'adaptive_hybrid_gga' if adaptive_grid else 'first_five'
+        )
         info['df_exchange_projection_schedule'] = (
             {'minimum_cycles': 5, 'maximum_cycles': 16, 'orbital_gradient_threshold': 1e-4}
             if adaptive else None
@@ -198,7 +212,7 @@ def run_verified_scf(mf, calculate=None, *, dm0=None):
                         and abs(float(env['e_tot'] - env['last_hf_e'])) < 1e-5
                         and float(env['norm_gorb']) < 1e-3):
                     grid.use_float32 = False
-            elif len(records) >= 5:
+            elif not vv10_only and len(records) >= 5:
                 grid.use_float32 = False
             if adaptive and (len(records) >= 16 or (len(records) >= 5 and float(env['norm_gorb']) < 1e-4)):
                 exchange.projection_float32 = False

@@ -107,7 +107,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--input', type=Path, required=True)
     parser.add_argument('--case', required=True)
-    parser.add_argument('--precision', choices=('float64', 'mixed'), required=True)
+    parser.add_argument('--precision', choices=('float64', 'mixed', 'vv10'), required=True)
     parser.add_argument('--cpus', type=lambda value: [int(x) for x in value.split(',')], default=[4, 5, 6, 7])
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--extension-root', type=Path)

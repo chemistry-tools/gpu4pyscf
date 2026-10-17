@@ -133,10 +133,12 @@ class PySCF(Calculator):
             Default is 'PySCF'.
 
         method: A PySCF method class
-        precision: 'auto' (default), 'float64' or 'mixed'
+        precision: 'auto' (default), 'float64', 'mixed' or 'vv10'
             Auto selects verified mixed precision for supported molecular GPU DFT,
             and native float64 for other methods. Mixed uses early float32 grid/VV10
             products, verifies float64 fields and reconverges in float64 if necessary.
+            VV10 approximates only nonlocal pairs and keeps grids/exchange float64,
+            for rapid convergence from good initial densities with nonlocal functionals.
         grid_response: bool or None
             Explicit gradient grid response; None retains the method's default.
         auxbasis_response: bool or None
@@ -170,8 +172,8 @@ class PySCF(Calculator):
             self.method_scan = method.as_scanner()
 
     def set(self, **kwargs):
-        if 'precision' in kwargs and kwargs['precision'] not in ('auto', 'float64', 'mixed'):
-            raise ValueError("precision must be 'auto', 'float64' or 'mixed'")
+        if 'precision' in kwargs and kwargs['precision'] not in ('auto', 'float64', 'mixed', 'vv10'):
+            raise ValueError("precision must be 'auto', 'float64', 'mixed' or 'vv10'")
         for name in ('grid_response', 'auxbasis_response'):
             if name in kwargs and kwargs[name] is not None and type(kwargs[name]) is not bool:
                 raise ValueError(f'{name} must be bool or None')
@@ -258,10 +260,13 @@ class PySCF(Calculator):
                 from gpu4pyscf.dft.mixed_precision import supports_mixed_precision
                 precision = 'mixed' if supports_mixed_precision(base_method) else 'float64'
             self.calculation_info['precision'] = precision
-            if precision == 'mixed':
+            if precision in ('mixed', 'vv10'):
                 from gpu4pyscf.dft.mixed_precision import run_verified_scf
                 try:
-                    e_tot = run_verified_scf(base_method, evaluate)
+                    if precision == 'vv10':
+                        e_tot = run_verified_scf(base_method, evaluate, precision='vv10')
+                    else:
+                        e_tot = run_verified_scf(base_method, evaluate)
                 finally:
                     self.precision_info = getattr(base_method, 'mixed_precision_info', None)
             else:

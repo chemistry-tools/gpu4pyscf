@@ -27,6 +27,11 @@ falls below `1e-4`, with a sixteen-iteration cap.
 Eligible later exchange Gram products use the bounded INT8 path on compute capability 8.6.
 Final verification, recovery and forces retain native float64.
 The [precision guide](../../docs/mixed_precision.md#direct-scf) describes the switch criteria.
+For nonlocal functionals with good starting densities, `precision="vv10"` keeps
+ordinary grid products and exchange float64 throughout SCF and approximates only
+VV10 pairs. It retains the same native verification and recovery. This explicit
+option can preserve a short SCF path; it requires a nonlocal term. The workflow
+comparison script also accepts `--precision vv10`.
 VV10 pair products, when present,
 use float32 partial sums combined in float64.
 The calculator then computes the original float64 energy and physical Fock. Acceptance requires
@@ -119,7 +124,8 @@ Focused CPU-only tests and opt-in GPU force checks:
 ```sh
 python -m pytest -q benchmarks/mixed_precision/test_ase_precision.py
 DFT_GPU_TEST=1 CUDA_VISIBLE_DEVICES=1 taskset -c 4-7 python -m pytest -q \
-  benchmarks/mixed_precision/test_ase_gpu.py
+  benchmarks/mixed_precision/test_ase_gpu.py \
+  benchmarks/mixed_precision/test_vv10_precision.py
 ```
 
 `test_semilocal_precision.py` adds B3LYP/Cartesian 6-31G* checks on nitrogen, oxygen,
