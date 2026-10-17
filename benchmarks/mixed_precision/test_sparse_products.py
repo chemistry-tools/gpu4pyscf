@@ -117,30 +117,6 @@ def test_projection_matches_native_in_both_packed_layouts(single, transposed, ba
 
 
 @gpu
-def test_gradient_panels_keep_short_and_split_reductions_on_native_path(sparse):
-    import cupy as cp
-
-    n, k, nl = 17, 7, 277
-    addresses = cp.asarray(_addresses(n, 1717))
-    plan = sparse._SparseAOPlan.create(SimpleNamespace(), addresses, n, width=8)
-    factors = cp.ones((2, n, k))
-    prepared = plan.prepare(factors, panel_size=nl)
-    assert prepared is not None and prepared.panel == nl
-    packed = cp.ones((nl, len(addresses)))
-    out = cp.full((1, n, k, nl), 13.)
-    assert prepared.project_gradient(packed, out, batch_start=1)
-    expected = cp.empty_like(out)
-    assert prepared.project(packed, expected, batch_start=1)
-    cp.testing.assert_array_equal(out, expected)
-    out.fill(13)
-    for raw in (None, cp.array(1.), packed[0], packed[:15], cp.ones((nl+1, len(addresses)))):
-        assert not prepared.project_gradient(raw, out)
-        cp.testing.assert_array_equal(out, 13)
-    for panel in (0, -1, 1.5, 2**31):
-        assert plan.prepare(factors, panel_size=panel) is None
-
-
-@gpu
 def test_last_bit_differences_in_diagonal_shell_orientations_follow_native_gradient(sparse):
     import cupy as cp
 
@@ -355,7 +331,6 @@ def test_complete_native_fields_and_forces_on_mixed_atom_panel(case, charge, mul
     gradient = mf.nuc_grad_method()
     gradient.grid_response = gradient.auxbasis_response = True
     actual_gradient = cp.asarray(gradient.kernel())
-    assert any(name == 'projection' and accepted for name, accepted in calls)
     assert any(name == 'back' and accepted for name, accepted in calls)
     cp.testing.assert_allclose(actual_gradient, reference_gradient, atol=3e-10, rtol=2e-9)
     if case in ('CH3CONH2', 'CH3COCl', 'H2O'):

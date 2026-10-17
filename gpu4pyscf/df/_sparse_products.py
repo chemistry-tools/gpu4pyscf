@@ -10,7 +10,6 @@ _MAX_MAP_BYTES = 64*1024**2
 _MAX_WORKSPACE_BYTES = 512*1024**2
 _MAX_RETAINED_FRACTION = .85
 _PANEL = 256
-_MIN_GRADIENT_PANEL = 16
 _SOURCE = r'''
 template<typename T> __device__ void pack_projection(T* out, const double* src,
         const int* lookup, int ni, int nj, int nl, long long sl, long long sp) {
@@ -241,22 +240,21 @@ class _SparseAOPlan:
         cache[1][variant] = self
         return self
 
-    def prepare(self, factors, *, single=False, panel_size=_PANEL):
-        return _SparseAOProduct.create(self, factors, single=single, panel_size=panel_size)
+    def prepare(self, factors, *, single=False):
+        return _SparseAOProduct.create(self, factors, single=single)
 
 
 class _SparseAOProduct:
     """Own per-call coefficient tiles and bounded GEMM buffers on one stream."""
 
     @classmethod
-    def create(cls, plan, factors, *, single=False, panel_size=_PANEL):
+    def create(cls, plan, factors, *, single=False):
         import cupy as cp
 
         if (not _array(factors, 3, plan.device) or factors.shape[1] != plan.n
                 or factors.shape[0] not in (1, 2) or factors.shape[2] > 2**31-1
                 or cp.cuda.device.get_device_id() != plan.device
                 or cp.cuda.get_current_stream().ptr != plan.stream.ptr
-                or not isinstance(panel_size, int) or not 0 < panel_size <= 2**31-1
                 or single and not plan.symmetric):
             return None
         if not bool(_kernels(plan.device)['finite'](factors)):
@@ -267,11 +265,11 @@ class _SparseAOProduct:
         coefficient_elements = sum((len(c) if plan.symmetric else len(r))*k*batches
                                    for r, c, _ in plan.groups)
         if plan.symmetric:
-            packed = max(len(r)*len(c) for r, c, _ in plan.groups)*panel_size
-            product = max(len(r) for r, _, _ in plan.groups)*k*panel_size
+            packed = max(len(r)*len(c) for r, c, _ in plan.groups)*_PANEL
+            product = max(len(r) for r, _, _ in plan.groups)*k*_PANEL
         else:
-            packed = k*max(len(c) for _, c, _ in plan.groups)*panel_size
-            product = max(len(r)*len(c) for r, c, _ in plan.groups)*panel_size
+            packed = k*max(len(c) for _, c, _ in plan.groups)*_PANEL
+            product = max(len(r)*len(c) for r, c, _ in plan.groups)*_PANEL
         workspace = plan.index_bytes+(coefficient_elements+packed+product)*width
         if workspace > _MAX_WORKSPACE_BYTES or workspace > _available_memory()//2:
             return None
@@ -279,7 +277,6 @@ class _SparseAOProduct:
             self = cls()
             self.plan, self.base, self.k, self.batches = plan, factors, k, batches
             self.single, self.workspace_bytes = single, workspace
-            self.panel = panel_size
             self.coefficients = []
             for r, c, _ in plan.groups:
                 indices = c if plan.symmetric else r
@@ -332,8 +329,8 @@ class _SparseAOProduct:
             cublas.setPointerMode(handle, cublas.CUBLAS_POINTER_MODE_HOST)
             if plan.rows != plan.n:
                 out.fill(0)
-            for first in range(0, packed.shape[0], self.panel):
-                nl = min(self.panel, packed.shape[0]-first)
+            for first in range(0, packed.shape[0], _PANEL):
+                nl = min(_PANEL, packed.shape[0]-first)
                 source = packed[first:first+nl]
                 for (rows, cols, lookup), coefficients in zip(plan.groups, self.coefficients):
                     ni, nj = len(rows), len(cols)
@@ -359,15 +356,6 @@ class _SparseAOProduct:
             cublas.setMathMode(handle, state[1])
             cublas.setPointerMode(handle, state[2])
         return True
-
-    def project_gradient(self, packed, out, batch_start=0):
-        # Tiny auxiliary panels use a different native reduction. Its last-bit
-        # differences are amplified by the inverse metric, so keep that path.
-        # Do not create a tiny internal tail by splitting a larger native panel.
-        if (not hasattr(packed, 'shape') or len(packed.shape) != 2
-                or not _MIN_GRADIENT_PANEL <= packed.shape[0] <= self.panel):
-            return False
-        return self.project(packed, out, batch_start)
 
     def back(self, values, out, alpha, beta=0., density=None, auxiliary=None):
         """Write only the native directed AO pairs, including Coulomb response."""
@@ -398,8 +386,8 @@ class _SparseAOProduct:
             cublas.setStream(handle, plan.stream.ptr)
             cublas.setMathMode(handle, 2)
             cublas.setPointerMode(handle, cublas.CUBLAS_POINTER_MODE_HOST)
-            for first in range(0, values.shape[3], self.panel):
-                nl = min(self.panel, values.shape[3]-first)
+            for first in range(0, values.shape[3], _PANEL):
+                nl = min(_PANEL, values.shape[3]-first)
                 for (rows, cols, lookup), coefficients in zip(plan.groups, self.coefficients):
                     ni, nj = len(rows), len(cols)
                     for batch, coefficient in enumerate(coefficients):

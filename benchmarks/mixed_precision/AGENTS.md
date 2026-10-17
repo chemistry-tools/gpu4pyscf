@@ -39,9 +39,10 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
   projections from the existing screened DF pair list, plus directed-pair force
   back projections. Plans retain index metadata only and track exact pair contents,
   device and stream. Early SCF float32 dispatch follows the existing controller;
-  verification and derivatives stay float64. Short gradient auxiliary panels keep
+  verification and derivatives stay float64. Raw gradient forward projections keep
   the native reduction because inverse-metric multiplication amplifies last-bit
-  differences. Full same-state force checks require the retained pre-sparse
+  differences at some batch sizes, including large auxiliary panels. Full same-state
+  force checks require the retained pre-sparse
   `DFT_REFERENCE_DF_GRADIENT` and `DFT_REFERENCE_UHF_DF_GRADIENT` sources. Cover both
   B3LYP and range-separated MGGA/VV10, N/O/S/F/Cl, open shells, finite differences
   and ASE verification/reuse. Whole-call performance requires separate measurements.

@@ -108,11 +108,9 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1, hermi=0,
                mem_free*1e-9, nao_pair, naux, batch_size, blksize)
 
     aux0 = aux1 = 0
-    sparse_plan = (_SparseAOPlan.create(int3c2e_opt, pair_addresses, nao, width=8)
-                   if hermi == 1 else None)
-    sparse_forward = (sparse_plan.prepare(dm_factor_r[None], panel_size=blksize)
-                      if sparse_plan is not None else None)
-    j3c_full = cp.zeros((nao, nao, blksize)) if sparse_forward is None else None
+    # Keep raw integral projections native: the inverse metric can amplify
+    # last-bit changes from sparse reductions, including long auxiliary panels.
+    j3c_full = cp.zeros((nao, nao, blksize))
     buf = cp.empty((batch_size, nao_pair))
     buf1 = cp.empty((blksize, nocc, nao))
     j3c_oo = cp.empty((naux, nocc, nocc))
@@ -122,17 +120,12 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1, hermi=0,
         for k0, k1 in lib.prange(0, naux_in_batch, blksize):
             dk = k1 - k0
             aux0, aux1 = aux1, aux1 + dk
+            j3c = j3c_full[:,:,:dk]
+            j3c[j_addr,i_addr] = j3c[i_addr,j_addr] = compressed[:,k0:k1]
             tmp = ndarray((nocc, nao, dk), buffer=buf1)
-            if (sparse_forward is None or not sparse_forward.project_gradient(
-                    compressed[:,k0:k1].T, tmp.transpose(1, 0, 2)[None])):
-                if j3c_full is None:
-                    j3c_full = cp.zeros((nao, nao, blksize))
-                j3c = j3c_full[:,:,:dk]
-                j3c[j_addr,i_addr] = j3c[i_addr,j_addr] = compressed[:,k0:k1]
-                contract('pqr,pi->iqr', j3c, dm_factor_r, out=tmp)
+            contract('pqr,pi->iqr', j3c, dm_factor_r, out=tmp)
             contract('iqr,qj->rij', tmp, dm_factor_l, out=j3c_oo[aux0:aux1])
     j3c_full = buf = buf1 = eval_j3c = j3c = tmp = compressed = None
-    sparse_forward = None
     t0 = log.timer_debug1('contract dm', *t0)
 
     aux_coeff = cp.asarray(auxmol.ctr_coeff)
