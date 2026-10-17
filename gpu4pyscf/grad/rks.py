@@ -36,6 +36,8 @@ from gpu4pyscf.dft.numint import NLC_REMOVE_ZERO_RHO_GRID_THRESHOLD
 from gpu4pyscf.gto.mole import groupby, ATOM_OF
 
 from pyscf import __config__
+from gpu4pyscf.grad._density_products import _DensityProducts, _density_dot
+
 MIN_BLK_SIZE = getattr(__config__, 'min_grid_blksize', 4096)
 ALIGNED = getattr(__config__, 'grid_aligned', 16*16)
 
@@ -416,14 +418,14 @@ def _tau_grad_dot_(ao, wv, accumulate=False, buf=None, out=None):
     _d1_dot_(ao[idx3], aow.T, beta=1, out=out)
     return out
 
-def _rho_and_dm_ao(ao, dm, xctype):
+def _rho_and_dm_ao(ao, dm, xctype, factors=None):
     '''Evaluate density and retain products for a real, symmetric density matrix.'''
     # GGA density gradients need only D*AO[0]; its weighted derivative term
     # is contracted after XC evaluation instead of retaining three extra products.
     ncomp = 4 if xctype == 'MGGA' else 1
     dm_ao = cupy.empty_like(ao[:ncomp])
     for component in range(ncomp):
-        dm.dot(ao[component], out=dm_ao[component])
+        _density_dot(dm, ao[component], factors, out=dm_ao[component])
     if xctype == 'LDA':
         return numint._contract_rho(dm_ao[0], ao[0]), dm_ao
     rho = cupy.empty((5 if xctype == 'MGGA' else 4, ao.shape[-1]))
@@ -437,7 +439,7 @@ def _rho_and_dm_ao(ao, dm, xctype):
         rho[4] *= .5
     return rho, dm_ao
 
-def _contract_grad_response(ao, wv, dm, dm_ao=None):
+def _contract_grad_response(ao, wv, dm, dm_ao=None, factors=None):
     '''Contract the AO index before forming nuclear XC derivatives.
 
     Returns the same per-AO contraction as the derivative matrix followed by
@@ -449,7 +451,7 @@ def _contract_grad_response(ao, wv, dm, dm_ao=None):
         # Distribute scalar grid weights over the retained density/AO products.
         # Products are reusable only for exactly real-symmetric density matrices.
         if len(wv) == 4 and len(dm_ao) == 1:
-            weighted = dm.T.dot(numint._scale_ao(ao[:4], wv))
+            weighted = _density_dot(dm, numint._scale_ao(ao[:4], wv), factors, transpose=True)
         else:
             weighted = numint._scale_ao(dm_ao, wv[:4]) if len(wv) > 1 else dm_ao[0] * wv[0]
         partial = cupy.einsum('dip,ip->id', ao[1:4], weighted)
@@ -461,15 +463,15 @@ def _contract_grad_response(ao, wv, dm, dm_ao=None):
         return partial.real
     if len(wv) == 1:
         aow = numint._scale_ao(ao[0], wv[0])
-        return cupy.einsum('dip,ip->id', ao[1:4], dm.T.dot(aow)).real
+        return cupy.einsum('dip,ip->id', ao[1:4], _density_dot(dm, aow, factors, transpose=True)).real
 
     aow = numint._scale_ao(ao[:4], wv[:4])
-    partial = cupy.einsum('dip,ip->id', ao[1:4], dm.T.dot(aow))
-    partial += cupy.einsum('dip,ip->id', _make_dR_dao_w(ao, wv[:4]), dm.T.dot(ao[0]))
+    partial = cupy.einsum('dip,ip->id', ao[1:4], _density_dot(dm, aow, factors, transpose=True))
+    partial += cupy.einsum('dip,ip->id', _make_dR_dao_w(ao, wv[:4]), _density_dot(dm, ao[0], factors, transpose=True))
     if len(wv) == 5:
         for component, derivatives in enumerate(([4, 5, 6], [5, 7, 8], [6, 8, 9]), 1):
             aow = numint._scale_ao(ao[component], wv[4])
-            partial += cupy.einsum('dip,ip->id', ao[derivatives], dm.T.dot(aow))
+            partial += cupy.einsum('dip,ip->id', ao[derivatives], _density_dot(dm, aow, factors, transpose=True))
     return partial.real
 
 def get_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
@@ -494,9 +496,12 @@ def get_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
     mol = None
     _sorted_mol = opt._sorted_mol
     nao = _sorted_mol.nao
+    factors = _DensityProducts.create(dms)
     dms = cupy.asarray(dms)
     assert dms.ndim == 2
     dms = opt.sort_orbitals(dms, axis=[0,1])
+    if factors is not None:
+        factors = factors.sort_orbitals(opt)
     reuse_products = (xctype in ('LDA', 'GGA', 'MGGA') and dms.dtype == cupy.float64
                       and bool(cupy.array_equal(dms, dms.T)))
 
@@ -522,8 +527,9 @@ def get_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
     for ao, idx, weight, _ in ni.block_loop(_sorted_mol, grids, nao, ao_deriv + 1):
         g1 = g0 + weight.size
         dms_masked = take_last2d(dms, idx, out=dm_mask_buf)
+        block_factors = factors.block(idx) if factors is not None else None
         if reuse_products:
-            rho, dm_ao = _rho_and_dm_ao(ao, dms_masked, xctype)
+            rho, dm_ao = _rho_and_dm_ao(ao, dms_masked, xctype, factors=block_factors)
         else:
             density_ao = ao[0] if xctype == 'LDA' else ao[:4]
             rho = numint.eval_rho(_sorted_mol, density_ao, dms_masked, xctype=xctype, hermi=1)
@@ -542,7 +548,7 @@ def get_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
                 wv[0] *= .5
             if xctype == 'MGGA':
                 wv[4] *= .5
-            partial = _contract_grad_response(ao, wv, dms_masked, dm_ao)
+            partial = _contract_grad_response(ao, wv, dms_masked, dm_ao, factors=block_factors)
             de_orbital_response[idx] += partial
             de_grid_response_rho[i_atom] += partial.sum(axis=0) * 2
         g0 = g1
@@ -588,6 +594,7 @@ def get_nlc_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=
     nao = _sorted_mol.nao
     natm = _sorted_mol.natm
     mol = None
+    factors = _DensityProducts.create(dms)
     dms = cupy.asarray(dms).reshape(-1,nao,nao)
     nset = len(dms)
     assert nset == 1 or nset == 2
@@ -596,6 +603,8 @@ def get_nlc_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=
     else:
         dms = dms[0] + dms[1]
     dms_sorted = opt.sort_orbitals(dms, axis=[0,1])
+    if factors is not None:
+        factors = factors.sort_orbitals(opt)
     dm_mask_buf = cupy.empty(nao * nao)
     dms = None
 
@@ -614,7 +623,11 @@ def get_nlc_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=
     for ao, idx, weight, _ in ni.block_loop(_sorted_mol, grids, nao, deriv = 1):
         g0, g1 = g1, g1 + weight.size
         dms_masked = take_last2d(dms_sorted, idx, out = dm_mask_buf)
-        rho_drho[:, g0:g1] = numint.eval_rho(_sorted_mol, ao, dms_masked, xctype = "NLC", hermi = 1)
+        block_factors = factors.block(idx) if factors is not None else None
+        if block_factors is None:
+            rho_drho[:, g0:g1] = numint.eval_rho(_sorted_mol, ao, dms_masked, xctype="NLC", hermi=1)
+        else:
+            rho_drho[:, g0:g1] = _rho_and_dm_ao(ao, dms_masked, 'GGA', factors=block_factors)[0]
     assert g1 == ngrids_full
 
     rho_i = rho_drho[0,:]
@@ -689,7 +702,8 @@ def get_nlc_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=
         wv = cupy.vstack([fw_rho_i[g0_nonzero : g1_nonzero], fw_gamma_vxc_form[:, g0_nonzero : g1_nonzero]])
         wv[0] *= .5
         dms_masked = take_last2d(dms_sorted, idx, out = dm_mask_buf)
-        partial = _contract_grad_response(ao, wv, dms_masked)
+        block_factors = factors.block(idx) if factors is not None else None
+        partial = _contract_grad_response(ao, wv, dms_masked, factors=block_factors)
         de_orbital_response[idx] += partial
         de_grid_response_rho[i_atom_of_grids] += partial.sum(axis=0) * 2
 

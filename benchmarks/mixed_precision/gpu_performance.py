@@ -95,6 +95,8 @@ def _source_provenance(module, native_library):
         'gpu4pyscf/df/df_jk.py',
     )
     optional = ('gpu4pyscf/df/_jk_contraction.py', 'gpu4pyscf/df/_mixed_jk.py', 'gpu4pyscf/df/_int8_gram.py',
+                'gpu4pyscf/dft/mixed_precision.py', 'gpu4pyscf/dft/_native_grid_cache.py',
+                'gpu4pyscf/grad/rks.py', 'gpu4pyscf/grad/_density_products.py',
                 'gpu4pyscf/df/df.py', 'gpu4pyscf/df/_mapped_transfer.py',
                 'gpu4pyscf/df/grad/rhf.py', 'gpu4pyscf/df/grad/uhf.py', 'gpu4pyscf/df/_response_products.py')
     sources += tuple(name for name in optional if (root / name).is_file())

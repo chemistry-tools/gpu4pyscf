@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from types import FunctionType, MethodType
 
 
@@ -31,6 +31,7 @@ def _precision_context(mf):
     from gpu4pyscf.dft import numint
     from gpu4pyscf.dft._mixed_grid import _GridPrecision, _make_ao_dot, _make_contract, _make_tau_dot
     from gpu4pyscf.dft._mixed_vv10 import _AdaptiveVV10
+    from gpu4pyscf.dft._native_grid_cache import _native_grid_reuse
 
     if numint.num_devices != 1 or cupy.cuda.runtime.getDeviceCount() != 1:
         raise ValueError('Mixed precision currently requires a single visible GPU')
@@ -60,8 +61,9 @@ def _precision_context(mf):
                 raise ValueError(f'Mixed precision does not support a custom NumInt.{name}')
             originals[name] = (name in ni.__dict__, ni.__dict__.get(name))
             setattr(ni, name, MethodType(private[name], ni))
-        with _exchange_context(mf, grid) as exchange:
+        with _exchange_context(mf, grid) as exchange, _native_grid_reuse(ni) as reuse:
             grid._df_exchange = exchange
+            grid._native_grid_reuse = reuse
             yield grid, vv10
     finally:
         for name, (had_attribute, previous) in originals.items():
@@ -140,6 +142,8 @@ def run_verified_scf(mf, calculate=None, *, dm0=None, precision='auto'):
     a good initial density. It requires a nonlocal functional.
     The default ``auto`` selects it for a supplied density or a scanner's retained
     orbitals with a nonlocal functional; other starts use the broader mixed schedule.
+    VV10-only verification may reuse the last native ordinary integration when
+    every input matches exactly; exchange and nonlocal fields are recomputed.
     ``mf.max_cycle`` remains the total budget across the mixed and float64 phases.
     Verification failures raise ``SCFVerificationError``; CUDA and callback errors propagate.
     """
@@ -181,6 +185,9 @@ def run_verified_scf(mf, calculate=None, *, dm0=None, precision='auto'):
 
     with _precision_context(mf) as (grid, vv10):
         exchange = getattr(grid, '_df_exchange', None)
+        reuse = getattr(grid, '_native_grid_reuse', None)
+        if reuse is not None:
+            reuse.enabled = vv10_only and reuse.supported
         if vv10_only:
             grid.use_float32 = False
             if exchange is not None:
@@ -243,7 +250,8 @@ def run_verified_scf(mf, calculate=None, *, dm0=None, precision='auto'):
                 # callback. Do not attribute those products to a recovery cycle.
                 int8_seen = exchange.int8_calls
                 float32_exchange_seen = exchange.float32_calls
-            check = _full_check(mf, energy)
+            with reuse.verification() if reuse is not None else nullcontext():
+                check = _full_check(mf, energy)
             info['initial_verification'] = check.copy()
             if not check['passed']:
                 info['fallback_scf'] = True
@@ -253,7 +261,9 @@ def run_verified_scf(mf, calculate=None, *, dm0=None, precision='auto'):
                     raise SCFVerificationError('Float64 verification failed and the SCF cycle budget is exhausted')
                 mf.max_cycle = remaining
                 energy = float(mf.kernel(dm0=mf.make_rdm1()))
-                check = _full_check(mf, energy)
+                with reuse.verification() if reuse is not None else nullcontext():
+                    check = _full_check(mf, energy)
+            info['native_grid_reuse'] = {'hits': reuse.hits, 'misses': reuse.misses} if reuse is not None else None
             info['final_verification'] = check
             info['grid_contraction_calls'] = {
                 'float32': grid.float32_calls,

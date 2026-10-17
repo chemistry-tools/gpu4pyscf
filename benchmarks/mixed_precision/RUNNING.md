@@ -155,6 +155,18 @@ LDA/GGA/MGGA contractions against native derivative matrices and full neutral/op
 enabled, the native source path applies the optimization directly in `gpu4pyscf/grad/rks.py`;
 there is no additional optimization flag. Existing grid-response defaults are preserved.
 
+`test_native_reuse_density.py` checks the bounded occupied-factor products used by
+full RKS grid response, together with exact-input ordinary-integration reuse during
+VV10-only SCF verification. Run it with `DFT_GPU_TEST=1` in the matching native
+environment. Complete B3LYP and VV10 force comparisons include N/O/S/F/Cl organics
+and an independent energy finite difference. Supplied density values must match
+their orbital tags before force factorization is eligible; unsupported inputs retain
+the native products. Cache reuse additionally requires identical density/tag and
+grid values/order, molecular data, numerical dispatch, device and stream. Normal
+SCF calls always evaluate ordinary integration, and verification still evaluates
+native exchange and VV10. Reuse is confined to the verified SCF scope and reports
+hit/miss counts in `mixed_precision_info['native_grid_reuse']`.
+
 ## Fused VV10 response
 
 The full-response gradient now evaluates the float64 U/W/E fields and explicit coordinate

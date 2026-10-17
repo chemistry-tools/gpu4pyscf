@@ -8,6 +8,10 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
 - `gpu_performance.py`: fixed-method SCF, four-CPU enforcement, profiling, precision scheduling,
   original float64 energy/gradient verification and fallback. `protocol.json` owns scientific defaults.
 - `gpu4pyscf/dft/mixed_precision.py`: per-instance SCF precision, float64 verification and fallback.
+- `gpu4pyscf/dft/_native_grid_cache.py`: bounded, exact-input reuse of the last
+  native ordinary integration during VV10-only verification. SCF calls still compute;
+  density/orbital tags, molecular data, grid values/order, dispatch, device and stream
+  must match. Copies protect cached results from caller mutation; scope exit releases them.
 - `gpu4pyscf/tools/ase_interface.py`: explicit ASE precision option, native derivatives and cache lifecycle.
 - `ase_workflow.py`: generic external-input energy/force/optimization/Hessian comparisons.
 - `compare_ase.py`, `test_compare_ase.py`: recipe/source/resource guards and matched-geometry report comparisons.
@@ -80,6 +84,12 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
   and orbital derivatives in one AO pass; real exactly symmetric LDA/GGA/MGGA densities reuse
   block-local density/AO products. GGA retains only the density/AO zeroth-component
   product and reuses it in the derivative contraction. Forces remain float64.
+- `gpu4pyscf/grad/_density_products.py`, `test_native_reuse_density.py`: bounded
+  float64 occupied-factor products in full RKS ordinary and nonlocal grid response,
+  guarded by reconstruction of the supplied tagged density. Unsupported ranks,
+  layouts, devices, streams and inconsistent tags retain native products. Checks
+  cover exact verification-cache invalidation, LDA/GGA/MGGA products, complete
+  mixed-element B3LYP/VV10 forces and an energy finite difference.
 - `test_native_grid_response.py`: native density/product comparisons and LDA/GGA/MGGA
   complete-force comparisons plus energy finite differences. Set `DFT_REFERENCE_GRADIENT`
   to a retained matching native baseline source for the complete-force comparisons.

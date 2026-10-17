@@ -118,8 +118,8 @@ def test_density_fitted_b3lyp_scf_and_same_density_forces(case, monkeypatch):
         original = rks._rho_and_dm_ao
         reused = []
 
-        def retained_density_products(ao, dm, xctype):
-            rho, products = original(ao, dm, xctype)
+        def retained_density_products(ao, dm, xctype, **kwargs):
+            rho, products = original(ao, dm, xctype, **kwargs)
             assert xctype == 'GGA' and len(products) == 1
             reused.append(True)
             return rho, products
