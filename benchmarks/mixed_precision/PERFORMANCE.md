@@ -990,3 +990,69 @@ Retained scripts, inputs, states, checks, source proofs and assessments are unde
 records paired errors and timing scope. The exact-converged-guess tests were omitted
 after selecting the approximately five-round target; actual accepted runs took four.
 The final ASE explicit-policy regression results are retained in `v5`.
+
+
+## Native verification reuse and occupied-factor forces
+
+The follow-up in `cfb3c7c` starts from the verified VV10-only policy at `4707ff1`.
+Its reductions are additional to the earlier 30.17% switch from native float64 SCF.
+It reuses the last native ordinary integration during verification only when all
+supported inputs match exactly, and uses validated occupied-orbital factors for
+bounded float64 density products in full RKS ordinary/nonlocal grid response.
+There is no rank truncation, new reduced precision or change to SCF tolerances.
+Native exchange and VV10 are still evaluated during verification. The guards and
+[reproduction guide](RUNNING.md#exact-force-contractions) describe eligible inputs
+and native fallbacks; no extra calculator option is required.
+
+Measurements use the same public development organic, fixed method and controlled
+0.1% MINAO blend described above, plus the retained public coronene geometry
+(36 atoms, 996 spherical AOs). Both use full grid and auxiliary response at the same
+ωB97M-V/def2-tzvpd recipe, grid levels 5/3 and convergence thresholds. Timing includes
+fitting setup, SCF, required native verification and complete forces. Imports, guess
+construction and the additional independent diagnostic check remain outside the timers.
+Runs use Bernd GPU 1, four CPUs with affinity 4–7, matching native libraries and both
+locks. All GPU tests and calculations run serially; final timings follow validation.
+
+| Case | Pairs | SCF rounds | Previous total, s | Current total, s | Reduction |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Mixed organic, 681 AOs | 5 | 4 | 78.81 | 70.75 | 10.23% |
+| Coronene, 996 AOs | 2 | 3 | 189.85 | 168.08 | 11.47% |
+
+Values are medians of individual complete calls. The organic panel retains both
+initial alternating pairs, including the slower 74.90-second candidate, and three
+predefined fresh confirmation pairs. Those fresh pairs independently reduce the
+median from 78.79 to 70.75 seconds (10.20%). Their force counters record
+two eligible plans and 1,269 products in every candidate. The coronene pair order is
+reversed for the second repetition. These measurements establish this workload's
+improvement rather than universal speedups across hardware, sizes or initial guesses.
+
+Every complete call passes native energy/orbital-gradient verification without recovery.
+Across independently converged calls, maximum energy spreads are
+`1.14e-12` Hartree for the organic and
+`9.09e-13` for coronene. At identical
+accepted orbitals, separately rebuilt full forces agree with the original density
+products within `4.09e-14` and `2.42e-13` Hartree/Bohr, respectively. Both accelerated
+plans are exercised in each replay; their force times are 28.93 → 24.46 seconds and
+63.48 → 49.70 seconds. This same-state check separates contraction error from the
+force differences between separate SCF stopping points, which reach `2.20e-8` and
+`4.49e-7` Hartree/Bohr in this panel.
+
+The implementation passes 137 focused checks: 88 CPU lifecycle/provenance checks and
+49 opt-in CUDA checks, including N/O/S/F/Cl organics, B3LYP and VV10, open shells,
+LDA/GGA/MGGA contractions, stale tags, capacity/stream fallbacks, full forces, an
+energy finite difference, exact cache invalidation and private dispatch restoration.
+Focused core Ruff checks pass; inherited unrelated style findings remain outside this
+scope. Every candidate audits the 535-file engine manifest, 18 Python additions/overrides
+and 12 native-library hashes. The runtime Python sources match `cfb3c7c`; the earlier
+and final timing sources have identical executable ASTs, with only an SCF docstring
+addition. No native code or compiler flags changed in this follow-up.
+A final baseline audit also confirms its 535-file manifest, 16 Python overrides and
+12 native libraries, with the overridden Python sources matching `4707ff1`.
+
+Retained raw results, states, source proofs, scripts, checks and setup/failed attempts
+remain outside Git under `/scratch/failip/gpu4pyscf-benchmarks/` in
+`grid-reuse-force-native-20261018-v1` through `v3`,
+`grid-reuse-force-large-20261018-v1`, `grid-reuse-force-replay-20261018-v1`,
+`grid-reuse-force-confirm-20261018-v1` and `grid-reuse-host-check-20261018-v1`.
+Validation data remain held out. The local `assessment.json` retains every sample,
+recipe/source checks, full gradients and the independently assessed force replays.
