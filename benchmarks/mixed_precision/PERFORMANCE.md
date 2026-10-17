@@ -833,3 +833,94 @@ All 15 staged product-source hashes match `f04c720`, and each complete call chec
 held out. Raw timings, numerical states, failed/final attempts and provenance remain outside
 Git under `b3lyp-whitening-native-20261016-v2`; the original/final direct profiles are retained
 under `b3lyp-setup-profile-20261016-v1` and `b3lyp-whitening-profile-20261016-v1`.
+
+
+## Sparse density-fitting products
+
+Implementation `eb3cfc2` projects the existing packed, screened AO pairs directly into
+occupied-orbital products instead of unpacking a dense AO tensor. Row groups retain the
+original order of their required reduction columns. The force back projection writes only
+the directed pairs consumed by the native derivative kernels, including the Coulomb term.
+Plans retain index metadata and prepare fresh coefficient tiles for each call. Unsupported or uneconomic
+cases retain the original products; the dispatch and workspace guards live in
+[`_sparse_products.py`](../../gpu4pyscf/df/_sparse_products.py).
+
+Raw force forward projections remain native float64. Sparse variants introduced last-bit
+differences that the inverse auxiliary metric amplified, including on long auxiliary
+panels. On circumcoronene, the rejected variant differed from original forces by
+`4.70e-7` eV/Angstrom even with matching batch budgets. Retaining the native forward
+reduction and accelerating the back projection restores agreement near native repeat
+noise. The earlier failed attempts and diagnostics are retained outside Git.
+
+Implementation `7ae52c4` also enables the existing verified float32 projection and INT8
+Gram schedule for density-fitted range-separated hybrid GGAs/MGGAs, including VV10
+functionals. Only global-hybrid GGAs use adaptive grids; the other methods retain their
+first-five grid schedule. Projection switching remains bounded to five through sixteen
+iterations, with the existing `1e-4` orbital-gradient switch. Verification, recovery and
+derivatives use float64, and acceptance thresholds are unchanged.
+
+The reference is the previously optimized `f04c720` engine. Both functionals use
+Cartesian `6-31g*`, `def2-universal-jkfit`,
+ordinary grid level 3, nonlocal grid level 3 where applicable, `small_rho_cutoff=0`,
+`1e-8` Hartree energy and `1e-5` orbital-gradient tolerances, and full grid/auxiliary
+response. B3LYP uses the explicit VWN-RPA definition above. Fixed public development
+geometries start from MINAO and retain every orbital. Validation datasets remain held out.
+All calculations run sequentially on physical GPU 1 (RTX 3080), with four CPUs, affinity
+4–7 and both shared locks.
+
+The table reports complete fresh energy-plus-force calls, including fitting setup and
+mandatory float64 verification. Imports and additional independent reference replays are
+outside those timers. Each row uses one fresh reference process and one fresh optimized
+process. Timing variation has not been averaged into medians.
+
+| Development molecule | Functional | Orbitals | Previous engine, s | `7ae52c4`, s | Reduction |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Circumcoronene | B3LYP/VWN-RPA | 846 | 100.45 | 92.52 | 7.90% |
+| N/O organic trimer | B3LYP/VWN-RPA | 753 | 62.25 | 54.79 | 11.97% |
+| Circumcoronene | ωB97M-V | 846 | 500.90 | 409.43 | 18.26% |
+| N/O organic trimer | ωB97M-V | 753 | 455.24 | 377.15 | 17.15% |
+
+SCF iteration counts remain 14/15 for the two B3LYP cases and 15/14 for ωB97M-V.
+The ωB97M-V energy/SCF stage improves by 26.13% and 26.05%; force times change only
+slightly. Sparse products alone, before the range-separated precision extension, reduced
+the complete ωB97M-V calls by 4.69% and 5.94%. The final combined improvement exceeds
+the 10% whole-call target in both ωB97M-V cases and the large mixed-organic B3LYP case;
+B3LYP circumcoronene remains below that target.
+
+Additional B3LYP checks use complete public organic units from the same frozen geometry:
+
+| Development molecule | Orbitals | Previous engine, s | `7ae52c4`, s | Reduction |
+| --- | ---: | ---: | ---: | ---: |
+| N/O organic monomer | 251 | 6.240 | 6.289 | -0.79% |
+| N/O organic dimer | 502 | 20.787 | 20.577 | 1.01% |
+
+The monomer uses the native path below the 256-AO sparse guard and has no sparse product
+calls. The dimer exercises sparse float32/float64 SCF projections and the force back
+projection, with only a small whole-call benefit. Both retain 14 SCF iterations. These
+measurements show a size-dependent benefit in this panel.
+
+All 16 final complete calls pass unchanged float64 verification without recovery. Across
+the six final comparisons, independent accepted-state energies differ by at most
+`1.99e-10` Hartree. Additional checks disable sparse SCF products and replay the retained
+original gradient at the same accepted orbitals, with matching force batch budgets.
+Their largest energy change is `9.69e-10` Hartree, below the stricter `1e-9` reference
+bound, and their largest force difference is `8.68e-12` eV/Angstrom. Separate accepted
+SCF states differ in forces by up to `1.78e-4` eV/Angstrom at the production stopping
+thresholds; that is distinct from the same-state derivative check.
+
+The final implementation passes 161 host checks, comprising 85 CPU checks and 76 opt-in
+CUDA checks. Coverage includes B3LYP, CAM-B3LYP, ωB97M-V and `HYB_GGA_XC_LC_WPBE`,
+N/O/S/F/Cl chemistry, open shells, original-density comparisons, native force replay,
+energy finite differences, pitched/partial/batched products, stream/error restoration,
+nonfinite/alias guards, index mutation and ASE verification/reuse. A preceding 32-check
+native exchange/derivative regression suite also passes. Every complete call audits the
+535-file native source/data manifest, 16 Python additions/overrides for the candidate,
+12 matching native-library hashes, geometry, grids, import boundary and CPU/GPU resources.
+All 16 candidate runtime source hashes match `7ae52c4`.
+
+Raw inputs, states, timings, source proofs and failed/final attempts remain outside Git
+under `sparse-df-native-20261017-v1` through `v9`, `sparse-df-call-bench-20261017-v1`
+through `v4`, `sparse-df-regression-20261017-v1`, `sparse-df-roundoff-20261017-v1`
+through `v3`, `sparse-df-large-force-20261017-v1`/`v2` and
+`sparse-df-size-check-20261017-v1`. The installed-source audits, all paired assessments
+and complete-call native reference checks pass.
