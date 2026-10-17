@@ -924,3 +924,65 @@ through `v4`, `sparse-df-regression-20261017-v1`, `sparse-df-roundoff-20261017-v
 through `v3`, `sparse-df-large-force-20261017-v1`/`v2` and
 `sparse-df-size-check-20261017-v1`. The installed-source audits, all paired assessments
 and complete-call native reference checks pass.
+
+
+## Short SCF paths with supplied guesses
+
+For the approximately five-round workload, the verified nonlocal-only policy keeps
+ordinary integration and exchange float64 throughout SCF, while VV10 pair products
+use float32 partial sums accumulated in float64. Native float64 acceptance, recovery
+and complete forces are unchanged. `auto` selects this policy for a nonlocal functional
+with an explicit initial density or a scanner's retained orbitals. Fresh starts keep
+the broader mixed policy; explicit `mixed` and `vv10` override selection. Guess quality
+is assumed from the workflow, rather than estimated by the selector.
+
+The development case is the fixed public ethyl-4-acetamidobenzoate geometry: 28 atoms,
+681 spherical AOs, ωB97M-V/def2-tzvpd, def2-universal-jkfit, ordinary/nonlocal grid
+levels 5/3, energy tolerance `1e-8` Hartree, orbital-gradient tolerance `1e-4`, overlap
+cutoff `1e-10` and both full response terms. Every call receives the same retained
+converged density blended with 0.1% MINAO. This controlled good-guess proxy measures
+a short SCF path; it does not establish learned-guess accuracy. Validation data remain
+held out. All runs use Bernd physical GPU 1, four CPUs, affinity 4–7 and both locks,
+with sequential fresh processes and matching native libraries.
+
+Times include fresh fitting setup, converged SCF, mandatory native verification for
+approximate modes and complete forces. Imports, supplied-guess construction and an
+additional independent diagnostic check are outside those timers. The float64 control
+uses the same optimized native fork, based on `1d3eacd`, rather than an upstream wheel.
+
+| Policy | Complete calls | SCF rounds | Energy stage, s | Forces, s | Total, s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Native float64, paired median | 2 | 4 | 83.23 | 29.72 | 112.95 |
+| VV10-only, paired median | 2 | 4 | 49.78 | 29.09 | 78.87 |
+| Auto selecting VV10-only | 1 | 4 | 49.91 | 29.02 | 78.93 |
+| Previous broader mixed schedule, single control | 1 | 19 | 102.05 | 28.91 | 130.96 |
+
+Two alternating native/VV10-only pairs show a **30.17% complete-call reduction**.
+The automatic call is 39.73% faster than the single broader-mixed control, whose
+approximate grids/exchange disturbed the already good guess. Force code is identical;
+small force-time differences reflect run variation. These shared-host measurements
+cover this recipe and controlled guess, rather than arbitrary sizes or guess quality.
+All final candidate calls pass native verification without recovery. Their largest
+energy difference from a paired native control is `2.28e-13` Hartree; the largest
+complete-gradient difference is `2.28e-8` Hartree/Bohr.
+
+The final automatic policy passes 85 CPU lifecycle/selection checks and 11 opt-in GPU
+checks covering N/O/S/F/Cl organics, open shells, supplied densities, warm ASE geometry
+changes, native full forces, energy finite differences and dispatch restoration. Core
+Pyflakes/Pycodestyle checks pass. The broader Ruff default reports inherited ASE style
+findings; the failed lint attempts are retained separately. Each complete benchmark
+audits the 535-file engine manifest, Python overrides and 12 native-library hashes.
+The runtime control modules match `293213d`; no native code changed.
+
+A separate native profile at this same four-round input attributes 49.29 seconds to
+SCF VV10 pairs, 21.28 to ordinary integration and 8.59 to fitting/J/K including 4.24
+of fitting setup. Diagonalization takes 0.12 seconds. Full forces include 14.63 seconds
+of VV10 pairs, 7.26 of ordinary grid response and 4.50 of fitted J/K response. These
+synchronized inclusive component times are diagnostic, rather than speedup evidence.
+
+Retained scripts, inputs, states, checks, source proofs and assessments are under
+`/scratch/failip/gpu4pyscf-benchmarks/` in `provided-guess-20261017-v1`,
+`good-guess-vv10-20261017-v1`, `good-guess-profile-20261017-v1` and
+`good-guess-vv10-native-20261017-v1` through `v4`. The final `v4/assessment.json`
+records paired errors and timing scope. The exact-converged-guess tests were omitted
+after selecting the approximately five-round target; actual accepted runs took four.
