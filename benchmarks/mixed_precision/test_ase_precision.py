@@ -902,6 +902,20 @@ def test_ase_auto_uses_nonlocal_only_for_scanner_orbital_guess(ase_calculator):
     assert atoms.calc.precision_info['precision'] == 'vv10'
 
 
+@pytest.mark.parametrize('policy', ['mixed', 'vv10'])
+def test_ase_explicit_precision_overrides_selection_with_scanner_orbitals(ase_calculator, policy):
+    from ase import Atoms
+
+    calculator, method_type = ase_calculator
+    mf = method_type()
+    mf.mo_coeff = object()
+    atoms = Atoms('H2', positions=[[0, 0, 0], [0, 0, .74]])
+    atoms.calc = calculator(method=mf, precision=policy)
+    atoms.get_potential_energy()
+    assert atoms.calc.calculation_info['precision'] == policy
+    assert atoms.calc.precision_info['precision'] == policy
+
+
 def test_verification_failure_has_distinct_error_type(precision, monkeypatch):
     module, _, _ = precision
     monkeypatch.setattr(module, '_full_check', lambda *args: _check(False))

@@ -966,13 +966,16 @@ All final candidate calls pass native verification without recovery. Their large
 energy difference from a paired native control is `2.28e-13` Hartree; the largest
 complete-gradient difference is `2.28e-8` Hartree/Bohr.
 
-The final automatic policy passes 85 CPU lifecycle/selection checks and 11 opt-in GPU
+The final automatic policy passes 87 CPU lifecycle/selection checks and 11 opt-in GPU
 checks covering N/O/S/F/Cl organics, open shells, supplied densities, warm ASE geometry
 changes, native full forces, energy finite differences and dispatch restoration. Core
 Pyflakes/Pycodestyle checks pass. The broader Ruff default reports inherited ASE style
 findings; the failed lint attempts are retained separately. Each complete benchmark
 audits the 535-file engine manifest, Python overrides and 12 native-library hashes.
-The runtime control modules match `293213d`; no native code changed.
+The timed SCF module matches `293213d`; a subsequent ASE forwarding fix preserves
+explicit policies on warm scanner guesses, with additional regression checks.
+The selected VV10 call forwards the same arguments as in the timings. No native
+code changed.
 
 A separate native profile at this same four-round input attributes 49.29 seconds to
 SCF VV10 pairs, 21.28 to ordinary integration and 8.59 to fitting/J/K including 4.24
@@ -983,6 +986,7 @@ synchronized inclusive component times are diagnostic, rather than speedup evide
 Retained scripts, inputs, states, checks, source proofs and assessments are under
 `/scratch/failip/gpu4pyscf-benchmarks/` in `provided-guess-20261017-v1`,
 `good-guess-vv10-20261017-v1`, `good-guess-profile-20261017-v1` and
-`good-guess-vv10-native-20261017-v1` through `v4`. The final `v4/assessment.json`
+`good-guess-vv10-native-20261017-v1` through `v5`. The timing `v4/assessment.json`
 records paired errors and timing scope. The exact-converged-guess tests were omitted
 after selecting the approximately five-round target; actual accepted runs took four.
+The final ASE explicit-policy regression results are retained in `v5`.

@@ -266,10 +266,7 @@ class PySCF(Calculator):
             if precision in ('mixed', 'vv10'):
                 from gpu4pyscf.dft.mixed_precision import run_verified_scf
                 try:
-                    if precision == 'vv10':
-                        e_tot = run_verified_scf(base_method, evaluate, precision='vv10')
-                    else:
-                        e_tot = run_verified_scf(base_method, evaluate)
+                    e_tot = run_verified_scf(base_method, evaluate, precision=precision)
                 finally:
                     self.precision_info = getattr(base_method, 'mixed_precision_info', None)
             else:

@@ -61,6 +61,7 @@ def test_ase_energy_force_and_warm_geometry_agreement(charge, precision):
         assert mixed.calc.precision_info['accepted']
         expected = 'vv10' if precision == 'mixed' and charge == 0 and displacement else precision
         assert mixed.calc.calculation_info['precision'] == expected
+        assert verified['precision'] == expected
         if expected == 'vv10':
             assert verified['grid_contraction_calls']['float32'] == 0
             assert verified['df_exchange_contraction_calls']['float32'] == 0
