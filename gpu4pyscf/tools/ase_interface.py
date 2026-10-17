@@ -135,7 +135,9 @@ class PySCF(Calculator):
         method: A PySCF method class
         precision: 'auto' (default), 'float64', 'mixed' or 'vv10'
             Auto selects verified mixed precision for supported molecular GPU DFT,
-            and native float64 for other methods. Mixed uses early float32 grid/VV10
+            preserving native grids/exchange for nonlocal functionals when a scanner
+            has an orbital guess, and native float64 for other methods.
+            Mixed uses early float32 grid/VV10
             products, verifies float64 fields and reconverges in float64 if necessary.
             VV10 approximates only nonlocal pairs and keeps grids/exchange float64,
             for rapid convergence from good initial densities with nonlocal functionals.
@@ -257,8 +259,9 @@ class PySCF(Calculator):
 
             precision = self.parameters.precision
             if precision == 'auto':
-                from gpu4pyscf.dft.mixed_precision import supports_mixed_precision
-                precision = 'mixed' if supports_mixed_precision(base_method) else 'float64'
+                from gpu4pyscf.dft.mixed_precision import _select_precision, supports_mixed_precision
+                precision = (_select_precision(base_method, 'auto', scanner=self.method_scan is not None)
+                             if supports_mixed_precision(base_method) else 'float64')
             self.calculation_info['precision'] = precision
             if precision in ('mixed', 'vv10'):
                 from gpu4pyscf.dft.mixed_precision import run_verified_scf

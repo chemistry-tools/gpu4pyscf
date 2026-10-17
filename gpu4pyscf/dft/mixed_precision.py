@@ -122,7 +122,14 @@ def supports_mixed_precision(mf):
     )
 
 
-def run_verified_scf(mf, calculate=None, *, dm0=None, precision='mixed'):
+def _select_precision(mf, precision, *, supplied_density=False, scanner=False):
+    if precision == 'auto':
+        orbital_guess = scanner and getattr(mf, 'mo_coeff', None) is not None
+        return 'vv10' if mf.do_nlc() and (supplied_density or orbital_guess) else 'mixed'
+    return precision
+
+
+def run_verified_scf(mf, calculate=None, *, dm0=None, precision='auto'):
     """Run mixed SCF, check float64 fields and reconverge at the same geometry if needed.
 
     ``calculate`` may call a scanner to preserve its normal density reuse and geometry reset.
@@ -131,13 +138,15 @@ def run_verified_scf(mf, calculate=None, *, dm0=None, precision='mixed'):
     ``precision='vv10'`` approximates only nonlocal pair products, keeping ordinary
     integration and exchange in float64. This can preserve rapid convergence from
     a good initial density. It requires a nonlocal functional.
+    The default ``auto`` selects it for a supplied density or a scanner's retained
+    orbitals with a nonlocal functional; other starts use the broader mixed schedule.
     ``mf.max_cycle`` remains the total budget across the mixed and float64 phases.
     Verification failures raise ``SCFVerificationError``; CUDA and callback errors propagate.
     """
     if calculate is not None and (not callable(calculate) or dm0 is not None):
         raise ValueError('Use a scanner callable or dm0, not both')
-    if precision not in ('mixed', 'vv10'):
-        raise ValueError("precision must be 'mixed' or 'vv10'")
+    if precision not in ('auto', 'mixed', 'vv10'):
+        raise ValueError("precision must be 'auto', 'mixed' or 'vv10'")
     # PySCF creates scanner classes in its CPU module even for GPU subclasses.
     gpu_method = getattr(mf, 'device', None) == 'gpu' or any(
         cls.__module__.startswith('gpu4pyscf.') for cls in type(mf).__mro__
@@ -147,6 +156,8 @@ def run_verified_scf(mf, calculate=None, *, dm0=None, precision='mixed'):
     if hasattr(mf, 'cell') or not hasattr(mf, 'xc'):
         raise ValueError('Mixed precision currently supports molecular RKS and UKS only')
     has_nlc = bool(mf.do_nlc())
+    requested_precision = precision
+    precision = _select_precision(mf, precision, supplied_density=dm0 is not None, scanner=calculate is not None)
     vv10_only = precision == 'vv10'
     if vv10_only and not has_nlc:
         raise ValueError("precision='vv10' requires a nonlocal functional")
@@ -163,7 +174,8 @@ def run_verified_scf(mf, calculate=None, *, dm0=None, precision='mixed'):
         raise ValueError('conv_tol_grad must be finite and positive')
     callback = mf.callback
     records = []
-    info = {'precision': precision, 'cycles': records, 'fallback_scf': False, 'accepted': False}
+    info = {'requested_precision': requested_precision, 'precision': precision,
+            'cycles': records, 'fallback_scf': False, 'accepted': False}
     mf.mixed_precision_info = info
     mf.converged = False
 

@@ -36,8 +36,10 @@ def test_vv10_only_with_supplied_organic_density(case):
     dm = .999 * reference.make_rdm1() + .001 * cp.asarray(mixed.get_init_guess())
     original_integrator, original_exchange = mixed._numint.nr_rks.__func__, mixed.with_df.get_jk.__func__
     original_pair = numint._vv10nlc
-    energy = mixed_precision.run_verified_scf(mixed, dm0=dm, precision='vv10')
+    policy = 'auto' if case in ('CH3CONH2', 'C2H6SO', 'CH3COCl') else 'vv10'
+    energy = mixed_precision.run_verified_scf(mixed, dm0=dm, precision=policy)
     report = mixed.mixed_precision_info
+    assert report['precision'] == 'vv10' and report['requested_precision'] == policy
     assert report['accepted'] and report['final_verification']['passed']
     assert report['grid_contraction_calls']['float32'] == 0
     assert report['df_exchange_contraction_calls']['float32'] == 0

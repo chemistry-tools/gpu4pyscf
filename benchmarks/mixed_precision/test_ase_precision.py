@@ -858,6 +858,50 @@ def test_vv10_only_rejects_method_without_nonlocal_term(precision):
     assert not mf.calls
 
 
+@pytest.mark.parametrize('has_nlc', [False, True])
+@pytest.mark.parametrize('guess', ['cold', 'density', 'scanner_orbitals', 'ordinary_orbitals'])
+def test_auto_selects_nonlocal_only_for_reused_guesses(precision, monkeypatch, has_nlc, guess):
+    module, _, _ = precision
+    mf = _MeanField()
+    mf.do_nlc = lambda: has_nlc
+    if guess.endswith('orbitals'):
+        mf.mo_coeff = object()
+    monkeypatch.setattr(module, '_full_check', lambda *args: _check(True))
+    kwargs = {'dm0': mf.dm} if guess == 'density' else {}
+    if guess == 'scanner_orbitals':
+        kwargs['calculate'] = mf.kernel
+    module.run_verified_scf(mf, **kwargs)
+    expected = 'vv10' if has_nlc and guess in ('density', 'scanner_orbitals') else 'mixed'
+    assert mf.mixed_precision_info['precision'] == expected
+    assert mf.mixed_precision_info['requested_precision'] == 'auto'
+
+
+def test_explicit_mixed_policy_retains_broader_schedule_with_a_guess(precision, monkeypatch):
+    module, grid, _ = precision
+    mf = _MeanField()
+    observed = []
+    mf.callback = lambda env: observed.append(grid.use_float32)
+    monkeypatch.setattr(module, '_full_check', lambda *args: _check(True))
+    module.run_verified_scf(mf, dm0=mf.dm, precision='mixed')
+    assert all(observed) and mf.mixed_precision_info['precision'] == 'mixed'
+
+
+def test_ase_auto_uses_nonlocal_only_for_scanner_orbital_guess(ase_calculator):
+    from ase import Atoms
+
+    calculator, method_type = ase_calculator
+    mf = method_type()
+    atoms = Atoms('H2', positions=[[0, 0, 0], [0, 0, .74]])
+    atoms.calc = calculator(method=mf)
+    atoms.get_potential_energy()
+    assert atoms.calc.calculation_info['precision'] == 'mixed'
+    mf.mo_coeff = object()
+    atoms.positions[1, 2] += .01
+    atoms.get_potential_energy()
+    assert atoms.calc.calculation_info['precision'] == 'vv10'
+    assert atoms.calc.precision_info['precision'] == 'vv10'
+
+
 def test_verification_failure_has_distinct_error_type(precision, monkeypatch):
     module, _, _ = precision
     monkeypatch.setattr(module, '_full_check', lambda *args: _check(False))

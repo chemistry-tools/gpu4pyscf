@@ -17,8 +17,10 @@ hessian = atoms.calc.get_hessian(atoms, auxbasis_response=2)  # (3N, 3N), eV/Ang
 ```
 
 The default `precision="auto"` selects verified mixed SCF for supported molecular GPU DFT
-and native float64 for other methods. `precision="float64"` explicitly forces native SCF. Each new geometry starts a fresh precision
-schedule, while the normal scanner reuses the previous density. Grid products use float32 for
+and native float64 for other methods. For a nonlocal functional with retained scanner
+orbitals, auto selects the VV10-only policy described below. `precision="float64"`
+explicitly forces native SCF. Each new geometry starts a fresh precision schedule,
+while the normal scanner reuses the previous density. In the broader mixed schedule, grid products use float32 for
 at most five SCF iterations; eligible density-fitted global-hybrid GGAs adapt the
 float32 grid schedule to convergence progress, with a twelve-iteration cap. Other hybrids,
 including range-separated MGGAs with VV10, retain the first-five grid schedule. Eligible
@@ -30,8 +32,10 @@ The [precision guide](../../docs/mixed_precision.md#direct-scf) describes the sw
 For nonlocal functionals with good starting densities, `precision="vv10"` keeps
 ordinary grid products and exchange float64 throughout SCF and approximates only
 VV10 pairs. It retains the same native verification and recovery. This explicit
-option can preserve a short SCF path; it requires a nonlocal term. The workflow
-comparison script also accepts `--precision vv10`.
+option can preserve a short SCF path; it requires a nonlocal term. Auto selects it
+when scanner orbitals are available, without estimating guess quality. Explicit
+`mixed` retains the broader schedule. The workflow comparison script accepts
+`--precision auto` and `--precision vv10`.
 VV10 pair products, when present,
 use float32 partial sums combined in float64.
 The calculator then computes the original float64 energy and physical Fock. Acceptance requires

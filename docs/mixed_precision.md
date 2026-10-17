@@ -47,8 +47,15 @@ scanner callable can instead be supplied as the second argument; it preserves na
 geometry reset and warm density reuse. A callable and an explicit density cannot be
 supplied together. The native callback is retained through all SCF phases.
 
-For a nonlocal functional and a good starting density, use
-`run_verified_scf(mf, dm0=initial_density, precision="vv10")`. This mode keeps
+The default `precision="auto"` selects the VV10-only policy for a nonlocal functional
+when `dm0` is supplied, or a scanner callable has retained `mo_coeff`. This assumes
+the provided guess is useful; it does not estimate its quality. Fresh starts and
+methods without a nonlocal term use the broader mixed schedule. The report records
+the requested and selected policies. `precision="mixed"` explicitly retains the
+broader schedule even with a supplied guess.
+
+`run_verified_scf(mf, dm0=initial_density, precision="vv10")` explicitly selects the
+nonlocal-only policy. This mode keeps
 ordinary grid products and density-fitted exchange in float64 throughout SCF;
 only VV10 pairs use float32 partial sums combined in float64. It can preserve
 short convergence paths that broader grid/exchange approximations disturb.
@@ -56,7 +63,7 @@ The same native energy/Fock acceptance check, recovery budget and float64
 derivatives apply. The report identifies `precision="vv10"` and the float64
 grid schedule. A functional without a nonlocal term is rejected.
 
-The runner uses float32 grid products for at most five iterations, with an adaptive
+The broader mixed schedule uses float32 grid products for at most five iterations, with an adaptive
 schedule for native density-fitted global-hybrid GGAs. Those methods retain float32
 grid products until both the energy change falls below `1e-5` Hartree
 and the orbital gradient below `1e-3`, after at least five iterations and at most
@@ -125,8 +132,9 @@ Optional gradient response controls retain native defaults when omitted.
 `PySCF(method=mf, precision="vv10", grid_response=True, auxbasis_response=True)`
 selects the nonlocal-only approximation through ASE. It is useful when a supplied
 guess or a scanner's previous density already gives a short SCF path. The default
-`auto` policy continues to select the broader mixed schedule; choose the mode
-using complete energy-and-force measurements for the intended workload.
+`auto` policy selects it when the scanner has retained orbital coefficients;
+fresh starts use the broader mixed schedule. Explicit `mixed` and `vv10` settings
+override that selection.
 
 The same ASE interface supports B3LYP without a nonlocal term:
 
