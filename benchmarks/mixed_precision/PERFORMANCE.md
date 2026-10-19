@@ -1056,3 +1056,71 @@ remain outside Git under `/scratch/failip/gpu4pyscf-benchmarks/` in
 `grid-reuse-force-confirm-20261018-v1` and `grid-reuse-host-check-20261018-v1`.
 Validation data remain held out. The local `assessment.json` retains every sample,
 recipe/source checks, full gradients and the independently assessed force replays.
+
+## AO tile occupancy diagnostic
+
+The follow-up on `bbef205` measures whether whole-tile screening is promising in
+the AO blocks that remain after native whole-block AO selection. It changes no
+engine products, grids or screening. The CPU-only
+[`ao_tile_sparsity.py`](ao_tile_sparsity.py) counts tile maxima at several amplitude
+cutoffs, jointly across derivative components. Partial tiles contribute only their
+valid sizes to the estimated Gram work; output percentages aggregate counts.
+These estimates describe structurally skippable products under a hypothetical
+cutoff, not measured speedups or numerical-error bounds.
+
+The first sample consists of three retained ordinary-integration blocks from the
+public 681-AO organic above, with 316, 438 and 526 active AOs and 4,096 grid points
+each. It preserves their original AO/grid order and includes values and first
+derivatives. At a hypothetical `1e-12` cutoff:
+
+| AO × grid tile | Negligible tiles | Estimated Gram work skippable |
+| --- | ---: | ---: |
+| 16 × 16 | 4.62% | 7.39% |
+| 16 × 32 | 3.58% | 5.45% |
+| 32 × 32 | 2.63% | 3.01% |
+| 64 × 64 | 3.79% | 2.04% |
+
+Although 41.70% of individual joint-component entries are below that cutoff,
+few complete tiles are negligible. Exact-zero tiles offer no savings. At `1e-10`,
+32 × 32 tiles still expose only 3.83% estimated work savings. Using the native
+AO-selection threshold as a tile cutoff does not establish equivalent accuracy:
+they are different screening decisions.
+
+A second diagnostic uses the matching native installation on user-authorized
+GPU 6 and CPU affinity 24–27, without a competing calculation on that GPU. It
+samples evenly spaced block IDs separately in native SCF and full-force grid
+orders: eight per order for each of acetamide, pyridine, DMSO, acetyl fluoride and
+acetyl chloride, plus 24 per order for the 681-AO organic. All 128 blocks include
+values, first and second derivatives. Settings remain ωB97M-V/def2-tzvpd and
+ordinary grid level 5. Padded AO rows are removed; zero-weight grid points remain
+in their original positions and are not used to increase AO sparsity.
+
+For the 681-AO organic, estimated skippable Gram work at `1e-12` is:
+
+| Tile | Sampled SCF grids, values + first derivatives | Sampled force grids, all ten components |
+| --- | ---: | ---: |
+| 16 × 16 | 1.97% | 5.27% |
+| 16 × 32 | 1.43% | 4.42% |
+| 32 × 32 | 0.64% | 1.95% |
+| 64 × 64 | 0.20% | 1.01% |
+
+The five smaller organics expose 0.30–1.40% on SCF grids and 0.91–2.60% on
+force grids at 32 × 32. None has exact-zero joint-component tiles. These are
+selected-block diagnostics, rather than whole-grid averages or force-kernel
+operation counts. The original three shape-selected blocks overstate the
+opportunity compared with the broader sample. No validation data are used.
+
+The current ordering therefore does not justify a general sparse-kernel rewrite
+from this evidence. Measuring spatial AO/grid repacking would be the next
+sparsity experiment; repacking cost and numerical accuracy would need separate
+validation before an engine change. Nine CPU tests cover known sparse patterns,
+partial tiles, derivative unions, count aggregation, invalid fields and explicit
+Gram-product enumeration. Focused Ruff checks pass. All 128 archived maxima files
+are hash-checked, and all 15,360 tile masks are independently reconstructed from
+their retained 16 × 16 maxima.
+
+Retained captures remain under `ordinary-grid-profile-20261018-v1`; the expanded
+scan, source/native audit, per-block maxima, geometries and log are under
+`ao-tile-sparsity-20261019-v2`, both in the existing remote benchmark root. The
+cancelled `v1` controller never ran a GPU job. Local raw inputs and assessments
+are retained outside Git in `gpu4pyscf-tile-evidence-20261019`.

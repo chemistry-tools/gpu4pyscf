@@ -109,6 +109,10 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
   partial tiles, streams, unchanged early float32 dispatch and mixed-atom derivative checks.
 - `native_tau_benchmark.py`, `_organic_cases.py`: fresh ASE energy/force comparisons at the
   pinned recipe; generic mixed-atom organics and a fixed larger organic geometry.
+- `ao_tile_sparsity.py`, `test_ao_tile_sparsity.py`: CPU-only tile occupancy of retained
+  float64 AO values/derivatives. Report exact zeros separately from hypothetical
+  amplitude cutoffs, preserve input ordering and exclude partial-tile padding.
+  Estimated skippable Gram work is neither a timing result nor an error bound.
 
 Use physical GPU 1 and at most four logical CPUs for direct performance comparisons,
 including builds. Run timed comparisons sequentially under the shared benchmark lock.

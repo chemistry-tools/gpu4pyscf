@@ -75,6 +75,26 @@ float64 BLAS and synchronous single-GPU dispatch. Every patch is scoped and rest
 
 ## Kernel checks
 
+`ao_tile_sparsity.py` analyzes retained NumPy archives containing an `ao` array in
+`(components, active_AOs, grid_points)` order. Accepted component counts are 1
+(values), 4 (values and first derivatives), or 10 (also second derivatives).
+This Linux CPU-only diagnostic needs NumPy, four allowed CPU IDs and no CUDA
+installation. It preserves the supplied AO/grid order and records input hashes:
+
+```sh
+python benchmarks/mixed_precision/ao_tile_sparsity.py \
+  --input /absolute/path/to/ao-block-1.npz /absolute/path/to/ao-block-2.npz \
+  --cpus 4,5,6,7 --output /tmp/new-ao-occupancy.json
+python -m pytest -q benchmarks/mixed_precision/test_ao_tile_sparsity.py
+```
+
+The report separates individual small values, wholly negligible tiles and
+conservative Gram-work opportunities, with partial tiles weighted by their valid
+sizes. Joint derivative masks retain a tile if any component exceeds the cutoff.
+Nonzero cutoffs do not establish density, energy or force accuracy; captured XC
+weights and densities can amplify small AO amplitudes. No pruning is enabled.
+Sampling selected blocks does not establish whole-grid or whole-call savings.
+
 CPU-only resource/protocol tests do not require GPU libraries:
 
 ```sh
