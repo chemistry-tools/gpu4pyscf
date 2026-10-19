@@ -1124,3 +1124,53 @@ scan, source/native audit, per-block maxima, geometries and log are under
 `ao-tile-sparsity-20261019-v2`, both in the existing remote benchmark root. The
 cancelled `v1` controller never ran a GPU job. Local raw inputs and assessments
 are retained outside Git in `gpu4pyscf-tile-evidence-20261019`.
+
+## TF32 VV10 distance feasibility experiment
+
+The existing approximate VV10 path uses a custom scalar pair kernel: FP32
+distance/reciprocal arithmetic and short sums, combined in FP64. Native
+verification and forces remain FP64. A cuBLAS TF32 math-mode toggle leaves its
+outputs bit for bit unchanged on six public organic inputs. TF32 matrix
+instructions cannot replace all the scalar operations in this kernel; see
+[NVIDIA's alternate floating-point matrix operations](https://docs.nvidia.com/cuda/archive/12.8.1/cuda-c-programming-guide/index.html).
+
+An isolated prototype instead uses actual `wmma.mma` TF32 instructions for
+coordinate dot products in 16 × 16 distance tiles, then FP32 norms and reciprocal
+pair expressions with FP64 long sums. A second variant recomputes near distances
+in ordinary FP32 to reduce cancellation. Both compiled PTX files contain TF32
+matrix instructions. This is a distance-restructuring experiment, not a complete
+TF32 implementation or a production option.
+
+Measurements use the public N/O/S/F/Cl organic panel at def2-tzvpd and native
+nonlocal grid level 3, on user-authorized GPU 6 with four CPUs, affinity 24–27.
+The five small cases use MINAO diagnostic densities; the 681-AO organic uses its
+retained converged native density. Three alternating/reversed repetitions per
+variant run serially without a competing calculation on the selected GPU.
+The 681-AO case has 304,067 active nonlocal grid points:
+
+| Pair kernel | Median, s | Fixed-density VV10 energy error vs native FP64, Hartree |
+| --- | ---: | ---: |
+| Current FP32 | 0.32876 | +1.02e-10 |
+| TF32 distance | 0.88710 | +7.18e-6 |
+| TF32 distance with near-distance repair | 0.88993 | +1.06e-5 |
+| FP32 fast-math control | 0.18200 | -3.19e-10 |
+
+Across all six cases, the straightforward TF32 distance variant is 2.64–2.81
+times slower than the current FP32 kernel. The guarded variant does not recover
+speed or comparable energy accuracy. This rejects these prototypes, rather than
+proving that every possible Tensor Core reformulation is unhelpful. The FP32
+fast-math control is 1.81–1.97 times faster, with fixed-density VV10 energy errors
+below 3.20e-10 Hartree. That control is a separate lead: complete SCF verification,
+force accuracy and whole-call performance have not been established, and no
+compiler option or engine path is changed by this experiment.
+
+The evidence includes 72 timed pair/NLC-field calls, 40 finite-output checks on
+signed synthetic weights and coordinate translations, four empty-density checks,
+and 16 native-reference checks using exactly representable integer coordinates,
+masked points, partial tiles and a nondefault CUDA stream. The latter isolate
+distance indexing from real-coordinate TF32 quantization; they do not establish
+real-system TF32 accuracy. Input hashes and all per-case medians are independently
+checked locally. Original outputs, sources, PTX, public field inputs and native
+source/library audit remain outside Git in remote `vv10-tf32-20261019-v3` under
+the benchmark root. Earlier compile/field-shape setup failures remain in `v1`
+and `v2`. Local evidence is in `gpu4pyscf-vv10-tf32-evidence-20261019`.
