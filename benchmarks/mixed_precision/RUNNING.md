@@ -75,6 +75,38 @@ float64 BLAS and synchronous single-GPU dispatch. Every patch is scoped and rest
 
 ## Kernel checks
 
+### Direct versus fitted J/K
+
+`direct_jk_benchmark.py` compares the existing CUDA integral-direct path with density
+fitting at the pinned functional and basis. Run each backend in a fresh process, under
+the shared benchmark lock, after activating a matching native installation:
+
+```sh
+python /absolute/path/to/fork/benchmarks/mixed_precision/direct_jk_benchmark.py \
+  --backend direct --case acetamide --verify-cpu \
+  --require-gpu-source /absolute/path/to/native/gpu4pyscf --output /outside/checkout/direct
+python /absolute/path/to/fork/benchmarks/mixed_precision/direct_jk_benchmark.py \
+  --backend df --case acetamide \
+  --require-gpu-source /absolute/path/to/native/gpu4pyscf --output /outside/checkout/fitted
+```
+
+The standalone pilot needs `CUDA_VISIBLE_DEVICES=1` and the four-CPU environment above.
+Its small cases use one-electron Hamiltonian orbitals for correctness checks; these
+densities do not represent converged SCF timing. For a retained state, pass
+`--geometry-report` with `geometry_angstrom`, `charge`, `multiplicity`, `basis` and
+`functional`, plus `--state` with matching `mo_coeff` and `mo_occ`. The overlap check
+and input hashes qualify this fixed-density replay, not a fresh SCF initial guess.
+
+Both backends include full-range and long-range exchange at the functional's native
+fractions. The fitted comparison uses its default full-plus-long-range assembly;
+the direct kernel combines the range fractions internally. Direct mode additionally
+checks reconstruction from a nonzero signed density difference against a full rebuild.
+The optional CPU calculation is an independent float64 oracle outside the timings.
+Fitting changes the two-electron approximation, so direct/fitted energy differences
+are not floating-point errors. XC, VV10, SCF iterations and gradients are outside
+these component timings. Retained payload counts include every fitted operator;
+process RSS alone may omit memory owned by CUDA host allocations.
+
 `ao_tile_sparsity.py` analyzes retained NumPy archives containing an `ao` array in
 `(components, active_AOs, grid_points)` order. Accepted component counts are 1
 (values), 4 (values and first derivatives), or 10 (also second derivatives).

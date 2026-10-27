@@ -7,6 +7,9 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
 
 - `gpu_performance.py`: fixed-method SCF, four-CPU enforcement, profiling, precision scheduling,
   original float64 energy/gradient verification and fallback. `protocol.json` owns scientific defaults.
+- `direct_jk_benchmark.py`: fixed-density native direct/fitted range-separated J/K checks,
+  cold/warm timings, nonzero incremental-density reconstruction, optional independent CPU oracle,
+  and retained fitting payloads for full and range-separated operators. No SCF/force speed claim.
 - `gpu4pyscf/dft/mixed_precision.py`: per-instance SCF precision, float64 verification and fallback.
 - `gpu4pyscf/dft/_native_grid_cache.py`: bounded, exact-input reuse of the last
   native ordinary integration during VV10-only verification. SCF calls still compute;

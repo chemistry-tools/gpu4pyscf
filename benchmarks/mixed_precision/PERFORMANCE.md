@@ -1174,3 +1174,50 @@ checked locally. Original outputs, sources, PTX, public field inputs and native
 source/library audit remain outside Git in remote `vv10-tf32-20261019-v3` under
 the benchmark root. Earlier compile/field-shape setup failures remain in `v1`
 and `v2`. Local evidence is in `gpu4pyscf-vv10-tf32-evidence-20261019`.
+
+## Native direct J/K at the diffuse triple-zeta recipe
+
+The 2026-10-27 pilot uses the existing CUDA direct engine at
+ωB97M-V/def2-TZVPD, including both exchange ranges. It introduces no new native
+kernel or production default. Fixed-density component replays use the retained
+optimized native installation, audited against its 535-file manifest, 18 Python
+overrides and 12 matching native libraries. GPU 1 and CPUs 4–7 are locked;
+all computational comparisons run sequentially.
+
+The larger public development organic has 681 spherical orbitals. Its retained
+converged orbitals are used only for J/K replay. No fresh SCF or force timings
+are inferred from that state. Both backends use identical densities and their
+native float64 products; fitted exchange uses its default separate full/LR
+assembly, while direct exchange combines the fractions in its kernel.
+
+| J/K component | Density fitting, s | Direct, s |
+| --- | ---: | ---: |
+| First build, including setup | 5.50 | 21.60 |
+| Repeated full-density build, median of two | 0.455 | 21.44 |
+| Density-difference build, median of two | — | 17.79 |
+
+The signed density difference is 0.1% of MINAO minus the retained density.
+It is a screening diagnostic rather than a measured SCF trajectory. Reconstruction
+of a full J/K build from the baseline plus this increment agrees within
+`1.53e-10` in matrix elements. The direct path retains no fitting tensor; the
+fitted path retains `3,234,213,096` bytes (3.01 GiB) across both operators.
+The fixed-density fitted-minus-direct energy is `-2.094e-4` Hartree
+(-0.1314 kcal/mol). This is the density-fitting approximation, not a precision
+error or a difference between independently converged SCF energies.
+
+Five smaller checks cover benzene, acetamide, DMSO, acetyl fluoride and acetyl
+chloride. Independent native CPU full/LR J/K agrees with direct CUDA within
+`2.19e-11`; all nonzero incremental reconstruction checks pass. These small
+checks use one-electron Hamiltonian densities, so their performance and fitting
+errors do not represent normal converged densities. No end-to-end SCF, VV10,
+force or Hessian qualification is claimed. The current direct kernels offer
+a storage-saving option, with a substantial component-time penalty here.
+
+Raw matrices, reports, scripts and source audits remain outside Git under
+`/scratch/failip/gpu4pyscf-benchmarks/direct-jk-20261027-v1` through `v4`.
+The assessment excludes the initial NumPy/CuPy oracle-conversion failure,
+an interrupted check and an incompatible mixed-range fitted API call. It reuses
+the three unchanged successful direct controls. A final fitted replay corrects
+the memory counter for list-backed full/LR tensors; earlier zero counts are
+invalid. The component harness passes Ruff and compilation checks, and the
+existing CPU protocol suite passes 15 tests with 18 CUDA tests skipped.
