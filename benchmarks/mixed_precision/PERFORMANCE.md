@@ -1270,14 +1270,95 @@ A stronger split parameter of 100 is rejected: the first acetamide incremental
 check fails at `1.13e-8` with unchanged tolerances. Its planned larger and fully
 primitive variants are not launched. An earlier experimental patch also attempted
 to change Coulomb's primitive representation; its native guard rejected it before
-evaluation. The scoped helper now preserves that representation and its CPU
-regression tests cover restoration on failure. The focused suite passes 21 CPU
+evaluation. The prototype's scoped helper preserved that representation and its CPU
+regression tests covered restoration on failure. That focused suite passed 21 CPU
 checks with 18 existing CUDA tests skipped, in addition to the five real CPU/GPU
 oracle comparisons. Ruff and source compilation checks pass.
 
-The grouping remains a benchmark control, not an ASE option or library default.
-Production integration requires per-instance dispatch and full SCF/force checks.
+This component pilot did not qualify production SCF or forces. The subsequent
+[per-instance library integration](../../docs/direct_scf.md) is opt-in and shares
+the representation between SCF and ground-state derivatives. It replaces the
+prototype's global benchmark patch; the library default remains unchanged.
 Raw matrices, traces, scripts, source audits and failed attempts are retained under
 `/scratch/failip/gpu4pyscf-benchmarks/direct-jk-profile-20261027-v1` through `v5`.
 The local `direct-jk-profile-20261027/assessment.json` independently checks matching
 inputs, source/native identities, resources, matrix agreement and timing scope.
+
+## Per-instance direct regrouping: complete SCF and forces
+
+The integrated `direct_scf_regroup=True` control replaces the prototype patch
+with an instance-owned RYS representation shared by SCF and ground-state analytic
+forces. It retains the original primitive MD Coulomb path. The original grouping
+is selected with `False`, which remains the library default. Qualification guards
+and ASE usage are in the [direct-integral guide](../../docs/direct_scf.md).
+
+Both sides use the same optimized native installation, float64 throughout,
+direct integrals without density fitting, spherical ωB97M-V/def2-TZVPD,
+ordinary/nonlocal grids 5/3, full VV10 and grid-response forces. Energy/orbital-gradient
+thresholds remain `1e-8`/`1e-4`, screening remains `1e-13`, and all orbitals are
+retained with the existing `1e-10` overlap cutoff. Source/native hashes match
+between each pair. The new Python integration requires no CUDA library rebuild.
+
+Each small case starts from fresh MINAO through ASE. A later force request must
+reuse that accepted SCF without another iteration. Every converged state also
+passes an independently rebuilt original-representation physical Fock check at
+the unchanged convergence criteria. All regrouped forces are compared with a
+second, complete original-representation force evaluation at the identical state.
+
+| Public mixed-element case | Orbitals | SCF cycles, both | Original SCF + forces, s | Regrouped SCF + forces, s | Time reduction |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Acetyl fluoride | 181 | 10 | 51.63 | 34.11 | 33.9% |
+| Acetamide | 196 | 10 | 58.96 | 42.38 | 28.1% |
+| Pyridine | 267 | 10 | 93.61 | 74.47 | 20.4% |
+| Dimethyl sulfoxide | 214 | 9 | 158.89 | 72.58 | 54.3% |
+| Acetyl chloride | 187 | 10 | 146.60 | 61.74 | 57.9% |
+
+These are preliminary single fresh-process pairs on physical GPU 1, run
+sequentially under both locks with four logical CPUs. The times include SCF
+setup and complete analytic forces, excluding the additional validation/reference
+recomputations. They are comparisons with this fork's original grouping, not
+with upstream software or density fitting. No statistical or cross-hardware
+speedup is established.
+
+Across the five small cases, independently converged energies agree within
+`1.97e-10` Hartree, and complete forces within `7.10e-10` Hartree/Bohr.
+The maximum same-state force difference is `7.03e-10` Hartree/Bohr, below the
+predeclared `2e-8` bound. Independent central energy finite differences on acetyl
+fluoride pass for both representations, with errors `6.46e-7` and `1.46e-6`
+Hartree/Bohr against a predeclared `3e-6` bound. Only these finite-difference
+energy checks tighten SCF tolerances to `1e-10`/`1e-6`.
+
+The larger public development organic has 681 orbitals. Both representations
+start from the same explicitly supplied density: 99.9% of the retained fitted
+state plus 0.1% MINAO. This is a controlled short-SCF comparison, not a fresh
+MINAO start or a density-fitting benchmark. Both converge in four SCF cycles.
+
+| Larger complete direct calculation | Original grouping, s | Regrouped, s | Time reduction |
+| --- | ---: | ---: | ---: |
+| SCF | 164.96 | 143.51 | 13.0% |
+| Full grid-response forces | 164.13 | 135.11 | 17.7% |
+| SCF plus forces | 329.09 | 278.62 | 15.3% |
+
+The larger independently converged energies differ by `6.50e-10` Hartree;
+rebuilt original-representation physical-Fock energies differ by less than
+`5e-13` Hartree. Complete forces differ by `1.60e-9` Hartree/Bohr across
+independent SCFs and by `1.56e-9` at the identical state. These also bound
+the errors over the entire six-pair panel. The same-state limit remains
+`2e-8` Hartree/Bohr throughout; no threshold was relaxed after observing results.
+
+The CPU protocol/policy suite passes 40 checks, with 19 CUDA checks skipped
+locally. The actual matching native installation passes all 26 regrouping
+policy/cache/isolation checks, including its CUDA case, plus six existing
+RHF/UHF, Cartesian and force regressions. The latter run only after the timed
+panel exits. Focused Ruff, compilation, documentation-link and diff checks pass.
+
+The qualification covers these ground-state SCFs and forces on one RTX 3080;
+it does not qualify Hessians, excited-state derivatives, other basis sets or
+architectures. The library remains opt-in despite the passed panel. Full states,
+SCF traces, force arrays, finite differences, reports, source/native audits,
+controllers, regression logs and the independent assessment are retained outside
+Git in `/scratch/failip/gpu4pyscf-benchmarks/direct-scf-regroup-20261027-v1`.
+The local `direct-scf-regroup-20261027/assessment.json` checks matching inputs,
+source/native identities, resources, convergence criteria and numerical errors
+for all six pairs before accepting the timings. Tested integration source files
+match commit `4ece6e8` exactly.

@@ -33,8 +33,10 @@ the underlying method in an existing ASE calculator, call `calc.reset()` to
 invalidate ASE's stored properties.
 
 The precision option is independent: regrouping does not introduce float32
-exchange. The qualification work uses complete float64 SCF, physical-Fock
-verification, mixed-element forces and energy finite differences. It does not
+exchange. Qualification passes complete float64 SCF and physical-Fock checks
+on five mixed-element organics and a 681-orbital development case, full forces
+including same-state original-representation controls, and an independent energy
+finite difference on acetyl fluoride. It does not
 qualify Hessians, excited-state derivatives or transition states. More aggressive
 primitive regrouping has failed strict numerical reconstruction checks and is
 not exposed by this control.
