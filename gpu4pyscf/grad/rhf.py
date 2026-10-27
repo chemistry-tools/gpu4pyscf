@@ -629,13 +629,7 @@ class Gradients(GradientsBase):
         '''
         if dm is None: dm = self.base.make_rdm1()
         mf = self.base
-        vhfopt = mf._opt_gpu.get(omega)
-        if vhfopt is None:
-            # For LDA and GGA, only mf._opt_jengine is initialized
-            mol = mf.mol
-            with mol.with_range_coulomb(omega):
-                vhfopt = mf._opt_gpu[omega] = _VHFOpt(
-                    mol, mf.direct_scf_tol).build()
+        vhfopt = mf._get_jk_opt(mf.mol, omega)
         return _jk_energy_per_atom(vhfopt, dm, j_factor, k_factor,
                                    omega, lr_factor, sr_factor, verbose)
 

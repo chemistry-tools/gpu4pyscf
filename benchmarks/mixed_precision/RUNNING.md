@@ -113,15 +113,38 @@ timer; they are not evidence that formatting/logging consumes the reported time.
 Use separate unprofiled processes for speed comparisons.
 
 The direct-only `--exchange split` diagnostic evaluates weighted full/LR exchange
-in separate passes. `--primitive-split 10` changes the exchange engine's internal
-Gaussian primitive grouping while reconstructing the same original AO basis.
-It leaves the Coulomb engine's required fully primitive representation intact.
-The representation patch is scoped to this isolated benchmark process and restored
-on errors. These controls do not configure ASE or change library defaults.
+in separate passes. `--regroup` selects the library's opt-in conservative primitive
+regrouping; `--no-regroup` explicitly selects the original representation.
+Both reconstruct the same original AO basis and leave the Coulomb engine's required
+fully primitive representation intact. The method's `direct_scf_regroup` setting
+also works through ASE; see the [direct-integral guide](../../docs/direct_scf.md).
 Validate every grouping against the independent CPU oracle and original direct
 matrices; algebraic equivalence does not guarantee identical numerical stability.
 More aggressive grouping failed the strict reconstruction check in the initial
 panel and must not be selected from its timing alone.
+
+`direct_scf_validation.py` checks complete SCF and forces at the same pinned
+functional/basis, without density fitting. Run the original and regrouped cases
+sequentially in fresh processes:
+
+```sh
+python benchmarks/mixed_precision/direct_scf_validation.py \
+  --case acetyl-fluoride --no-regroup --gpu 1 --cpus 4,5,6,7 --finite-difference \
+  --require-gpu-source /absolute/path/to/native/gpu4pyscf --output /outside/checkout/native-scf
+python benchmarks/mixed_precision/direct_scf_validation.py \
+  --case acetyl-fluoride --regroup --gpu 1 --cpus 4,5,6,7 --finite-difference \
+  --require-gpu-source /absolute/path/to/native/gpu4pyscf --output /outside/checkout/regrouped-scf
+```
+
+Small public mixed-element cases use fresh MINAO guesses through ASE, followed by
+forces that reuse the accepted SCF. Every state must pass a rebuilt original-representation
+float64 Fock check at the original convergence thresholds. Regrouped derivatives
+also require complete original-representation forces at the identical state
+within `2e-8` Hartree/Bohr. The optional central energy finite difference uses
+`1e-10` energy and `1e-6` orbital-gradient tolerances solely for that correctness
+check. External `--geometry-report`/`--state` inputs use 99.9% of the saved density
+plus 0.1% MINAO as the same explicitly supplied guess for each representation.
+Converged orbitals and SCF progress are saved before expensive forces.
 
 `ao_tile_sparsity.py` analyzes retained NumPy archives containing an `ao` array in
 `(components, active_AOs, grid_points)` order. Accepted component counts are 1

@@ -32,6 +32,7 @@ from gpu4pyscf.__config__ import num_devices, shm_size
 from gpu4pyscf.__config__ import props as gpu_specs
 from gpu4pyscf.lib import logger
 from gpu4pyscf.lib import multi_gpu
+from gpu4pyscf.scf._direct_scf import NATIVE_PRIMITIVE_CUTOFF
 from gpu4pyscf.gto.mole import (
     extract_pgto_params, _scale_sp_ctr_coeff, RysIntEnvVars, SortedGTO,
     SortedMole)
@@ -408,9 +409,16 @@ def apply_coeff_C_mat(right_matrix, mol, sorted_mol, uniq_l_ctr,
     return out
 
 class _VHFOpt:
-    def __init__(self, mol, direct_scf_tol=1e-13, tile=TILE):
+    def __init__(self, mol, direct_scf_tol=1e-13, tile=TILE, *,
+                 diffuse_cutoff=NATIVE_PRIMITIVE_CUTOFF):
+        if (
+            type(diffuse_cutoff) not in (int, float)
+            or not math.isfinite(diffuse_cutoff) or diffuse_cutoff < 0
+        ):
+            raise ValueError('diffuse_cutoff must be finite and nonnegative')
         self.mol = mol
         self.direct_scf_tol = direct_scf_tol
+        self.diffuse_cutoff = float(diffuse_cutoff)
         self.h_shls = None
         self.tile = tile
 
@@ -427,7 +435,7 @@ class _VHFOpt:
         log = logger.new_logger(self.mol, verbose)
         cput0 = log.init_timer()
         mol = self.sorted_mol = SortedGTO.from_mol(
-            self.mol, decontract=True, diffuse_cutoff=0.3)
+            self.mol, decontract=True, diffuse_cutoff=self.diffuse_cutoff)
         l_ctr_counts = mol.l_ctr_counts
 
         # very high angular momentum basis are processed on CPU

@@ -6,39 +6,17 @@ import argparse
 import cProfile
 import hashlib
 import json
-import math
 import os
 import resource
 import statistics
 import time
-from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import patch
 
 from gpu_performance import CASES, _resources, _settings
 
 
 def _hash(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-
-@contextmanager
-def _primitive_split(cutoff):
-    if cutoff is None:
-        yield
-        return
-    from gpu4pyscf.gto.mole import SortedGTO
-
-    original = SortedGTO.from_mol
-
-    def from_mol(cls, mol, **kwargs):
-        if kwargs.get('decontract') and kwargs.get('diffuse_cutoff') == .3:
-            kwargs['diffuse_cutoff'] = cutoff
-        return original(mol, **kwargs)
-
-    # This isolated process changes only the exact representation used to build J/K.
-    with patch.object(SortedGTO, 'from_mol', classmethod(from_mol)):
-        yield
 
 
 def main():
@@ -53,15 +31,13 @@ def main():
     parser.add_argument('--verify-cpu', action='store_true')
     parser.add_argument('--exchange', choices=('combined', 'split'), default='combined')
     parser.add_argument('--profile', action='store_true')
-    parser.add_argument('--primitive-split', type=float)
+    parser.add_argument('--regroup', action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if args.repeats < 1 or args.geometry_report is None and args.state is not None:
         parser.error('Positive repeats and matching metadata for external states are required')
-    if args.primitive_split is not None and (
-        not math.isfinite(args.primitive_split) or args.primitive_split < 0 or args.backend != 'direct'
-    ):
-        parser.error('A finite nonnegative primitive split is supported only for direct J/K')
+    if args.regroup is not None and args.backend != 'direct':
+        parser.error('Regrouping controls are supported only for direct J/K')
     _resources([int(x) for x in args.cpus.split(',')])
     if os.environ.get('CUDA_VISIBLE_DEVICES') != '1':
         raise RuntimeError('Use physical GPU 1')
@@ -103,6 +79,8 @@ def main():
     mf = dft.RKS(mol, xc=settings['xc'])
     mf.chkfile = None
     mf.direct_scf_tol = 1e-13
+    if args.regroup is not None:
+        mf.direct_scf_regroup = args.regroup
     if args.backend == 'df':
         mf = mf.density_fit(auxbasis='def2-universal-jkfit')
     if args.state:
@@ -141,24 +119,23 @@ def main():
         return j, k
 
     profiler = cProfile.Profile() if args.profile else None
-    with _primitive_split(args.primitive_split):
-        if profiler:
-            profiler.enable()
-        j, k = build(density, 'cold-full')
+    if profiler:
+        profiler.enable()
+    j, k = build(density, 'cold-full')
+    for _ in range(args.repeats):
+        j, k = build(density, 'warm-full')
+    delta_result = None
+    if args.backend == 'direct':
+        delta = .001*(cp.asarray(mf.get_init_guess(mol, 'minao'))-density)
+        if float(cp.linalg.norm(delta)) == 0:
+            raise ValueError('The density-difference test must be nonzero')
         for _ in range(args.repeats):
-            j, k = build(density, 'warm-full')
-        delta_result = None
-        if args.backend == 'direct':
-            delta = .001*(cp.asarray(mf.get_init_guess(mol, 'minao'))-density)
-            if float(cp.linalg.norm(delta)) == 0:
-                raise ValueError('The density-difference test must be nonzero')
-            for _ in range(args.repeats):
-                dj, dk = build(delta, 'warm-delta')
-            full_j, full_k = build(density+delta, 'increment-check-full')
-            delta_result = {'j_max_abs': float(cp.max(cp.abs(full_j-j-dj))),
-                                'k_max_abs': float(cp.max(cp.abs(full_k-k-dk)))}
-            cp.testing.assert_allclose(full_j, j+dj, atol=2e-9, rtol=2e-10)
-            cp.testing.assert_allclose(full_k, k+dk, atol=2e-9, rtol=2e-10)
+            dj, dk = build(delta, 'warm-delta')
+        full_j, full_k = build(density+delta, 'increment-check-full')
+        delta_result = {'j_max_abs': float(cp.max(cp.abs(full_j-j-dj))),
+                            'k_max_abs': float(cp.max(cp.abs(full_k-k-dk)))}
+        cp.testing.assert_allclose(full_j, j+dj, atol=2e-9, rtol=2e-10)
+        cp.testing.assert_allclose(full_k, k+dk, atol=2e-9, rtol=2e-10)
     if profiler:
         profiler.disable()
         profiler.dump_stats(str(args.output/'jk.prof'))
@@ -190,12 +167,14 @@ def main():
     cderi_bytes = sum(cderi_by_operator.values())
     medians = {label: statistics.median(s['total_seconds'] for s in samples if s['label'] == label)
                for label in ('warm-full', 'warm-delta') if any(s['label'] == label for s in samples)}
-    sources = ['scf/hf.py', 'scf/jk.py', 'scf/j_engine.py', 'df/df.py', 'df/df_jk.py', 'dft/rks.py']
+    sources = ['scf/hf.py', 'scf/jk.py', 'scf/j_engine.py', 'scf/_direct_scf.py',
+               'df/df.py', 'df/df_jk.py', 'dft/rks.py']
     report = {'case': args.case, 'backend': args.backend, 'basis': mol.basis, 'cart': mol.cart,
                   'exchange_assembly': args.exchange if args.backend == 'direct' else 'split',
                   'profiled': args.profile,
-                  'primitive_split_cutoff': args.primitive_split,
+                  'direct_scf_regroup': mf.direct_scf_regroup,
                   'internal_basis': {str(key): {'nao': opt.sorted_mol.nao, 'nbas': opt.sorted_mol.nbas,
+                                                'diffuse_cutoff': opt.diffuse_cutoff,
                                                 'groups': opt.sorted_mol.uniq_l_ctr.tolist(),
                                                 'group_counts': opt.sorted_mol.l_ctr_counts.tolist()}
                                      for key, opt in mf._opt_gpu.items() if opt is not None},

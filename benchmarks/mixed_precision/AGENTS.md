@@ -10,10 +10,17 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
 - `direct_jk_benchmark.py`: fixed-density native direct/fitted range-separated J/K checks,
   cold/warm timings, nonzero incremental-density reconstruction, optional independent CPU oracle,
   and retained fitting payloads for full and range-separated operators. Profiling and separate
-  full/LR passes are optional diagnostics. `--primitive-split` scopes an experimental exchange
-  representation change and preserves the Coulomb engine's fully primitive representation;
-  `test_direct_jk_benchmark.py` checks dispatch boundaries and restoration on failure.
-  No SCF/force speed claim or production default change.
+  full/LR passes are optional diagnostics. `--regroup`/`--no-regroup` use the library's
+  per-instance exchange representation control. Fixed-density timings do not establish
+  a complete SCF/force speedup.
+- `gpu4pyscf/scf/_direct_scf.py`, `test_direct_scf_regroup.py`: conservative, opt-in
+  primitive regrouping for qualified native direct RKS, shared with ground-state forces.
+  Policy/cache checks run without CUDA; the opt-in GPU check exercises instance/scanner
+  isolation, reset and the unchanged fully primitive Coulomb representation.
+- `direct_scf_validation.py`: complete native SCFs and forces through ASE, original-representation
+  physical-Fock and same-state force controls, and optional energy finite differences.
+  Saves the converged state before derivatives. External saved states are explicitly
+  perturbed supplied guesses, not fresh MINAO benchmarks.
 - `gpu4pyscf/dft/mixed_precision.py`: per-instance SCF precision, float64 verification and fallback.
 - `gpu4pyscf/dft/_native_grid_cache.py`: bounded, exact-input reuse of the last
   native ordinary integration during VV10-only verification. SCF calls still compute;

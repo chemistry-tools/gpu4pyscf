@@ -30,6 +30,7 @@ from gpu4pyscf.lib.cupy_helper import (
     eigh, tag_array, return_cupy_array, cond, asarray, get_avail_mem,
     block_diag, sandwich_dot, stack_with_padding)
 from gpu4pyscf.scf import diis, jk, j_engine
+from gpu4pyscf.scf._direct_scf import get_optimizer as _get_direct_optimizer
 from . import dispersion
 from gpu4pyscf.scf.smearing import smearing
 from gpu4pyscf.lib import logger
@@ -713,6 +714,7 @@ class SCF(pyscf_lib.StreamObject):
     level_shift         = None
     direct_scf          = hf_cpu.SCF.direct_scf
     direct_scf_tol      = hf_cpu.SCF.direct_scf_tol
+    direct_scf_regroup  = False
     conv_check          = hf_cpu.SCF.conv_check
     callback            = hf_cpu.SCF.callback
 
@@ -720,7 +722,7 @@ class SCF(pyscf_lib.StreamObject):
         'conv_tol', 'conv_tol_grad', 'conv_tol_cpscf', 'max_cycle', 'init_guess',
         'sap_basis', 'DIIS', 'diis', 'diis_space', 'diis_damp', 'diis_start_cycle',
         'diis_file', 'diis_space_rollback', 'damp', 'level_shift',
-        'direct_scf', 'direct_scf_tol', 'conv_check', 'callback',
+        'direct_scf', 'direct_scf_tol', 'direct_scf_regroup', 'conv_check', 'callback',
         'mol', 'chkfile', 'mo_energy', 'mo_coeff', 'mo_occ',
         'e_tot', 'converged', 'cycles', 'scf_summary',
         'disp', 'disp_with_3body',
@@ -993,17 +995,19 @@ class SCF(pyscf_lib.StreamObject):
                 cupy.asnumpy(envs['mo_energy']), cupy.asnumpy(envs['mo_coeff']),
                 cupy.asnumpy(envs['mo_occ']), overwrite_mol=False)
 
+    def _get_jk_opt(self, mol, omega):
+        return _get_direct_optimizer(
+            self, mol, omega, optimizer_type=jk._VHFOpt,
+            device_count=__config__.num_devices,
+            capability=(__config__.props['major'], __config__.props['minor']))
+
     @pyscf_lib.with_doc(jk.get_jk.__doc__)
     def get_jk(self, mol, dm=None, hermi=1, with_j=True, with_k=True,
                omega=None, lr_factor=None, sr_factor=None):
         if dm is None: dm = self.make_rdm1()
         if omega is None:
             omega = mol.omega
-        vhfopt = self._opt_gpu.get(omega)
-        if vhfopt is None:
-            with mol.with_range_coulomb(omega):
-                vhfopt = self._opt_gpu[omega] = jk._VHFOpt(
-                    mol, self.direct_scf_tol).build()
+        vhfopt = self._get_jk_opt(mol, omega)
 
         return get_jk(mol, dm, hermi, vhfopt, with_j, with_k,
                       omega, lr_factor, sr_factor)
@@ -1025,11 +1029,8 @@ class SCF(pyscf_lib.StreamObject):
     def get_k(self, mol, dm, hermi=1, omega=None, lr_factor=None, sr_factor=None):
         if omega is None:
             omega = mol.omega
-        vhfopt = self._opt_gpu.get(omega)
         with mol.with_range_coulomb(omega):
-            if vhfopt is None:
-                vhfopt = self._opt_gpu[omega] = jk._VHFOpt(
-                    mol, self.direct_scf_tol).build()
+            vhfopt = self._get_jk_opt(mol, omega)
             vk = jk.get_k(mol, dm, hermi, vhfopt, omega, lr_factor, sr_factor)
         if not isinstance(dm, cupy.ndarray):
             vk = vk.get()

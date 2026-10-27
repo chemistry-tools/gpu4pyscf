@@ -1,6 +1,8 @@
 # Using verified mixed precision with ASE
 
 The [library guide](../../docs/mixed_precision.md) owns the public SCF API and installation boundary.
+The independent [direct-integral guide](../../docs/direct_scf.md) describes opt-in
+native exchange regrouping for methods without density fitting.
 
 The GPU4PySCF ASE calculator accepts `precision="mixed"` for molecular LDA/GGA/meta-GGA RKS/UKS on a
 single visible GPU. Configure the method with the desired functional, basis, ECP, fitting basis,
