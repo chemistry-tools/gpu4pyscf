@@ -107,6 +107,22 @@ are not floating-point errors. XC, VV10, SCF iterations and gradients are outsid
 these component timings. Retained payload counts include every fitted operator;
 process RSS alone may omit memory owned by CUDA host allocations.
 
+Add `--profile` to collect synchronized native angular-family GPU timings in
+`pyscf.log` and a `jk.prof` Python trace. GPU waits appear inside the logger's
+timer; they are not evidence that formatting/logging consumes the reported time.
+Use separate unprofiled processes for speed comparisons.
+
+The direct-only `--exchange split` diagnostic evaluates weighted full/LR exchange
+in separate passes. `--primitive-split 10` changes the exchange engine's internal
+Gaussian primitive grouping while reconstructing the same original AO basis.
+It leaves the Coulomb engine's required fully primitive representation intact.
+The representation patch is scoped to this isolated benchmark process and restored
+on errors. These controls do not configure ASE or change library defaults.
+Validate every grouping against the independent CPU oracle and original direct
+matrices; algebraic equivalence does not guarantee identical numerical stability.
+More aggressive grouping failed the strict reconstruction check in the initial
+panel and must not be selected from its timing alone.
+
 `ao_tile_sparsity.py` analyzes retained NumPy archives containing an `ao` array in
 `(components, active_AOs, grid_points)` order. Accepted component counts are 1
 (values), 4 (values and first derivatives), or 10 (also second derivatives).

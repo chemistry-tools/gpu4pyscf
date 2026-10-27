@@ -3,19 +3,42 @@
 from __future__ import annotations
 
 import argparse
+import cProfile
 import hashlib
 import json
+import math
 import os
 import resource
 import statistics
 import time
+from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import patch
 
 from gpu_performance import CASES, _resources, _settings
 
 
 def _hash(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+@contextmanager
+def _primitive_split(cutoff):
+    if cutoff is None:
+        yield
+        return
+    from gpu4pyscf.gto.mole import SortedGTO
+
+    original = SortedGTO.from_mol
+
+    def from_mol(cls, mol, **kwargs):
+        if kwargs.get('decontract') and kwargs.get('diffuse_cutoff') == .3:
+            kwargs['diffuse_cutoff'] = cutoff
+        return original(mol, **kwargs)
+
+    # This isolated process changes only the exact representation used to build J/K.
+    with patch.object(SortedGTO, 'from_mol', classmethod(from_mol)):
+        yield
 
 
 def main():
@@ -28,10 +51,17 @@ def main():
     parser.add_argument('--cpus', default='4,5,6,7')
     parser.add_argument('--repeats', type=int, default=3)
     parser.add_argument('--verify-cpu', action='store_true')
+    parser.add_argument('--exchange', choices=('combined', 'split'), default='combined')
+    parser.add_argument('--profile', action='store_true')
+    parser.add_argument('--primitive-split', type=float)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if args.repeats < 1 or args.geometry_report is None and args.state is not None:
         parser.error('Positive repeats and matching metadata for external states are required')
+    if args.primitive_split is not None and (
+        not math.isfinite(args.primitive_split) or args.primitive_split < 0 or args.backend != 'direct'
+    ):
+        parser.error('A finite nonnegative primitive split is supported only for direct J/K')
     _resources([int(x) for x in args.cpus.split(',')])
     if os.environ.get('CUDA_VISIBLE_DEVICES') != '1':
         raise RuntimeError('Use physical GPU 1')
@@ -68,7 +98,7 @@ def main():
     if multiplicity != 1:
         raise ValueError('This fixed-density pilot currently supports restricted singlets')
     mol = gto.M(atom=atom, basis=settings['basis'], charge=charge, spin=multiplicity-1,
-                cart=False, verbose=4, output=str(args.output/'pyscf.log'))
+                cart=False, verbose=6 if args.profile else 4, output=str(args.output/'pyscf.log'))
     hf.overlap_zero_eigenvalue_threshold = 1e-10
     mf = dft.RKS(mol, xc=settings['xc'])
     mf.chkfile = None
@@ -95,7 +125,7 @@ def main():
         j = mf.get_j(mol, dm, hermi=1)
         cp.cuda.runtime.deviceSynchronize()
         after_j = time.perf_counter()
-        if args.backend == 'df':
+        if args.backend == 'df' or args.exchange == 'split':
             # Match the default DF get_veff route: full exchange plus positive-omega LR.
             k = mf.get_k(mol, dm, hermi=1)
             k *= hyb
@@ -110,21 +140,28 @@ def main():
         print(json.dumps(row), flush=True)
         return j, k
 
-    j, k = build(density, 'cold-full')
-    for _ in range(args.repeats):
-        j, k = build(density, 'warm-full')
-    delta_result = None
-    if args.backend == 'direct':
-        delta = .001*(cp.asarray(mf.get_init_guess(mol, 'minao'))-density)
-        if float(cp.linalg.norm(delta)) == 0:
-            raise ValueError('The density-difference test must be nonzero')
+    profiler = cProfile.Profile() if args.profile else None
+    with _primitive_split(args.primitive_split):
+        if profiler:
+            profiler.enable()
+        j, k = build(density, 'cold-full')
         for _ in range(args.repeats):
-            dj, dk = build(delta, 'warm-delta')
-        full_j, full_k = build(density+delta, 'increment-check-full')
-        delta_result = {'j_max_abs': float(cp.max(cp.abs(full_j-j-dj))),
-                            'k_max_abs': float(cp.max(cp.abs(full_k-k-dk)))}
-        cp.testing.assert_allclose(full_j, j+dj, atol=2e-9, rtol=2e-10)
-        cp.testing.assert_allclose(full_k, k+dk, atol=2e-9, rtol=2e-10)
+            j, k = build(density, 'warm-full')
+        delta_result = None
+        if args.backend == 'direct':
+            delta = .001*(cp.asarray(mf.get_init_guess(mol, 'minao'))-density)
+            if float(cp.linalg.norm(delta)) == 0:
+                raise ValueError('The density-difference test must be nonzero')
+            for _ in range(args.repeats):
+                dj, dk = build(delta, 'warm-delta')
+            full_j, full_k = build(density+delta, 'increment-check-full')
+            delta_result = {'j_max_abs': float(cp.max(cp.abs(full_j-j-dj))),
+                                'k_max_abs': float(cp.max(cp.abs(full_k-k-dk)))}
+            cp.testing.assert_allclose(full_j, j+dj, atol=2e-9, rtol=2e-10)
+            cp.testing.assert_allclose(full_k, k+dk, atol=2e-9, rtol=2e-10)
+    if profiler:
+        profiler.disable()
+        profiler.dump_stats(str(args.output/'jk.prof'))
     reference = None
     if args.verify_cpu:
         if args.backend != 'direct':
@@ -155,6 +192,13 @@ def main():
                for label in ('warm-full', 'warm-delta') if any(s['label'] == label for s in samples)}
     sources = ['scf/hf.py', 'scf/jk.py', 'scf/j_engine.py', 'df/df.py', 'df/df_jk.py', 'dft/rks.py']
     report = {'case': args.case, 'backend': args.backend, 'basis': mol.basis, 'cart': mol.cart,
+                  'exchange_assembly': args.exchange if args.backend == 'direct' else 'split',
+                  'profiled': args.profile,
+                  'primitive_split_cutoff': args.primitive_split,
+                  'internal_basis': {str(key): {'nao': opt.sorted_mol.nao, 'nbas': opt.sorted_mol.nbas,
+                                                'groups': opt.sorted_mol.uniq_l_ctr.tolist(),
+                                                'group_counts': opt.sorted_mol.l_ctr_counts.tolist()}
+                                     for key, opt in mf._opt_gpu.items() if opt is not None},
                   'geometry_angstrom': atom, 'charge': charge, 'multiplicity': multiplicity, 'nao': mol.nao,
                   'functional': mf.xc, 'omega': omega, 'long_range_fraction': alpha, 'short_range_fraction': hyb,
                   'direct_scf_tol': mf.direct_scf_tol, 'protocol_sha256': protocol_hash,

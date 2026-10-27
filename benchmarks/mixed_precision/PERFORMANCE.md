@@ -1221,3 +1221,63 @@ the three unchanged successful direct controls. A final fitted replay corrects
 the memory counter for list-backed full/LR tensors; earlier zero counts are
 invalid. The component harness passes Ruff and compilation checks, and the
 existing CPU protocol suite passes 15 tests with 18 CUDA tests skipped.
+
+## Direct exchange profile and primitive grouping
+
+The follow-up profiles the same 681-orbital public development organic at the
+same fixed density and native float64 ωB97M-V/def2-TZVPD recipe. Synchronized
+angular-family timings attribute 16.89 seconds to exchange and 4.28 seconds to
+Coulomb kernels: exchange is 79.8% of kernel time. Their sum accounts for 99.9%
+of the 21.20-second warm build in the instrumented run. The Python trace's
+large logger time is GPU synchronization, not formatting overhead. Screening,
+integral evaluation and contraction remain fused inside those kernels.
+The largest individual exchange families are `(ps|ss)`, `(ss|ss)` and `(ps|ps)`;
+s/p-only families together take 27.7% of exchange kernel time.
+
+Separate full/LR exchange passes are numerically consistent but increase warm
+J/K time from 21.44 to 24.71 seconds and density-difference time from 17.79 to
+20.74 seconds. That dispatch is rejected as a performance candidate.
+
+The useful prototype changes exchange's internal primitive-splitting parameter
+from 0.3 to 10. It reconstructs the same original AO basis, retains float64
+throughout and preserves the Coulomb engine's required fully primitive
+representation. Exchange's internal Cartesian space grows from 771 to 935
+functions, while its contraction-pattern groups decrease from eight to six.
+This exposes more primitive work to screening and reduces contracted inner loops.
+It allocates no fitting tensor and changes no native library or compiler option.
+
+| Large fixed-density component | Original, s | Regrouped, s | Reduction |
+| --- | ---: | ---: | ---: |
+| Warm full J/K, fresh confirmation | 21.295 | 16.940 | 20.45% |
+| Warm density-difference J/K, fresh confirmation | 17.737 | 13.601 | 23.32% |
+
+Each confirmation value is the median of two warm samples in a fresh process.
+The earlier independent candidate process gives 16.606 seconds for full J/K
+and 13.382 for the density difference. Its retained unprofiled control gives
+21.440 and 17.788 seconds. All jobs run sequentially under both locks on GPU 1
+with four CPUs. Shared-host measurements and this single retained large density
+do not establish an SCF trajectory or whole-call speedup.
+
+At identical large-system density, original/regrouped exchange matrices differ
+by at most `4.92e-11` and the J/K energy by `2.84e-11` Hartree. All five mixed
+organic/benzene checks pass independent native CPU full/LR references, with a
+maximum matrix error of `1.15e-10`. Signed incremental reconstruction also passes.
+The small checks use one-electron Hamiltonian densities and provide numerical
+coverage rather than representative SCF performance. No forces or Hessians are
+qualified by this component pilot.
+
+A stronger split parameter of 100 is rejected: the first acetamide incremental
+check fails at `1.13e-8` with unchanged tolerances. Its planned larger and fully
+primitive variants are not launched. An earlier experimental patch also attempted
+to change Coulomb's primitive representation; its native guard rejected it before
+evaluation. The scoped helper now preserves that representation and its CPU
+regression tests cover restoration on failure. The focused suite passes 21 CPU
+checks with 18 existing CUDA tests skipped, in addition to the five real CPU/GPU
+oracle comparisons. Ruff and source compilation checks pass.
+
+The grouping remains a benchmark control, not an ASE option or library default.
+Production integration requires per-instance dispatch and full SCF/force checks.
+Raw matrices, traces, scripts, source audits and failed attempts are retained under
+`/scratch/failip/gpu4pyscf-benchmarks/direct-jk-profile-20261027-v1` through `v5`.
+The local `direct-jk-profile-20261027/assessment.json` independently checks matching
+inputs, source/native identities, resources, matrix agreement and timing scope.

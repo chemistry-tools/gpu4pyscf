@@ -9,7 +9,11 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
   original float64 energy/gradient verification and fallback. `protocol.json` owns scientific defaults.
 - `direct_jk_benchmark.py`: fixed-density native direct/fitted range-separated J/K checks,
   cold/warm timings, nonzero incremental-density reconstruction, optional independent CPU oracle,
-  and retained fitting payloads for full and range-separated operators. No SCF/force speed claim.
+  and retained fitting payloads for full and range-separated operators. Profiling and separate
+  full/LR passes are optional diagnostics. `--primitive-split` scopes an experimental exchange
+  representation change and preserves the Coulomb engine's fully primitive representation;
+  `test_direct_jk_benchmark.py` checks dispatch boundaries and restoration on failure.
+  No SCF/force speed claim or production default change.
 - `gpu4pyscf/dft/mixed_precision.py`: per-instance SCF precision, float64 verification and fallback.
 - `gpu4pyscf/dft/_native_grid_cache.py`: bounded, exact-input reuse of the last
   native ordinary integration during VV10-only verification. SCF calls still compute;
