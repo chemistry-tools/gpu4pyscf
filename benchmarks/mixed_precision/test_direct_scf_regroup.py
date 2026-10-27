@@ -87,6 +87,44 @@ def test_external_molecule_and_low_memory_method_keep_native():
     assert _cutoff(lowmem(**mf.__dict__)) == .3
 
 
+def test_periodic_and_legacy_methods_keep_native():
+    mf = _method()
+    mf.cell = mf.mol
+    assert _cutoff(mf) == .3
+    del mf.cell
+    del mf.direct_scf_regroup
+    assert _cutoff(mf) == .3
+
+
+@pytest.mark.parametrize('alpha,hyb', [(1., .15), (.65, .25), (0., .25), (.65, 0.), (.25, .25)])
+@pytest.mark.parametrize('enabled', [False, True])
+def test_force_exchange_algebra_and_qualification(alpha, hyb, enabled):
+    mf = _method()
+    mf.direct_scf_regroup = enabled
+    module = _module()
+    full, omega, remainder = module.force_exchange(
+        mf, .3, alpha, hyb, device_count=1, capability=(8, 6))
+    assert (full, omega, remainder) == ((hyb, .3, alpha-hyb) if enabled else (alpha, -.3, hyb-alpha))
+    # At any separation, full = SR + LR. Check both independent coefficients.
+    if omega > 0:
+        assert full == hyb and full+remainder == pytest.approx(alpha)
+    else:
+        assert full+remainder == pytest.approx(hyb) and full == alpha
+
+
+@pytest.mark.parametrize('kwargs', [{'device_count': 2, 'capability': (8, 6)},
+                                   {'device_count': 1, 'capability': (9, 0)}])
+def test_force_exchange_other_devices_keep_original_split(kwargs):
+    assert _module().force_exchange(_method(), .3, 1., .15, **kwargs) == (1., -.3, -.85)
+
+
+def test_global_hybrid_force_and_fitted_control():
+    module, mf = _module(), _method()
+    assert module.force_exchange(mf, 0., .15, .15, device_count=1, capability=(8, 6)) == (.15, 0., 0.)
+    mf.with_df = object()
+    assert module.force_exchange(mf, .3, 1., .15, device_count=1, capability=(8, 6)) == (1., -.3, -.85)
+
+
 @pytest.mark.parametrize('kwargs', [{'device_count': 2}, {'capability': (8, 0)}, {'capability': (9, 0)}])
 def test_other_devices_keep_native(kwargs):
     assert _cutoff(_method(), **kwargs) == .3

@@ -31,7 +31,8 @@ from gpu4pyscf.lib.cupy_helper import (
     contract, get_avail_mem, add_sparse, tag_array, sandwich_dot,
     reduce_to_device, take_last2d, ndarray, batched_vec_norm2)
 from gpu4pyscf.lib import logger
-from gpu4pyscf.__config__ import num_devices
+from gpu4pyscf.__config__ import num_devices, props as gpu_specs
+from gpu4pyscf.scf._direct_scf import force_exchange
 from gpu4pyscf.dft.numint import NLC_REMOVE_ZERO_RHO_GRID_THRESHOLD
 from gpu4pyscf.gto.mole import groupby, ATOM_OF
 
@@ -89,28 +90,14 @@ def energy_ee(ks_grad, mol=None, dm=None, verbose=None):
     j_factor = 1.
     k_factor = 0.
     if with_k:
-        if omega == 0:
-            k_factor = hyb
-        elif alpha == 0: # LR=0, only SR exchange
-            pass
-        elif hyb == 0: # SR=0, only LR exchange
-            k_factor = alpha
-        else: # SR and LR exchange with different ratios
-            k_factor = alpha
+        k_factor, remainder_omega, remainder_factor = force_exchange(
+            mf, omega, alpha, hyb, mol=mol, device_count=num_devices,
+            capability=(gpu_specs['major'], gpu_specs['minor']))
     exc1 += ks_grad.jk_energy_per_atom(dm, j_factor, k_factor, verbose=log)
 
     if with_k and omega != 0:
-        j_factor = 0.
-        omega = -omega # Prefer computing the SR part
-        if alpha == 0: # LR=0, only SR exchange
-            k_factor = hyb
-        elif hyb == 0: # SR=0, only LR exchange
-            # full range exchange was computed in the previous step
-            k_factor = -alpha
-        else: # SR and LR exchange with different ratios
-            k_factor = hyb - alpha # =beta
         exc1 += ks_grad.jk_energy_per_atom(
-            dm, j_factor, k_factor, omega=omega, verbose=log)
+            dm, 0., remainder_factor, omega=remainder_omega, verbose=log)
     return exc1
 
 def _get_denlc(ks_grad, mol, dm):

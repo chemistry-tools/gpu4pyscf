@@ -145,6 +145,9 @@ within `2e-8` Hartree/Bohr. The optional central energy finite difference uses
 check. External `--geometry-report`/`--state` inputs use 99.9% of the saved density
 plus 0.1% MINAO as the same explicitly supplied guess for each representation.
 Converged orbitals and SCF progress are saved before expensive forces.
+The timed force call precedes the original-representation controls to preserve
+normal SCF optimizer reuse. Reports include the force optimizer cutoffs and
+reject a short-range derivative pass when the qualified full/LR path is requested.
 
 `ao_tile_sparsity.py` analyzes retained NumPy archives containing an `ao` array in
 `(components, active_AOs, grid_points)` order. Accepted component counts are 1

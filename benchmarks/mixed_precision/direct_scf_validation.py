@@ -115,16 +115,6 @@ def main():
     if set(selected_cutoffs.values()) != {10. if args.regroup else .3}:
         raise RuntimeError(f'The requested representation was not exercised: {selected_cutoffs}')
 
-    # A rebuilt original-representation physical Fock checks the optimized SCF state.
-    mf.direct_scf_regroup = False
-    try:
-        check = _full_check(mf, energy)
-    finally:
-        mf.direct_scf_regroup = args.regroup
-    (args.output/'native-check.json').write_text(json.dumps(check, indent=2)+'\n')
-    if not check['passed']:
-        raise RuntimeError(f'Original-representation Fock verification failed: {check}')
-
     def gradient(current):
         grad = current.Gradients()
         grad.grid_response = True
@@ -140,6 +130,21 @@ def main():
     cp.cuda.runtime.deviceSynchronize()
     force_seconds = time.perf_counter()-started
     np.save(args.output/'gradient.npy', grad)
+    force_cutoffs = {str(k): opt.diffuse_cutoff for k, opt in mf._opt_gpu.items() if opt is not None}
+    omega = mf._numint.rsh_and_hybrid_coeff(mf.xc, spin=mol.spin)[0]
+    if (str(-omega) in force_cutoffs) == args.regroup:
+        raise RuntimeError(f'Unexpected derivative operator dispatch: {force_cutoffs}')
+
+    # Run controls after the timed force call so that verification cannot replace
+    # the reusable SCF exchange optimizer before its derivative uses it.
+    mf.direct_scf_regroup = False
+    try:
+        check = _full_check(mf, energy)
+    finally:
+        mf.direct_scf_regroup = args.regroup
+    (args.output/'native-check.json').write_text(json.dumps(check, indent=2)+'\n')
+    if not check['passed']:
+        raise RuntimeError(f'Original-representation Fock verification failed: {check}')
     reference_error = None
     if args.regroup:
         mf.direct_scf_regroup = False
@@ -184,6 +189,7 @@ def main():
               'entry_point': 'ASE' if atoms is not None else 'kernel with controlled supplied density',
               'supplied_guess': None if guess is None else '99.9% retained DF density plus 0.1% MINAO',
               'original_representation_verification': check, 'selected_scf_cutoffs': selected_cutoffs,
+              'selected_force_cutoffs': force_cutoffs,
               'same_state_force_max_abs': reference_error, 'finite_difference': finite_difference,
               'gradient_hartree_bohr': grad.tolist(), 'imported_package': str(package),
               'cpu_affinity': sorted(os.sched_getaffinity(0)), 'threadpools': threadpool_info(),

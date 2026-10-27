@@ -15,12 +15,16 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
   a complete SCF/force speedup.
 - `gpu4pyscf/scf/_direct_scf.py`, `test_direct_scf_regroup.py`: conservative, opt-in
   primitive regrouping for qualified native direct RKS, shared with ground-state forces.
+  The same qualification selects full/LR derivative passes to avoid doubled SR roots;
+  unqualified, fitted and unrestricted methods retain full/SR passes.
   Policy/cache checks run without CUDA; the opt-in GPU check exercises instance/scanner
   isolation, reset and the unchanged fully primitive Coulomb representation.
 - `direct_scf_validation.py`: complete native SCFs and forces through ASE, original-representation
   physical-Fock and same-state force controls, and optional energy finite differences.
   Saves the converged state before derivatives. External saved states are explicitly
   perturbed supplied guesses, not fresh MINAO benchmarks.
+  Timed forces run before representation-changing verification, so their normal
+  SCF exchange optimizer reuse is preserved; reports check derivative operator keys.
 - `gpu4pyscf/dft/mixed_precision.py`: per-instance SCF precision, float64 verification and fallback.
 - `gpu4pyscf/dft/_native_grid_cache.py`: bounded, exact-input reuse of the last
   native ordinary integration during VV10-only verification. SCF calls still compute;

@@ -32,6 +32,13 @@ Set the flag to `False` for an original-representation control. After changing
 the underlying method in an existing ASE calculator, call `calc.reset()` to
 invalidate ASE's stored properties.
 
+Qualified ground-state forces evaluate exchange as `hyb * full + (alpha-hyb) * LR`,
+using the functional's short-range fraction `hyb` and long-range fraction `alpha`.
+This equivalent decomposition uses fewer quadrature roots than the original
+full/SR derivative passes, and its LR optimizer can reuse the SCF exchange cache.
+Other methods retain their original force decomposition. Screening thresholds,
+precision, density and grid response are unchanged.
+
 The precision option is independent: regrouping does not introduce float32
 exchange. Qualification passes complete float64 SCF and physical-Fock checks
 on five mixed-element organics and a 681-orbital development case, full forces

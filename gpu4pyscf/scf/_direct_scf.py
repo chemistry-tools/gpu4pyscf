@@ -9,7 +9,7 @@ _REGROUPED_ELEMENTS = frozenset((1, 6, 7, 8, 9, 16, 17))
 
 def primitive_cutoff(mf, *, device_count, capability, mol=None):
     """Keep unqualified recipes and explicit controls on the original representation."""
-    enabled = mf.direct_scf_regroup
+    enabled = getattr(mf, 'direct_scf_regroup', False)
     if type(enabled) is not bool:
         raise ValueError('direct_scf_regroup must be bool')
     if mol is None:
@@ -17,7 +17,7 @@ def primitive_cutoff(mf, *, device_count, capability, mol=None):
     xc = getattr(mf, 'xc', None)
     basis = mol.basis
     if (
-        not enabled or device_count != 1 or capability != (8, 6)
+        not enabled or device_count != 1 or capability != (8, 6) or hasattr(mf, 'cell')
         or not mf.istype('RKS') or getattr(mf, 'with_df', None) is not None
         or mol.cart or mol.spin != 0
         or not isinstance(xc, str) or xc.lower().replace('_', '-') != 'wb97m-v'
@@ -27,6 +27,17 @@ def primitive_cutoff(mf, *, device_count, capability, mol=None):
     ):
         return NATIVE_PRIMITIVE_CUTOFF
     return REGROUPED_PRIMITIVE_CUTOFF
+
+
+def force_exchange(mf, omega, alpha, hyb, *, device_count, capability, mol=None):
+    """Return full and remainder exchange weights for the native gradient passes."""
+    if omega == 0:
+        return hyb, 0., 0.
+    if primitive_cutoff(mf, device_count=device_count, capability=capability, mol=mol) == REGROUPED_PRIMITIVE_CUTOFF:
+        # hyb*full + (alpha-hyb)*LR avoids the doubled roots of the SR pass.
+        # Keep the original split on unqualified methods and devices.
+        return hyb, omega, alpha-hyb
+    return alpha, -omega, hyb-alpha
 
 
 def get_optimizer(mf, mol, omega, *, optimizer_type, device_count, capability):

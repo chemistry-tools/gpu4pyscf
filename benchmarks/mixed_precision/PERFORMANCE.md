@@ -1286,6 +1286,9 @@ inputs, source/native identities, resources, matrix agreement and timing scope.
 
 ## Per-instance direct regrouping: complete SCF and forces
 
+These initial integration measurements predate the full/LR derivative dispatch
+described in the next section.
+
 The integrated `direct_scf_regroup=True` control replaces the prototype patch
 with an instance-owned RYS representation shared by SCF and ground-state analytic
 forces. It retains the original primitive MD Coulomb path. The original grouping
@@ -1362,3 +1365,50 @@ The local `direct-scf-regroup-20261027/assessment.json` checks matching inputs,
 source/native identities, resources, convergence criteria and numerical errors
 for all six pairs before accepting the timings. Tested integration source files
 match commit `4ece6e8` exactly.
+
+## Full/LR direct derivative passes
+
+A fresh profile of the qualified regrouped installation at the retained
+681-orbital state reproduces the earlier complete-force timing: 134.26 seconds,
+with a `2.92e-13` Hartree/Bohr difference from the retained force array.
+Ordinary full grid response takes 3.45 seconds, VV10 full response 15.40 seconds,
+full-range J/K derivatives 42.87 seconds, and short-range exchange derivatives
+72.15 seconds. Direct J/K therefore accounts for 85.7% of complete-force time.
+The largest derivative angular families are `(fp|dp)`, `(dp|dp)` and `(fd|dp)`.
+Their native quadrature and density contraction, rather than Python logging,
+are the next measured bottleneck.
+
+The original force decomposition is `alpha*full + (hyb-alpha)*SR`. The equivalent
+`hyb*full + (alpha-hyb)*LR` avoids the doubled quadrature roots used by the native
+SR kernels. It also permits reuse of the SCF's LR optimizer. The same opt-in
+qualification that selects conservative primitive regrouping now selects this
+force decomposition. Unqualified methods, fitted methods, unrestricted methods
+and other devices preserve their original split. The default remains `False`.
+
+Initial component probes use identical retained converged densities and native
+float64 derivatives, with all three operator caches prepared before timing.
+Each row is one original/candidate pair under the shared GPU 1/four-CPU locks;
+grid response, VV10 and SCF are outside these component times.
+
+| Case | Full/SR J/K force component, s | Full/LR component, s | Time reduction |
+| --- | ---: | ---: | ---: |
+| Acetyl fluoride | 5.394 | 3.685 | 31.7% |
+| Acetamide | 6.196 | 4.235 | 31.7% |
+| Pyridine | 13.793 | 9.369 | 32.1% |
+| Dimethyl sulfoxide | 16.107 | 11.164 | 30.7% |
+| Acetyl chloride | 14.003 | 9.660 | 31.0% |
+| Larger organic, 681 orbitals | 115.478 | 81.450 | 29.5% |
+
+The largest component difference is `4.78e-10` Hartree/Bohr, below the unchanged
+`2e-8` threshold. The larger full-range pass remains approximately 43 seconds
+on both sides; its remainder drops from 72.32 to 38.12 seconds. These probes
+establish a component gain, not a complete-call speedup. Full SCF/ASE, complete-force
+and finite-difference qualification runs separately before accepting that claim.
+
+The first profile wrapper had a script-name collision with the standard library
+and was stopped before producing accepted results. Its evidence remains in `v1`;
+the corrected profile is `direct-jk-next-20261028-v2`, and the six component probes
+are in `direct-jk-next-20261028-v3`, under `/scratch/failip/gpu4pyscf-benchmarks/`.
+The native libraries remain unchanged. CPU policy/algebra checks pass 54 tests
+with 19 opt-in CUDA tests skipped locally. The matching GPU installation passes
+40 focused policy/cache checks, including its real CUDA isolation case.
