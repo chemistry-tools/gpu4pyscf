@@ -1502,3 +1502,31 @@ ABI-extension prototype, not an integrated production change or a full-force
 timing claim. It is retained for the subsequent primitive-factor contraction
 experiment. Completed raw evidence is under `direct-jk-next-20261028-v5`,
 `v7` and `v8`; the invalid `v6` attempt and its diagnostic are also preserved.
+
+The subsequent `v9` prototype also pulls primitive exponents and center offsets
+outside the Cartesian/Rys-root contraction. It first sums raising/lowering
+terms and the base integral, then applies the constant factors for that primitive
+pair. Fourth-center reconstruction remains after contraction. Original layouts,
+worker counts, screening and float64 arithmetic are retained. The generic kernel
+uses 160 registers with no spills.
+
+| J/K force component | Original median, s | Contracted-factor median, s | Time reduction |
+| --- | ---: | ---: | ---: |
+| Acetyl fluoride | 3.599 | 2.966 | 17.6% |
+| Acetamide | 4.249 | 3.511 | 17.4% |
+| Pyridine | 9.398 | 7.732 | 17.7% |
+| Dimethyl sulfoxide | 11.187 | 9.492 | 15.1% |
+| Acetyl chloride | 9.680 | 8.183 | 15.5% |
+| Larger organic, 681 orbitals | 80.666 | 67.485 | 16.3% |
+
+Each mode has two mirrored-order samples. The independent component assessment
+also compares every array with the earlier separate-library full/LR control,
+requiring the identical saved-state and geometry-report hashes and four-CPU
+affinity. All six cases pass; the maximum difference from that independent
+control is `2.28e-13` Hartree/Bohr. Runtime scheme counters confirm unchanged
+layouts. The original kernel/API are preserved within the prototype library.
+This is the selected arithmetic candidate for production integration; complete
+SCF/force qualification and whole-force timings are still required for it.
+The raw evidence and `assessment-numeric.json` are retained in
+`direct-jk-next-20261028-v9`. No native arithmetic change has yet been enabled
+in the library by these component experiments.
