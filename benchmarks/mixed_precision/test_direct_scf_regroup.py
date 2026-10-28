@@ -58,6 +58,88 @@ def test_qualified_recipe_and_explicit_native_control():
     assert _cutoff(mf) == .3
 
 
+@pytest.mark.parametrize('basis', ['6-31g*', '6-31G(d)'])
+@pytest.mark.parametrize('xc', [
+    'B3LYP',
+    '0.2*HF + 0.08*LDA_X + 0.72*GGA_X_B88, 0.81*GGA_C_LYP + 0.19*LDA_C_VWN_RPA',
+])
+def test_cartesian_b3lyp_recipe_and_opt_out(basis, xc):
+    mf = _method()
+    mf.mol.basis, mf.mol.cart, mf.xc = basis, True, xc
+    assert _cutoff(mf) == 10.
+    mf.direct_scf_regroup = False
+    assert _cutoff(mf) == .3
+
+
+@pytest.mark.parametrize('field,value', [
+    ('cart', False), ('basis', '6-31g**'), ('spin', 1), ('elements', (1, 6, 15)),
+])
+def test_b3lyp_unqualified_molecule_keeps_native(field, value):
+    mf = _method()
+    mf.mol.basis, mf.mol.cart, mf.xc = '6-31g*', True, 'b3lyp'
+    setattr(mf.mol, field, value)
+    assert _cutoff(mf) == .3
+
+
+@pytest.mark.skipif(os.environ.get('DFT_GPU_TEST') != '1', reason='opt-in CUDA test')
+@pytest.mark.parametrize('name', ['CH3CONH2', 'C5H5N', 'C2H6SO', 'CH3COF', 'CH3COCl'])
+def test_cartesian_b3lyp_full_scf_forces_and_cpu_jk(name):
+    import cupy as cp
+    import numpy as np
+    from ase.build import molecule
+    from pyscf import gto, scf
+
+    from gpu4pyscf import dft
+    from gpu4pyscf.dft.mixed_precision import _full_check
+
+    atoms = molecule(name)
+    mol = gto.M(atom=list(zip(atoms.get_chemical_symbols(), atoms.positions)),
+                basis='6-31g*', cart=True, verbose=0)
+    xc = '0.2*HF+0.08*LDA_X+0.72*GGA_X_B88,0.81*GGA_C_LYP+0.19*LDA_C_VWN_RPA'
+
+    def method(molecule):
+        mf = dft.RKS(molecule, xc=xc)
+        mf.direct_scf_regroup, mf.direct_scf_tol = True, 1e-13
+        mf.conv_tol, mf.conv_tol_grad, mf.grids.level = 1e-10, 1e-6, 1
+        return mf
+
+    mf = method(mol)
+    energy = mf.kernel()
+    assert mf.converged
+    assert {opt.diffuse_cutoff for opt in mf._opt_gpu.values() if opt is not None} == {10.}
+    dm = mf.make_rdm1()
+    # Exercise the bounded cache on both a physical density and a signed update.
+    mf.direct_scf_cache_bytes = 32*1024**2
+    for density in (dm, .001*dm):
+        actual = mf.get_j(mol, density, hermi=1), mf.get_k(mol, density, hermi=1)
+        expected = scf.hf.get_jk(mol, cp.asnumpy(density), hermi=1)
+        for candidate, reference in zip(actual, expected):
+            cp.testing.assert_allclose(candidate, reference, atol=2e-9, rtol=2e-10)
+    cache = mf._opt_gpu[0.]._integral_cache.statistics()
+    assert cache['hits'] > 0
+    grad = mf.Gradients()
+    grad.grid_response = True
+    accelerated = np.asarray(grad.kernel())
+    mf.direct_scf_regroup = False
+    assert _full_check(mf, energy)['passed']
+    reference = np.asarray(grad.kernel())
+    np.testing.assert_allclose(accelerated, reference, atol=2e-8, rtol=0)
+
+    if name == 'CH3COF':
+        atom, axis = np.unravel_index(np.abs(accelerated).argmax(), accelerated.shape)
+        step, energies = 1e-4, []
+        for sign in (-1, 1):
+            coordinates = mol.atom_coords().copy()
+            coordinates[atom, axis] += sign*step
+            displaced = mol.set_geom_(coordinates, unit='Bohr', inplace=False)
+            current = method(displaced)
+            current.conv_tol, current.conv_tol_grad = 1e-12, 1e-7
+            energies.append(current.kernel(dm0=dm))
+            assert current.converged
+        finite_difference = (energies[1]-energies[0])/(2*step)
+        assert abs(finite_difference-accelerated[atom, axis]) < 2e-6
+
+
 @pytest.mark.parametrize('field, value', [
     ('xc', 'b3lyp'), ('xc', lambda: None), ('with_df', object()),
     ('istype', lambda name: name == 'UKS'),

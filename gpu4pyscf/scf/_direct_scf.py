@@ -7,6 +7,7 @@ import hashlib
 NATIVE_PRIMITIVE_CUTOFF = .3
 REGROUPED_PRIMITIVE_CUTOFF = 10.
 _REGROUPED_ELEMENTS = frozenset((1, 6, 7, 8, 9, 16, 17))
+_B3LYP_VWN_RPA = '0.2*hf+0.08*lda-x+0.72*gga-x-b88,0.81*gga-c-lyp+0.19*lda-c-vwn-rpa'
 
 
 def primitive_cutoff(mf, *, device_count, capability, mol=None):
@@ -21,14 +22,18 @@ def primitive_cutoff(mf, *, device_count, capability, mol=None):
     if (
         not enabled or device_count != 1 or capability != (8, 6) or hasattr(mf, 'cell')
         or not mf.istype('RKS') or getattr(mf, 'with_df', None) is not None
-        or mol.cart or mol.spin != 0
-        or not isinstance(xc, str) or xc.lower().replace('_', '-') != 'wb97m-v'
-        or not isinstance(basis, str) or basis.lower().replace('-', '') != 'def2tzvpd'
+        or mol.spin != 0 or not isinstance(xc, str) or not isinstance(basis, str)
         or not all(z in _REGROUPED_ELEMENTS for z in mol.atom_charges())
         or any(cls.__module__.endswith('_lowmem') for cls in type(mf).__mro__)
     ):
         return NATIVE_PRIMITIVE_CUTOFF
-    return REGROUPED_PRIMITIVE_CUTOFF
+    xc = ''.join(xc.lower().replace('_', '-').split())
+    basis = ''.join(basis.lower().replace('-', '').split())
+    qualified = (
+        not mol.cart and xc == 'wb97m-v' and basis == 'def2tzvpd'
+        or mol.cart and xc in ('b3lyp', _B3LYP_VWN_RPA) and basis in ('631g*', '631g(d)')
+    )
+    return REGROUPED_PRIMITIVE_CUTOFF if qualified else NATIVE_PRIMITIVE_CUTOFF
 
 
 def force_exchange(mf, omega, alpha, hyb, *, device_count, capability, mol=None):

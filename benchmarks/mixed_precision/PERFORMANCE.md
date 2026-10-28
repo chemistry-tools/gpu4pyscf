@@ -1936,3 +1936,54 @@ reports, saved states, numerical assessment and GPU logs are in
 Earlier failed API/test assumptions remain in `initial-density-20261028-v1` and
 `v2`. The earlier four-field MGGA product prototype is not integrated by this
 change. No held-out validation data or native libraries were changed.
+
+## Cartesian B3LYP direct-integral qualification
+
+The opt-in direct regrouping now also supports restricted Cartesian B3LYP/6-31G*.
+It shares the existing owner-qualified native force entrypoint and bounded/full-VRAM
+cache controls; no new integral approximation or native binary is introduced.
+The production default remains disabled. The functional guard accepts `b3lyp` or
+the explicit VWN-RPA expression used in the B3LYP comparisons above.
+
+On the retained 72-atom, 846-orbital circumcoronene development geometry, fresh
+float64 SCFs use the same TC-style grid (438,780 physical points), MINAO guess,
+`1e-8` Hartree energy and `1e-5` orbital-gradient thresholds. Both representations
+use `direct_scf_tol=1e-13`, physical GPU 1 (RTX 3080, 260 W), four CPUs and the shared
+benchmark locks. These are single sequential measurements, including setup and
+full grid-response forces. Independent original-representation Fock and force
+controls run outside the timed call.
+
+| Direct representation | SCF and setup, s | Full forces, s | Total, s |
+| --- | ---: | ---: | ---: |
+| Original | 146.71 | 37.54 | 184.25 |
+| Regrouped, contracted native forces | 89.41 | 21.08 | 110.48 |
+
+Both take 13 SCF iterations. The total reduction is 40.04%; forces improve by
+43.86%. The separately converged energies differ by `5.46e-11` Hartree. At the
+same accepted density, the complete original/regrouped gradients differ by at
+most `2.60e-9` Hartree/Bohr. Both states pass rebuilt original-representation
+float64 energy and orbital-gradient checks. Each direct process peaks near
+1.06 GB host RSS. An earlier `1e-11` screening experiment failed the strict
+physical-Fock energy check and is excluded from accepted timings.
+
+At a fixed retained density, full J/K builds improve from 14.61 to 9.12 seconds;
+a bounded 1 GiB cache gives 8.47-second warm builds after a 9.43-second first call.
+It retains 14 groups in 1,066,272,304 GPU bytes. Cached and uncached matrices agree
+with the original within `5.48e-12` Hartree. These component timings do not yet
+establish a complete cached-SCF speedup.
+
+The existing optimized fitted/mixed path remains faster at 80.56 seconds
+(54.78 SCF/setup/required verification, 25.78 forces). It retains an 8.53 GB
+mapped host fitting tensor. Fitting and direct integrals are different numerical
+approximations: their total energies differ by about `0.005566` Hartree on this
+geometry, so these timings are not interchangeable backend accuracy controls.
+The fitted harness's process RSS includes a second tensor retained during an
+extra diagnostic; it is not a production workflow memory requirement.
+
+Validation adds five complete SCF/force cases covering N/O/S/F/Cl chemistry,
+CPU J/K controls, actual cache hits on full and scaled densities, and an acetyl
+fluoride energy finite difference. All five GPU cases and 76 CPU policy/cache
+checks pass. Existing unqualified methods, devices and basis representations keep
+their original behavior. Evidence and source hashes are outside Git under
+`circumcoronene-current-20261028-v1`; all 548 Python source files in the fitted
+baseline match `0504b8c`.

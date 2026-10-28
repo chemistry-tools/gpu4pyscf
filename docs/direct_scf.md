@@ -7,11 +7,15 @@ reconstructing the same original orbital basis. Integral screening tolerances,
 float64 arithmetic, range separation and the Coulomb engine remain unchanged.
 
 Set `mf.direct_scf_regroup = True` before SCF or constructing an ASE calculator.
-The default is `False`. The qualification guard currently requires native
-restricted singlet ωB97M-V/def2-TZVPD, spherical orbitals, H/C/N/O/F/S/Cl atoms,
-one visible compute-capability 8.6 GPU and no density fitting. Other methods,
-devices, elements, Cartesian bases and low-memory variants keep the original
-representation. This option does not switch between direct and fitted SCF.
+The default is `False`. The qualification guard requires a native restricted
+singlet, H/C/N/O/F/S/Cl atoms, one visible compute-capability 8.6 GPU and no density fitting. Supported
+recipes are spherical ωB97M-V/def2-TZVPD and Cartesian B3LYP/6-31G* (also spelled
+`6-31G(d)`). B3LYP accepts the `b3lyp` alias or the explicit VWN-RPA expression
+used in the comparison harness. Other recipes, devices, elements and low-memory
+variants keep the original representation. This option does not switch between
+direct and fitted SCF. Use native
+`direct_scf_tol=1e-13` for the strict B3LYP comparison; `1e-11` failed the
+`1e-8` Hartree physical-Fock verification on the large development molecule.
 
 ```python
 from gpu4pyscf import dft

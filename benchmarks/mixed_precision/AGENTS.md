@@ -33,6 +33,8 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
   density layouts and streams retain the native path as described in the guide.
 - `gpu4pyscf/scf/_direct_scf.py`, `test_direct_scf_regroup.py`: conservative, opt-in
   primitive regrouping for qualified native direct RKS, shared with ground-state forces.
+  Qualification covers spherical ωB97M-V/def2-TZVPD and Cartesian B3LYP/6-31G*;
+  the latter has complete mixed-element SCF, CPU J/K, cache, force and finite-difference checks.
   The same qualification selects full/LR derivative passes to avoid doubled SR roots;
   a matching native build contracts primitive factors outside the Cartesian/root
   force sum. The optimizer carries its owner qualification; older libraries and
