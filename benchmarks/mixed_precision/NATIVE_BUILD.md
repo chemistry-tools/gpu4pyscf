@@ -52,6 +52,8 @@ solvent support, CUTLASS and the other fork libraries remain enabled. `BUILD_MAR
 stays disabled because that upstream option also enables global fast math; the explicit
 host flags above preserve the existing floating-point rules. `86-real` wheels target
 compute capability 8.6 and must be rebuilt for a different GPU architecture.
+The RYS target explicitly requires CUDA C++17 for its contracted-force template;
+the qualified compiler commands use `-std=c++17`.
 
 ## Check the installed package
 

@@ -1539,5 +1539,56 @@ libraries use the original kernel. The library default remains `False`.
 The isolated matching RYS build passes 46 focused policy/CUDA tests, including
 actual new-entrypoint execution, original-kernel controls and missing-symbol fallback.
 The compiler reports 128/160 registers for the original/contracted generic kernels,
-with no spills. Full SCF/force, finite-difference and complete-force timing
-qualification is still in progress; component timings above do not establish it.
+with no spills. The numerical integration at `f76c074` now passes complete
+qualification; the RYS target also explicitly requires the tested CUDA C++17
+standard at `50ab50c`.
+
+All six fresh SCFs converge with unchanged cycle counts. The small cases use
+MINAO through ASE and reuse the accepted SCF for forces; the larger case uses
+the same explicitly perturbed supplied density as the prior qualification.
+Every force call records the contracted native entrypoint for both full and LR
+passes, preserves full VV10/grid response, and is checked against complete
+original-representation forces and an independently rebuilt physical Fock.
+
+| Case | SCF cycles | Fresh SCF, s | Complete forces, s | Complete call, s |
+| --- | ---: | ---: | ---: | ---: |
+| Acetyl fluoride | 10 | 26.49 | 4.77 | 31.27 |
+| Acetamide | 10 | 33.91 | 5.96 | 39.87 |
+| Pyridine | 10 | 57.16 | 11.20 | 68.36 |
+| Dimethyl sulfoxide | 9 | 53.34 | 12.59 | 65.93 |
+| Acetyl chloride | 10 | 45.63 | 10.24 | 55.87 |
+| Larger organic, 681 orbitals | 4 | 142.22 | 86.65 | 228.86 |
+
+These are separate fresh processes. The previous 243.45-second larger call is
+historical context, not an interleaved whole-call comparison. This arithmetic
+change targets forces; it does not accelerate SCF iterations. The largest
+same-state force difference against the original grouping is `1.60e-9`
+Hartree/Bohr, below the unchanged `2e-8` bound. Independently converged energies
+agree with the original grouping within `6.51e-10` Hartree. The acetyl fluoride
+energy finite difference passes with a `1.46e-6` Hartree/Bohr error at the
+unchanged `3e-6` tolerance.
+
+Complete-force timings at one retained larger state use a separate prior native
+library as the control, with the current Python/grid paths and prepared optimizer
+caches on both sides. Original/contracted/contracted/original times are 100.682,
+86.584, 86.555 and 100.393 seconds. The two-sample medians are **100.537 versus
+86.570 seconds**, a **13.9% reduction in complete-force time**. Every array
+agrees with the retained prior force within `2.07e-13` Hartree/Bohr. The rebuilt
+original entrypoint takes 100.408 seconds and also agrees, checking that the
+native rebuild itself did not produce the gain. Timings remain sequential on
+physical GPU 1 with CPUs 4–7 and both shared locks.
+
+Six existing native RKS/UKS regressions pass, covering global hybrids, range
+separation, nonlocal correlation, full grid response and Cartesian/open-shell
+fallbacks. The isolated RYS rebuild compiles the changed CUDA source and
+device-links/relinks it with matching unchanged native objects. A final audit
+checks all 545 runtime Python sources and 12 native libraries: only
+`libgvhf_rys.so` changes, and the shared sources/native objects remain intact.
+This validates the integrated arithmetic against that matching installation;
+it is not a new from-scratch build of every native library.
+
+Raw states, force arrays, traces, build commands/logs, source audits and the
+independent complete assessment are retained under
+`/scratch/failip/gpu4pyscf-benchmarks/direct-jk-next-20261028-v10`.
+The library default remains `direct_scf_regroup=False`; this qualification
+does not extend the method/device/element guard or establish Hessian/TS accuracy.
