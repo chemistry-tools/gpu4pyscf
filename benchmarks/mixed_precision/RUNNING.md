@@ -123,6 +123,23 @@ matrices; algebraic equivalence does not guarantee identical numerical stability
 More aggressive grouping failed the strict reconstruction check in the initial
 panel and must not be selected from its timing alone.
 
+Add `--screening-source /path/to/matching/gpu4pyscf/lib/gvhf-rys` to a saved-state
+direct `--regroup` run for rejection counts and native angular-family timings.
+This requires the complete NVCC toolchain described in [NATIVE_BUILD.md](NATIVE_BUILD.md).
+The diagnostic reads the production queue helpers from that source directory and
+records their hashes. The source must match the native installation. Counts cover
+combined exchange at the full density and a nonzero diagnostic density difference,
+plus the full/LR J/K force passes. They exclude MD Coulomb-energy screening.
+Symmetry, coarse-bound and block-density stages are counted after the existing
+spatial/pair preselection. Every current-cutoff survivor count must agree with the
+native queue helper. Counting runs outside the kernel timing samples, and the
+instrumented/uninstrumented native results must agree.
+
+Higher-cutoff counts are hypothetical: all timed integral calls keep `1e-13`,
+the same density and float64 arithmetic. A count reduction is neither a measured
+speedup nor a bound on the energy/force error. Run the focused CUDA counter checks
+with `DFT_GPU_TEST=1` and `DFT_SCREEN_NATIVE_SOURCE` set to the same source directory.
+
 `direct_scf_validation.py` checks complete SCF and forces at the same pinned
 functional/basis, without density fitting. Run the original and regrouped cases
 sequentially in fresh processes:

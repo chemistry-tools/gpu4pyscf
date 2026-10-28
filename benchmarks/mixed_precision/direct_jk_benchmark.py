@@ -32,12 +32,17 @@ def main():
     parser.add_argument('--exchange', choices=('combined', 'split'), default='combined')
     parser.add_argument('--profile', action='store_true')
     parser.add_argument('--regroup', action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument('--screening-source', type=Path,
+                        help='Diagnose screening using the matching native gvhf-rys source directory')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if args.repeats < 1 or args.geometry_report is None and args.state is not None:
         parser.error('Positive repeats and matching metadata for external states are required')
     if args.regroup is not None and args.backend != 'direct':
         parser.error('Regrouping controls are supported only for direct J/K')
+    if args.screening_source and (args.backend != 'direct' or args.regroup is not True
+                                  or args.state is None or args.exchange != 'combined'):
+        parser.error('Screening diagnostics require direct combined exchange, --regroup and a saved state')
     _resources([int(x) for x in args.cpus.split(',')])
     if os.environ.get('CUDA_VISIBLE_DEVICES') != '1':
         raise RuntimeError('Use physical GPU 1')
@@ -95,6 +100,24 @@ def main():
     else:
         density = mf.get_init_guess(mol, '1e')
     omega, alpha, hyb = mf._numint.rsh_and_hybrid_coeff(mf.xc, spin=mol.spin)
+    if args.screening_source:
+        from direct_screening import profile_screening
+        diagnostic = profile_screening(mf, density, args.screening_source, args.output)
+        report = {'case': args.case, 'nao': mol.nao, 'basis': mol.basis, 'functional': mf.xc,
+                  'geometry_angstrom': atom, 'charge': charge, 'multiplicity': multiplicity,
+                  'direct_scf_tol': mf.direct_scf_tol, 'direct_scf_regroup': mf.direct_scf_regroup,
+                  'state_sha256': _hash(args.state), 'geometry_report_sha256': _hash(args.geometry_report),
+                  'protocol_sha256': protocol_hash, 'cpu_affinity': sorted(os.sched_getaffinity(0)),
+                  'threadpools': threadpool_info(), 'gpu_pci': cp.cuda.Device().pci_bus_id,
+                  'imported_package': str(package),
+                  'native_library_sha256': {p.name: _hash(p) for p in package.glob('lib/*.so')},
+                  'source_sha256': {name: _hash(package/name) for name in
+                                    ('scf/jk.py', 'scf/_direct_scf.py', 'grad/rhf.py', 'grad/rks.py')},
+                  'benchmark_sha256': _hash(__file__),
+                  'screening_module_sha256': _hash(Path(__file__).with_name('direct_screening.py')),
+                  **diagnostic}
+        (args.output/'report.json').write_text(json.dumps(report, indent=2)+'\n')
+        return
     samples = []
 
     def build(dm, label):

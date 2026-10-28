@@ -13,13 +13,20 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
   full/LR passes are optional diagnostics. `--regroup`/`--no-regroup` use the library's
   per-instance exchange representation control. Fixed-density timings do not establish
   a complete SCF/force speedup.
+- `direct_screening.py`, `test_direct_screening.py`: optional fixed-density screening
+  diagnostics through `direct_jk_benchmark.py --screening-source`. CUDA counters replay
+  RYS exchange and full/LR force predicates and check survivors against the actual
+  source queue helpers. Native angular-family timings run separately. Hypothetical
+  looser-cutoff counts do not change integral calculations or establish speed/error
+  bounds. The NVCC diagnostic requires matching `create_tasks.cu` and `vhf.cuh`;
+  it does not replace native libraries or cover the MD Coulomb-energy screen.
 - `gpu4pyscf/scf/_direct_scf.py`, `test_direct_scf_regroup.py`: conservative, opt-in
   primitive regrouping for qualified native direct RKS, shared with ground-state forces.
   The same qualification selects full/LR derivative passes to avoid doubled SR roots;
   a matching native build contracts primitive factors outside the Cartesian/root
   force sum. The optimizer carries its owner qualification; older libraries and
   unqualified optimizers retain the original entrypoint.
-  unqualified, fitted and unrestricted methods retain full/SR passes.
+  Unqualified, fitted and unrestricted methods retain full/SR passes.
   Policy/cache checks run without CUDA; the opt-in GPU check exercises instance/scanner
   isolation, reset and the unchanged fully primitive Coulomb representation.
 - `direct_scf_validation.py`: complete native SCFs and forces through ASE, original-representation
