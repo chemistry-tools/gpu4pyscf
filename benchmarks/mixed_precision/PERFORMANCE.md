@@ -1592,3 +1592,81 @@ independent complete assessment are retained under
 `/scratch/failip/gpu4pyscf-benchmarks/direct-jk-next-20261028-v10`.
 The library default remains `direct_scf_regroup=False`; this qualification
 does not extend the method/device/element guard or establish Hessian/TS accuracy.
+
+## Direct screening: retained work and angular-family cost
+
+The `7308111` diagnostic measures the qualified native installation above without
+changing its integral arithmetic, density or `1e-13` screening cutoff. It uses
+the same six public development geometries and saved converged orbital states.
+The density-difference case is the explicit `0.001 * (MINAO - saved density)`
+proxy, rather than an observed late-SCF iteration. No fresh SCF is timed here.
+All jobs run sequentially on physical GPU 1, CPUs 4–7, under both shared locks.
+
+CUDA stage counters run separately from the native timing samples. At every
+current-cutoff angular group, the replay's survivor count must equal a separate
+invocation of the unmodified production queue helper compiled from matching
+`create_tasks.cu`/`vhf.cuh`. All **11,304** group comparisons across the six cases
+agree. Eight focused CPU/CUDA checks pass, including strict threshold comparisons,
+partial thread blocks and queues crossing their chunk boundary. Instrumented
+and uninstrumented native matrices/force components agree within `1.95e-13`.
+These are diagnostic counters; they do not replace any installed native library.
+
+Counts below cover RYS exchange and full/LR J/K force passes. They exclude the
+MD Coulomb-energy screen, DFT grids and VV10. Counts are internal shell quartets,
+not AO integrals, primitive integrals or a total-error bound. The initial pair
+preselection already applies spatial-overlap and pair-bound filtering.
+
+The 681-AO organic has 345 internal shells and 59,685 possible symmetric shell
+pairs. Preselection retains 40,641 pairs for combined exchange/LR and 41,015 for
+the full force pass. The quartet symmetry counts independently reconstruct
+`n_pairs * (n_pairs + 1) / 2` for every operator. After this initial preselection:
+
+| Larger-case pass | Symmetry candidates, million | Coarse-bound survivors, million | Density survivors, million | Later rejection | Native kernels, s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Combined exchange, full density | 825.87 | 707.69 | 605.08 | 26.7% | 12.24 |
+| Combined exchange, density difference | 825.87 | 574.92 | 442.74 | 46.4% | 9.58 |
+| Full J/K forces | 841.14 | 714.86 | 504.53 | 40.0% | 35.53 |
+| LR exchange forces | 825.87 | 686.58 | 435.31 | 47.3% | 31.40 |
+
+Including initial pair preselection, the full-density exchange keeps 605.08
+million of the 1,781.18 million possible internal quartet combinations: **66.0%
+are screened out**. The corresponding total rejection is 75.1% for the density
+difference, 71.7% for full forces and 75.6% for LR forces. These count reductions
+do not directly measure saved FLOPs or runtime, because groups differ in angular
+momentum and primitive count. The small cases reject 7.1–9.8% of the preselected
+full-density exchange panel and 16.8–22.0% of their density-difference panel.
+The basic Schwarz/density screening machinery is therefore present and active;
+this does not establish parity with TeraChem's implementation or granularity.
+
+Groups containing an f function account for **46.9%** of full-density exchange
+kernel time, **56.4%** of full-force kernel time and **55.6%** of LR-force time.
+The largest aggregated force families remain `(fp|dp)`, `(dp|dp)` and `(fd|dp)`;
+their full-plus-LR times are respectively 3.40, 3.16 and 3.02 seconds. Significant
+cost remains in the surviving d/f work even after screening.
+
+The counter also evaluates hypothetical larger cutoffs without applying them to
+the timed integrals. Weighting survivors by primitive products, Cartesian products
+and Rys-root counts gives this approximate work reduction relative to `1e-13`:
+
+| Larger-case pass | Hypothetical `1e-12` | Hypothetical `1e-11` |
+| --- | ---: | ---: |
+| Full-density exchange | 7.4% | 15.5% |
+| Density-difference exchange | 12.7% | 26.5% |
+| Full J/K forces | 10.8% | 22.4% |
+| LR exchange forces | 14.4% | 30.1% |
+
+These are work proxies, **not measured speedups or validated energy/force
+errors**. Generic/unrolled kernels, recurrence setup, padding and screening
+overhead need not scale linearly with that proxy. A cutoff experiment must
+measure actual time and pass original-cutoff energy, orbital-gradient and full
+force controls before acceptance. The current default and cutoff remain unchanged.
+
+The independent assessment verifies recipe, geometry/state hashes, matching
+production Python/native identities, four-CPU limits, count identities and every
+native-helper comparison. All 545 runtime Python sources and 12 native libraries
+remain unchanged after the runs. Raw outputs, scripts and `assessment.json` are
+retained in `/scratch/failip/gpu4pyscf-benchmarks/direct-screening-20261028-v2`.
+The `v1` counter build failed because NVRTC lacked host C headers; it produced no
+accepted profiles and is retained. The corrected diagnostic uses the complete
+matching NVCC toolchain. Local focused checks pass 62 tests with 25 CUDA cases
+skipped; the designated-host counter suite passes all eight tests.
