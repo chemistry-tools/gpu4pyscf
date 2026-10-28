@@ -119,11 +119,11 @@ class PySCF(Calculator):
                               'dipole', 'magmom']
 
     default_parameters = {'precision': 'auto', 'grid_response': None,
-                          'auxbasis_response': None}
+                          'auxbasis_response': None, 'nlc_force_reuse': True}
 
     def __init__(self, restart=None, label='PySCF', atoms=None, directory='.',
                  method=None, precision='auto', grid_response=None,
-                 auxbasis_response=None, **kwargs):
+                 auxbasis_response=None, nlc_force_reuse=True, **kwargs):
         """Construct PySCF-calculator object.
 
         Parameters
@@ -145,10 +145,14 @@ class PySCF(Calculator):
             Explicit gradient grid response; None retains the method's default.
         auxbasis_response: bool or None
             Explicit gradient auxiliary basis response; None retains its default.
+        nlc_force_reuse: bool
+            Reuse verified float64 VV10 fields for an explicitly requested full
+            grid-response force at the same state. Default is True.
         """
         Calculator.__init__(self, restart, label=label, atoms=atoms,
                             directory=directory, precision=precision,
                             grid_response=grid_response, auxbasis_response=auxbasis_response,
+                            nlc_force_reuse=nlc_force_reuse,
                             **kwargs)
 
         if not isinstance(method, lib.StreamObject):
@@ -179,6 +183,8 @@ class PySCF(Calculator):
         for name in ('grid_response', 'auxbasis_response'):
             if name in kwargs and kwargs[name] is not None and type(kwargs[name]) is not bool:
                 raise ValueError(f'{name} must be bool or None')
+        if 'nlc_force_reuse' in kwargs and type(kwargs['nlc_force_reuse']) is not bool:
+            raise ValueError('nlc_force_reuse must be bool')
         changed_parameters = Calculator.set(self, **kwargs)
         if changed_parameters:
             self.reset()
@@ -266,7 +272,10 @@ class PySCF(Calculator):
             if precision in ('mixed', 'vv10'):
                 from gpu4pyscf.dft.mixed_precision import run_verified_scf
                 try:
-                    e_tot = run_verified_scf(base_method, evaluate, precision=precision)
+                    e_tot = run_verified_scf(
+                        base_method, evaluate, precision=precision,
+                        with_forces=(with_grad and self.parameters.grid_response is True
+                                     and self.parameters.nlc_force_reuse))
                 finally:
                     self.precision_info = getattr(base_method, 'mixed_precision_info', None)
             else:

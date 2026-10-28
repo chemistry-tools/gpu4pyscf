@@ -89,6 +89,25 @@ class _Exchange:
         self.projection_float32 = False
 
 
+class _ForceReuseStub:
+    def __init__(self, ni):
+        self.capture = False
+        self.retained = False
+        self.statistics = {}
+
+    def clear(self):
+        self.retained = False
+
+    @contextmanager
+    def verification(self):
+        self.clear()
+        self.capture = True
+        try:
+            yield
+        finally:
+            self.capture = False
+
+
 def test_verified_energy_updates_method_and_restores_callback(precision, monkeypatch):
     module, grid, vv10 = precision
     mf = _MeanField()
@@ -125,6 +144,45 @@ def test_failed_verification_restarts_density_with_remaining_budget(precision, m
     assert not vv10.use_float32
     assert mf.mixed_precision_info['fallback_scf']
     assert [row['phase'] for row in mf.mixed_precision_info['cycles']] == ['mixed'] * 3 + ['float64'] * 3
+
+
+@pytest.mark.parametrize('recover', [False, True])
+def test_force_fields_are_captured_only_during_verification(precision, monkeypatch, recover):
+    module, _, _ = precision
+    mf = _MeanField()
+    mf._numint = SimpleNamespace()
+
+    fake = ModuleType('gpu4pyscf.dft._nlc_force_cache')
+    fake._NLCForceReuse = _ForceReuseStub
+    monkeypatch.setitem(sys.modules, fake.__name__, fake)
+    checks = iter([False, True] if recover else [True])
+
+    def check(*args):
+        cache = mf._numint._nlc_force_reuse
+        assert cache.capture
+        cache.retained = True
+        return _check(next(checks))
+
+    kernel = mf.kernel
+
+    def run(*args, **kwargs):
+        cache = mf._numint._nlc_force_reuse
+        assert not cache.capture and not cache.retained
+        return kernel(*args, **kwargs)
+
+    monkeypatch.setattr(module, '_full_check', check)
+    monkeypatch.setattr(mf, 'kernel', run)
+    module.run_verified_scf(mf, with_forces=True)
+    cache = mf._numint._nlc_force_reuse
+    assert cache.retained and not cache.capture
+    assert mf.mixed_precision_info['nlc_force_reuse'] is cache.statistics
+    assert mf.mixed_precision_info['fallback_scf'] == recover
+
+
+def test_force_hint_requires_boolean(precision):
+    module, _, _ = precision
+    with pytest.raises(ValueError, match='with_forces'):
+        module.run_verified_scf(_MeanField(), with_forces=1)
 
 
 def test_float64_failure_stops_and_restores_settings(precision, monkeypatch):
@@ -505,6 +563,9 @@ def ase_calculator(precision, monkeypatch):
         package.__path__ = []
         monkeypatch.setitem(sys.modules, name, package)
     monkeypatch.setitem(sys.modules, 'gpu4pyscf.dft.mixed_precision', module)
+    force_cache = ModuleType('gpu4pyscf.dft._nlc_force_cache')
+    force_cache._NLCForceReuse = _ForceReuseStub
+    monkeypatch.setitem(sys.modules, force_cache.__name__, force_cache)
     interface = _load('ase_interface_under_test', 'gpu4pyscf/tools/ase_interface.py')
 
     class Method(_MeanField, lib.StreamObject):
@@ -542,6 +603,41 @@ def ase_calculator(precision, monkeypatch):
             return Gradient()
 
     return interface.PySCF, Method
+
+
+@pytest.mark.parametrize(('properties', 'response', 'enabled', 'expected'), [
+    (['forces'], True, True, True),
+    (['energy'], True, True, False),
+    (['forces'], False, True, False),
+    (['forces'], None, True, False),
+    (['forces'], True, False, False),
+])
+def test_ase_requests_force_reuse_only_when_needed(
+    ase_calculator, precision, monkeypatch, properties, response, enabled, expected
+):
+    from ase import Atoms
+
+    module, _, _ = precision
+    calculator, method_type = ase_calculator
+    observed = []
+    original = module.run_verified_scf
+
+    def run(*args, **kwargs):
+        observed.append(kwargs['with_forces'])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, 'run_verified_scf', run)
+    atoms = Atoms('H2', positions=[[0, 0, 0], [0, 0, .74]])
+    atoms.calc = calculator(method=method_type(), precision='mixed',
+                            grid_response=response, nlc_force_reuse=enabled)
+    atoms.calc.calculate(atoms, properties=properties)
+    assert observed == [expected]
+
+
+def test_ase_force_reuse_option_requires_boolean(ase_calculator):
+    calculator, method_type = ase_calculator
+    with pytest.raises(ValueError, match='nlc_force_reuse'):
+        calculator(method=method_type(), nlc_force_reuse=1)
 
 
 def test_ase_geometry_changes_verify_each_scf_and_cache_properties(ase_calculator):

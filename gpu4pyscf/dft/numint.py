@@ -339,7 +339,7 @@ def eval_rho4(mol, ao, mo0, mo1, non0tab=None, xctype='LDA', hermi=0,
     t0 = log.timer_debug2('contract rho', *t0)
     return rho
 
-def _vv10nlc(rho_drho, coords, weights, nlc_pars):
+def _vv10nlc(rho_drho, coords, weights, nlc_pars, *, _pair=None):
     kappa_prefactor = nlc_pars[0] * 1.5 * np.pi * (9 * np.pi)**(-1.0/6.0)
     C_in_omega = nlc_pars[1]
     beta = 0.03125 * (3.0 / nlc_pars[0]**2)**0.75
@@ -386,23 +386,26 @@ def _vv10nlc(rho_drho, coords, weights, nlc_pars):
 
     rho_weight_i = rho_i * weights
 
-    U_i = cupy.empty(ngrids)
-    W_i = cupy.empty(ngrids)
-    E_i = cupy.empty(ngrids)
-    stream = cupy.cuda.get_current_stream()
-    err = libgdft.VXC_vv10nlc_fock_eval_UWE(
-        ctypes.cast(stream.ptr, ctypes.c_void_p),
-        ctypes.cast(U_i.data.ptr, ctypes.c_void_p),
-        ctypes.cast(W_i.data.ptr, ctypes.c_void_p),
-        ctypes.cast(E_i.data.ptr, ctypes.c_void_p),
-        ctypes.cast(coords.data.ptr, ctypes.c_void_p),
-        ctypes.cast(rho_weight_i.data.ptr, ctypes.c_void_p),
-        ctypes.cast(omega_i.data.ptr, ctypes.c_void_p),
-        ctypes.cast(kappa_i.data.ptr, ctypes.c_void_p),
-        ctypes.c_int(ngrids),
-    )
-    if err != 0:
-        raise RuntimeError('CUDA Error in vv10 Fock kernel')
+    if _pair is not None:
+        U_i, W_i, E_i = _pair(coords, rho_weight_i, omega_i, kappa_i)
+    else:
+        U_i = cupy.empty(ngrids)
+        W_i = cupy.empty(ngrids)
+        E_i = cupy.empty(ngrids)
+        stream = cupy.cuda.get_current_stream()
+        err = libgdft.VXC_vv10nlc_fock_eval_UWE(
+            ctypes.cast(stream.ptr, ctypes.c_void_p),
+            ctypes.cast(U_i.data.ptr, ctypes.c_void_p),
+            ctypes.cast(W_i.data.ptr, ctypes.c_void_p),
+            ctypes.cast(E_i.data.ptr, ctypes.c_void_p),
+            ctypes.cast(coords.data.ptr, ctypes.c_void_p),
+            ctypes.cast(rho_weight_i.data.ptr, ctypes.c_void_p),
+            ctypes.cast(omega_i.data.ptr, ctypes.c_void_p),
+            ctypes.cast(kappa_i.data.ptr, ctypes.c_void_p),
+            ctypes.c_int(ngrids),
+        )
+        if err != 0:
+            raise RuntimeError('CUDA Error in vv10 Fock kernel')
 
     #output
     exc = cupy.zeros(ngrids_full)
@@ -1682,6 +1685,10 @@ def nr_nlc_vxc(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
     mo_coeff = getattr(dms, 'mo_coeff', None)
     mo_occ = getattr(dms,'mo_occ', None)
 
+    force_reuse = getattr(ni, '_nlc_force_reuse', None)
+    force_inputs = ((mol, grids, xc_code, dms) if force_reuse is not None
+                    and force_reuse.capture and hermi == 1 and relativity == 0 else None)
+
     mol = None
     _sorted_mol = opt._sorted_mol
     nao = _sorted_mol.nao
@@ -1715,7 +1722,9 @@ def nr_nlc_vxc(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
     vxc = 0
     nlc_coefs = ni.nlc_coeff(xc_code)
     for nlc_pars, fac in nlc_coefs:
-        e, v = _vv10nlc(rho, grids.coords, grids.weights, nlc_pars)
+        reused = (force_reuse.potential(*force_inputs, rho, nlc_pars, native=_vv10nlc)
+                  if force_inputs is not None and len(nlc_coefs) == 1 else None)
+        e, v = _vv10nlc(rho, grids.coords, grids.weights, nlc_pars) if reused is None else reused
         exc += e * fac
         vxc += v * fac
     t1 = log.timer_debug1('eval vv on grids', *t1)

@@ -163,6 +163,10 @@ class _AdaptiveVV10:
     def pair_seconds(self):
         return self.coarse.pair_seconds
 
-    def __call__(self, *args):
+    def __call__(self, *args, _pair=None):
+        if _pair is not None and self.use_float32:
+            raise ValueError('Force field reuse requires native float64 VV10')
         self.precisions.append('float32' if self.use_float32 else 'float64')
+        if _pair is not None:
+            return self.original(*args, _pair=_pair)
         return self.coarse(*args) if self.use_float32 else self.original(*args)

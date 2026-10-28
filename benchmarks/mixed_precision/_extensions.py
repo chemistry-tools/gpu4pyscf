@@ -15,7 +15,7 @@ def load_extensions(root, *, ase=False, forces=False):
     """
     hashes = {}
     names = ['dft._mixed_grid', 'dft._mixed_vv10', 'df._int8_gram', 'df._mixed_jk',
-             'dft._native_grid_cache', 'dft.mixed_precision']
+             'dft._native_grid_cache', 'dft._nlc_force_cache', 'dft.mixed_precision']
     if forces:
         names.append('dft._vv10_grad')
     if ase:

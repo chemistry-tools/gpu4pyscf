@@ -56,6 +56,14 @@ or Hessians run. `grid_response` and `auxbasis_response` are optional explicit g
 `calc.calculation_info` separates SCF and force timing. `calc.set(precision="float64")` clears
 cached ASE results before the next calculation.
 
+When a calculation requests forces with explicit `grid_response=True`, verified
+mixed SCF also prepares bounded float64 VV10 fields for that force. Exact state/grid
+guards and native fallback are described in the
+[precision guide](../../docs/mixed_precision.md#direct-scf). This defaults to
+`nlc_force_reuse=True`; pass `False` to disable it. Energy-only calls avoid derivative
+preparation. Request forces first when both energy and forces are needed, then read
+the cached energy with `atoms.get_potential_energy()`.
+
 `calc.precision_info['df_exchange_contraction_calls']` reports float32 and float64
 exchange-product counts. Integral construction, final verification and derivatives
 retain float64; no optimizer restart or extra calculator setting is required.

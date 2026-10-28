@@ -131,7 +131,7 @@ def _select_precision(mf, precision, *, supplied_density=False, scanner=False):
     return precision
 
 
-def run_verified_scf(mf, calculate=None, *, dm0=None, precision='auto'):
+def run_verified_scf(mf, calculate=None, *, dm0=None, precision='auto', with_forces=False):
     """Run mixed SCF, check float64 fields and reconverge at the same geometry if needed.
 
     ``calculate`` may call a scanner to preserve its normal density reuse and geometry reset.
@@ -144,11 +144,16 @@ def run_verified_scf(mf, calculate=None, *, dm0=None, precision='auto'):
     orbitals with a nonlocal functional; other starts use the broader mixed schedule.
     VV10-only verification may reuse the last native ordinary integration when
     every input matches exactly; exchange and nonlocal fields are recomputed.
+    ``with_forces=True`` requests bounded float64 VV10 field/coordinate-response
+    reuse for the next full-response gradient at this exact state. Energy-only
+    calls avoid that extra derivative work. Incompatible inputs use native forces.
     ``mf.max_cycle`` remains the total budget across the mixed and float64 phases.
     Verification failures raise ``SCFVerificationError``; CUDA and callback errors propagate.
     """
     if calculate is not None and (not callable(calculate) or dm0 is not None):
         raise ValueError('Use a scanner callable or dm0, not both')
+    if type(with_forces) is not bool:
+        raise ValueError('with_forces must be a boolean')
     if precision not in ('auto', 'mixed', 'vv10'):
         raise ValueError("precision must be 'auto', 'mixed' or 'vv10'")
     # PySCF creates scanner classes in its CPU module even for GPU subclasses.
@@ -180,6 +185,17 @@ def run_verified_scf(mf, calculate=None, *, dm0=None, precision='auto'):
     records = []
     info = {'requested_precision': requested_precision, 'precision': precision,
             'cycles': records, 'fallback_scf': False, 'accepted': False}
+    nlc_reuse = getattr(mf._numint, '_nlc_force_reuse', None)
+    if nlc_reuse is not None:
+        nlc_reuse.clear()
+        mf._numint._nlc_force_reuse = None
+    nlc_reuse = None
+    if with_forces and has_nlc:
+        from gpu4pyscf.dft._nlc_force_cache import _NLCForceReuse
+
+        nlc_reuse = _NLCForceReuse(mf._numint)
+        mf._numint._nlc_force_reuse = nlc_reuse
+        info['nlc_force_reuse'] = nlc_reuse.statistics
     mf.mixed_precision_info = info
     mf.converged = False
 
@@ -250,10 +266,13 @@ def run_verified_scf(mf, calculate=None, *, dm0=None, precision='auto'):
                 # callback. Do not attribute those products to a recovery cycle.
                 int8_seen = exchange.int8_calls
                 float32_exchange_seen = exchange.float32_calls
-            with reuse.verification() if reuse is not None else nullcontext():
+            with (reuse.verification() if reuse is not None else nullcontext(),
+                  nlc_reuse.verification() if nlc_reuse is not None else nullcontext()):
                 check = _full_check(mf, energy)
             info['initial_verification'] = check.copy()
             if not check['passed']:
+                if nlc_reuse is not None:
+                    nlc_reuse.clear()
                 info['fallback_scf'] = True
                 remaining = budget - len(records)
                 if remaining < 1:
@@ -261,7 +280,8 @@ def run_verified_scf(mf, calculate=None, *, dm0=None, precision='auto'):
                     raise SCFVerificationError('Float64 verification failed and the SCF cycle budget is exhausted')
                 mf.max_cycle = remaining
                 energy = float(mf.kernel(dm0=mf.make_rdm1()))
-                with reuse.verification() if reuse is not None else nullcontext():
+                with (reuse.verification() if reuse is not None else nullcontext(),
+                      nlc_reuse.verification() if nlc_reuse is not None else nullcontext()):
                     check = _full_check(mf, energy)
             info['native_grid_reuse'] = {'hits': reuse.hits, 'misses': reuse.misses} if reuse is not None else None
             info['final_verification'] = check
@@ -283,6 +303,8 @@ def run_verified_scf(mf, calculate=None, *, dm0=None, precision='auto'):
             mf.cycles = len(records)
             return mf.e_tot
         except BaseException:
+            if nlc_reuse is not None:
+                nlc_reuse.clear()
             mf.converged = False
             raise
         finally:

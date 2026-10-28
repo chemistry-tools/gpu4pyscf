@@ -141,7 +141,13 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
   densities, Cartesian/spherical hybrid forces and energy finite differences. Set
   `DFT_REFERENCE_DF_GRADIENT` to a matching native baseline `df/grad/rhf.py`.
 - `gpu4pyscf/dft/_vv10_grad.py`: one float64 pair traversal for U/W/E and contracted coordinate
-  response, with atom-ordered labels and deterministic reductions. No SCF field cache.
+  response, with atom-ordered labels and deterministic reductions.
+- `gpu4pyscf/dft/_nlc_force_cache.py`, `test_nlc_force_reuse.py`: optional one-use
+  sharing of final float64 verification fields and full-response VV10 forces.
+  Reuses the exact-state snapshot guards in `_native_grid_cache.py`; canonical
+  point/weight/atom permutations, capacity and stream checks fail back to native
+  forces. Energy-only calls do not prepare derivatives. Test allocation fallback,
+  source/force grid mutations, orbital tags, finite differences and actual ASE use.
 - `vv10_response_experiment.py`, `test_vv10_response.py`: native field/response comparisons,
   independent coordinate finite differences, partial tiles, signed weights and CUDA streams.
 - `gpu4pyscf/dft/_tau_syrk.py`, `test_tau_syrk.py`: signed symmetric float64 tau products,

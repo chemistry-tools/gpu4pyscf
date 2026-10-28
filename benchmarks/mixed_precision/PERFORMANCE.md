@@ -1814,3 +1814,58 @@ fields and complete response checks are in `direct-vv10-algebra-20261028-v2`.
 The earlier profile filename collision and VV10 output-type harness failure are
 retained in their respective `v1` directories. The qualified installation and its
 native library hash remain unchanged; all probe processes exited and released GPU 1.
+
+## Sharing final VV10 verification with full-response forces (2026-10-28)
+
+A fresh profile of the production density-fitted, VV10-only mixed workflow identifies
+11.643 seconds in force pair evaluation and another 7.885 seconds in final float64
+verification fields. These are different from the older integral-direct J/K profile
+above. Profiled SCF ordinary integration takes 20.263 seconds; full NLC, ordinary and
+DF J/K force components take 12.632, 3.317 and 4.670 seconds respectively. Nested
+component times overlap, and synchronized profiles are not speed measurements.
+
+`run_verified_scf(..., with_forces=True)` now shares one fused float64 U/W/E and
+coordinate-response traversal with the following full-response force. It uses the
+existing native pair kernel and exact-state snapshot checks, canonical point/weight/
+atom matching, a 128 MiB retained-data cap and single-use consumption. Energy-only
+calls keep their previous path. The ASE calculator enables it for force requests with
+explicit `grid_response=True`, unless `nlc_force_reuse=False`.
+
+The final sequential on/off pair uses the public 28-atom, 681-AO organic, physical
+RTX 3080 GPU 1 at 260 W, CPUs 4–7 and four numerical threads. Both use
+ωB97M-V/def2-TZVPD, 1,367 default JK-fitting functions, ordinary/NLC grids 5/3,
+Stratmann partition with no radii adjustment, `conv_tol=1e-8`, orbital-gradient
+tolerance `1e-4`, full grid and auxiliary response, and all 681 overlap functions.
+The identical supplied guess is 99.9% of the retained native density plus 0.1% MINAO;
+both complete four SCF rounds without recovery.
+
+| Scope | Reuse off | Reuse on |
+| --- | ---: | ---: |
+| SCF, fresh setup and required float64 verification | 43.019 s | 47.629 s |
+| Complete float64 forces | 20.791 s | 9.118 s |
+| Total | 63.810 s | 56.747 s |
+
+This is 11.07% less total time and 56.14% less force time; some derivative work moves
+into verification. Two earlier reuse runs took 56.177 and 56.866 seconds. These are
+individual shared-host runs, not statistical throughput estimates. Imports, guess
+preparation and extra independent diagnostics are excluded; normal fitted tensors
+are built inside timing and reused during SCF. No experimental four-centre integral
+cache is enabled. The final run retains 41.8 MiB of VV10 inputs/results until force
+consumption, then zero bytes.
+
+Acetamide, pyridine, DMSO, acetyl fluoride, acetyl chloride and the larger organic
+pass full float64 verification and complete same-state force comparisons. The final
+large replay differs from its uncached same-state force by `8.89e-14` Hartree/Bohr.
+Eighteen GPU tests pass, including grid permutation/padding, state/tag/geometry/
+partition/stream invalidation, capacity and allocation fallback, a nonzero-component
+energy finite difference, and actual ASE use. The CPU precision/provenance suite has
+111 passes and 18 opt-in CUDA skips; focused Ruff checks pass. Numerical settings,
+native libraries and the held-out validation dataset are unchanged.
+
+Receipts are under `/scratch/failip/gpu4pyscf-benchmarks/` in
+`vv10-verification-reuse-20261028-v2` (profile and prototype), `v4` (organic panel)
+and `v5` (paired timing, source/native hashes and `assessment.json`). `v6` checks
+allocation fallback during both preparation and consumption and replays the final code.
+That final replay takes 55.457 seconds (8.894 seconds for forces), with a same-state
+force difference of `7.29e-14` Hartree/Bohr and no retained VV10 buffers afterward.
+Earlier failed profiling/test harness attempts remain in the versioned directories.

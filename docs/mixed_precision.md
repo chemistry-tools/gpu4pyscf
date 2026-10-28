@@ -63,6 +63,25 @@ The same native energy/Fock acceptance check, recovery budget and float64
 derivatives apply. The report identifies `precision="vv10"` and the float64
 grid schedule. A functional without a nonlocal term is rejected.
 
+For an imminent full grid-response force, pass `with_forces=True` to
+`run_verified_scf`. Final float64 verification then evaluates VV10 fields and their
+coordinate response in one pair traversal. The next full-response gradient reuses
+those fields only for identical density/orbital tags, molecular data, functional,
+native integration dispatch, grid values, device and stream. Atom-ordered force
+grids must be an exact permutation of the weighted verification points; zero-weight
+padding is excluded. The retained inputs/results are bounded to 128 MiB and consumed
+once. Mismatches, unsupported inputs, capacity limits and optional allocation failures
+retain the native force calculation. Failed verification discards the fields before
+recovery. This changes the ordering of float64 sums and reuses the verification's AO
+density evaluation; it does not introduce a force precision approximation.
+
+Energy-only calls default to `with_forces=False` so they do not calculate unused
+coordinate derivatives. With ASE, a request containing forces and explicit
+`grid_response=True` enables this reuse automatically; `nlc_force_reuse=False`
+disables it. An energy-only request followed by forces still reuses the accepted SCF
+state, but computes VV10 derivatives normally. The report's `nlc_force_reuse` records
+builds, hits, misses and retained bytes. This optimization does not cover Hessians.
+
 The broader mixed schedule uses float32 grid products for at most five iterations, with an adaptive
 schedule for native density-fitted global-hybrid GGAs. Those methods retain float32
 grid products until both the energy change falls below `1e-5` Hartree

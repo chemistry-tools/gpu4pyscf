@@ -569,8 +569,13 @@ def get_nlc_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=
     log = logger.new_logger(mol, verbose)
     t0 = log.init_timer()
 
+    force_reuse = getattr(ni, '_nlc_force_reuse', None)
+    source_grids = grids
     grids = grids.copy()
     grids.build(sort_grids_of_each_atom = True)
+
+    cached_fields = (force_reuse.take(ni, mol, source_grids, grids, xc_code, dms)
+                     if force_reuse is not None and hermi == 1 and relativity == 0 else None)
 
     ni = numint.NumInt() # Don't mess up with the old numint object
     ni.gdftopt = None
@@ -605,17 +610,20 @@ def get_nlc_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=
     beta = 0.03125 * (3.0 / nlc_pars[0]**2)**0.75
 
     ngrids_full = grids.coords.shape[0]
-    rho_drho = cupy.empty([4, ngrids_full])
-    g1 = 0
-    for ao, idx, weight, _ in ni.block_loop(_sorted_mol, grids, nao, deriv = 1):
-        g0, g1 = g1, g1 + weight.size
-        dms_masked = take_last2d(dms_sorted, idx, out = dm_mask_buf)
-        block_factors = factors.block(idx) if factors is not None else None
-        if block_factors is None:
-            rho_drho[:, g0:g1] = numint.eval_rho(_sorted_mol, ao, dms_masked, xctype="NLC", hermi=1)
-        else:
-            rho_drho[:, g0:g1] = _rho_and_dm_ao(ao, dms_masked, 'GGA', factors=block_factors)[0]
-    assert g1 == ngrids_full
+    if cached_fields is not None:
+        rho_drho = cached_fields[0]
+    else:
+        rho_drho = cupy.empty([4, ngrids_full])
+        g1 = 0
+        for ao, idx, weight, _ in ni.block_loop(_sorted_mol, grids, nao, deriv = 1):
+            g0, g1 = g1, g1 + weight.size
+            dms_masked = take_last2d(dms_sorted, idx, out = dm_mask_buf)
+            block_factors = factors.block(idx) if factors is not None else None
+            if block_factors is None:
+                rho_drho[:, g0:g1] = numint.eval_rho(_sorted_mol, ao, dms_masked, xctype="NLC", hermi=1)
+            else:
+                rho_drho[:, g0:g1] = _rho_and_dm_ao(ao, dms_masked, 'GGA', factors=block_factors)[0]
+        assert g1 == ngrids_full
 
     rho_i = rho_drho[0,:]
 
@@ -656,8 +664,11 @@ def get_nlc_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=
     from gpu4pyscf.dft._vv10_grad import _pair_response
 
     grid_to_atom_index_map = cupy.ascontiguousarray(grids.atm_idx[rho_nonzero_mask], dtype=cupy.int32)
-    U_i, W_i, E_i, de_grid_response_phi = _pair_response(
-        grids_coords, rho_weight_i, omega_i, kappa_i, grid_to_atom_index_map, natm)
+    if cached_fields is not None:
+        U_i, W_i, E_i, de_grid_response_phi = cached_fields[1]
+    else:
+        U_i, W_i, E_i, de_grid_response_phi = _pair_response(
+            grids_coords, rho_weight_i, omega_i, kappa_i, grid_to_atom_index_map, natm)
 
     fw_rho_i = (beta + E_i + rho_i * (dkappa_drho_i * U_i + domega_drho_i * W_i)) * grids_weights
     fw_gamma_i = rho_i * domega_dgamma_i * W_i * grids_weights
