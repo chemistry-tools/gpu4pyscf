@@ -192,23 +192,35 @@ def main():
 
     finite_difference = None
     if args.finite_difference:
+        # Compare the energy derivative and analytic force at the same SCF
+        # accuracy. A supplied guess can pass the timed 1e-4 orbital threshold
+        # early enough that its density error exceeds this stricter FD bound.
+        central = method(mf.mol, tolerance=1e-10)
+        central_energy = float(central.kernel(dm0=mf.make_rdm1()))
+        if not central.converged:
+            raise RuntimeError('Finite-difference central SCF did not converge')
+        central_grad = gradient(central)
         axis, atom_index, step = 0, 0, 2e-4
         displaced_energies = []
         for sign in (-1, 1):
             coordinates = mf.mol.atom_coords()
             coordinates[atom_index, axis] += sign*step
             displaced = method(mf.mol.set_geom_(coordinates, unit='Bohr', inplace=False), tolerance=1e-10)
-            value = float(displaced.kernel(dm0=mf.make_rdm1()))
+            value = float(displaced.kernel(dm0=central.make_rdm1()))
             if not displaced.converged:
                 raise RuntimeError('Finite-difference displaced SCF did not converge')
             displaced_energies.append(value)
         numerical = (displaced_energies[1]-displaced_energies[0])/(2*step)
         finite_difference = {'atom': atom_index, 'axis': axis, 'step_bohr': step,
                              'energies_hartree': displaced_energies, 'gradient_hartree_bohr': numerical,
-                             'analytic_hartree_bohr': float(grad[atom_index, axis]),
+                             'analytic_hartree_bohr': float(central_grad[atom_index, axis]),
+                             'timed_analytic_hartree_bohr': float(grad[atom_index, axis]),
+                             'timed_analytic_error_hartree_bohr': abs(numerical-float(grad[atom_index, axis])),
+                             'central_energy_hartree': central_energy,
+                             'central_scf_refined_outside_timing': True,
                              'conv_tol': 1e-10, 'conv_tol_grad': 1e-6, 'tolerance_hartree_bohr': 3e-6}
         (args.output/'finite-difference.json').write_text(json.dumps(finite_difference, indent=2)+'\n')
-        if abs(numerical-grad[atom_index, axis]) > 3e-6:
+        if abs(numerical-central_grad[atom_index, axis]) > 3e-6:
             raise RuntimeError('Analytic force failed the independent energy finite difference')
 
     files = ['scf/hf.py', 'scf/jk.py', 'scf/_direct_scf.py', 'scf/_integral_cache.py', 'grad/rhf.py', 'grad/rks.py',
@@ -221,7 +233,9 @@ def main():
               'protocol_sha256': protocol_hash, 'nao': mol.nao, 'energy_hartree': energy,
               'energy_seconds': energy_seconds, 'force_seconds': force_seconds, 'scf_cycles': cycles,
               'entry_point': 'ASE' if atoms is not None else 'kernel with controlled supplied density',
-              'supplied_guess': None if guess is None else '99.9% retained DF density plus 0.1% MINAO',
+              'supplied_guess': None if guess is None else '99.9% retained density plus 0.1% MINAO',
+              'supplied_state_sha256': None if args.state is None else hashlib.sha256(args.state.read_bytes()).hexdigest(),
+              'supplied_geometry_report_sha256': None if args.geometry_report is None else hashlib.sha256(args.geometry_report.read_bytes()).hexdigest(),
               'original_representation_verification': check, 'selected_scf_cutoffs': selected_cutoffs,
               'integral_cache': cache_stats,
               'selected_force_cutoffs': force_cutoffs,

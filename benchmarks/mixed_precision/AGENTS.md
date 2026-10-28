@@ -28,8 +28,9 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
   are bounded per exchange optimizer; existing native queues are reused. Account
   for cold construction in five-round comparisons; this does not cache derivatives.
   `direct_scf_cache_all=True` / `--integral-cache-all` requests every exchange
-  group, overriding the byte budget with a complete capacity preflight. It must
-  either retain all groups or raise; no silent partial/disk fallback is allowed.
+  group, overriding the byte budget with a complete capacity preflight. Supported
+  calls must retain all groups or raise, with no partial/disk fallback. Unsupported
+  density layouts and streams retain the native path as described in the guide.
 - `gpu4pyscf/scf/_direct_scf.py`, `test_direct_scf_regroup.py`: conservative, opt-in
   primitive regrouping for qualified native direct RKS, shared with ground-state forces.
   The same qualification selects full/LR derivative passes to avoid doubled SR roots;
@@ -45,6 +46,8 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
   perturbed supplied guesses, not fresh MINAO benchmarks.
   Timed forces run before representation-changing verification, so their normal
   SCF exchange optimizer reuse is preserved; reports check derivative operator keys.
+  Finite differences refine the central SCF to the same tighter accuracy as
+  displaced states outside timing, and retain the original timed-state force/error.
   `--require-contracted-forces` also requires the new native force entrypoint.
 - `gpu4pyscf/dft/mixed_precision.py`: per-instance SCF precision, float64 verification and fallback.
 - `gpu4pyscf/dft/_native_grid_cache.py`: bounded, exact-input reuse of the last

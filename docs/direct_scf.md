@@ -83,7 +83,9 @@ mf.direct_scf_cache_all = True
 This explicit toggle overrides the byte budget and includes fully primitive
 groups. Before allocating integral arrays, it estimates their complete storage
 and checks free device memory, reserving the larger of 256 MiB or 5% of device
-capacity for workspace. Insufficient space raises `MemoryError` with the required
+capacity for workspace. With the default CuPy allocator, availability includes
+reusable pool blocks and respects the pool's configured allocation limit.
+Insufficient space raises `MemoryError` with the required
 and available sizes; allocation failures also raise, without spilling or silently
 switching to a partial cache. A missing native fill entrypoint raises in this mode.
 Reports expose planned bytes and whether every group is resident. Turn it off

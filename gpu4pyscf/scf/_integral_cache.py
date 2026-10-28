@@ -64,6 +64,19 @@ def _require_capacity(required, free, total):
             'Use a bounded direct_scf_cache_bytes budget or a larger GPU.')
 
 
+def _available_capacity(cp):
+    free, total = cp.cuda.runtime.memGetInfo()
+    pool = cp.get_default_memory_pool()
+    if getattr(cp.cuda.get_allocator(), '__self__', None) is pool:
+        # Released caches normally stay in CuPy's pool. Counting driver-free
+        # memory alone would reject a replacement that can reuse those blocks.
+        free += pool.free_bytes()
+        limit = pool.get_limit()
+        if limit:
+            free = min(free, max(0, limit-pool.used_bytes()))
+    return min(free, total), total
+
+
 def _context_key(opt, operator, device, stream):
     mol = opt.sorted_mol
     digest = hashlib.blake2b(digest_size=16)
@@ -127,7 +140,7 @@ class _IntegralCache:
         self.planned_bytes = _plan_size(self.plan, mol.ao_loc.nbytes)
         self.budget = self.planned_bytes if all_groups else budget
         if all_groups:
-            _require_capacity(self.planned_bytes, *cp.cuda.runtime.memGetInfo())
+            _require_capacity(self.planned_bytes, *_available_capacity(cp))
         self.entries = {}
         self.used_bytes = 0
         self.builds = self.hits = self.misses = 0

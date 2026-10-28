@@ -1673,3 +1673,67 @@ The `v1` counter build failed because NVRTC lacked host C headers; it produced n
 accepted profiles and is retained. The corrected diagnostic uses the complete
 matching NVCC toolchain. Local focused checks pass 62 tests with 25 CUDA cases
 skipped; the designated-host counter suite passes all eight tests.
+
+## Bounded direct exchange integral reuse
+
+The opt-in integral cache retains complete angular/primitive pair rectangles in
+GPU memory and reapplies the original density screening during each contraction.
+Cached values and contractions remain float64 at `1e-13`; groups outside the
+budget use the native direct kernel. The weighted fill entrypoint is built with
+the matching CUDA 13/GCC 14 `sm_86` native objects, without global fast math.
+The original AO2MO entrypoint retains its ABI and passes both existing regressions.
+Only the RYS library changes relative to the preceding native qualification.
+
+The 681-orbital development case uses **255.94 MiB** of a 256 MiB budget for
+36 groups. Matched fixed-density runs execute sequentially on GPU 1 with CPUs
+4–7 and both shared locks, in separate processes with identical sources, native
+libraries and density hashes. Each warm row below is the median of two samples:
+
+| Exchange build | Cache disabled, s | 256 MiB cache, s | Time reduction |
+| --- | ---: | ---: | ---: |
+| Cold, including construction | 12.294 | 12.526 | −1.9% |
+| Warm full density | 12.314 | 11.014 | 10.6% |
+| Warm density difference | 9.639 | 8.529 | 11.5% |
+
+The first five calls, comprising one cold build, two full-density replays and two
+signed-density replays, take **76.819 versus 72.514 seconds** including J and K,
+a 5.6% reduction. Their exchange subtotal falls from 56.200 to 51.611 seconds.
+This sequence is a fixed-density proxy, not a full-SCF speedup measurement.
+The cached/direct K matrices differ by at most `2.85e-14` Hartree; the nonzero
+incremental-density reconstruction also passes the unchanged tolerance.
+
+Complete SCF/force qualification uses the five mixed-element organics and the
+681-orbital case. Supplied guesses combine 99.9% retained density with 0.1% MINAO;
+reports preserve the source-state and geometry-report hashes. All six converge
+in three or four cycles, pass the original-representation physical-Fock check,
+and match same-state native forces within `1.59e-9` Hartree/Bohr. The largest
+physical-Fock energy difference is `4.33e-10` Hartree. The larger run takes
+137.49 seconds for SCF and 86.87 seconds for complete forces. These are
+qualification timings; a matched whole-SCF cache-off comparison remains separate.
+Ordinary integral reuse does not cache force derivatives.
+
+The initial acetyl-fluoride finite difference compared a central force converged
+at the timed `1e-4` orbital threshold with displaced energies converged at `1e-6`.
+It missed the `3e-6` Hartree/Bohr bound by essentially the same amount with and
+without the cache: both errors were about `6.29e-6`. The validator now refines
+the central state to the same `1e-10` energy / `1e-6` orbital thresholds as the
+displaced states, outside timing. The resulting derivative error is `1.93e-6`,
+within the unchanged bound. Reports retain the original timed force and its
+finite-difference error; neither the timed SCF thresholds nor the acceptance
+bound was relaxed. Failed controls remain in the retained evidence.
+
+The full-VRAM toggle includes every supported exchange group, including fully
+primitive groups. Its hydrogen-fluoride check at ωB97M-V/def2-TZVPD covers
+CPU-reference exchange, complete SCF/forces, an insufficient-memory error and rebuilding from reusable CuPy pool
+buffers. The final designated-host suite passes **79 tests**; local focused checks
+pass 72 with 15 GPU checks skipped. A capacity-only patch is independently audited
+to leave the bounded numerical code and all native libraries unchanged.
+The larger case's complete rectangular plan requires **521.84 GiB** for 266
+groups; no full-VRAM performance run was attempted on that case.
+
+Both cache settings remain disabled by default. Usage, capacity reserves and
+fallbacks are documented in the [direct-integral guide](../../docs/direct_scf.md#experimental-bounded-integral-reuse).
+Raw build/test logs, input states, arrays, failed controls and independent source
+audits remain in `/scratch/failip/gpu4pyscf-benchmarks/direct-integral-cache-20261028-v1`,
+`v2` and `v3`. The final `v3/assessment.json` links the six-case qualification to
+the final capacity fix and checks matching runtime/native hashes.

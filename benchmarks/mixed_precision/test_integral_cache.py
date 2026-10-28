@@ -78,6 +78,32 @@ def test_all_mode_capacity_preflight_leaves_room_for_scf():
         module._require_capacity(1, 256*1024**2, gib)
 
 
+@pytest.mark.parametrize('own_pool,limit,expected', [(True, 0, 600), (False, 0, 100),
+                                                 (True, 700, 400), (True, 100, 0)])
+def test_capacity_counts_reusable_blocks_only_in_the_current_pool(own_pool, limit, expected):
+    module = _module()
+
+    class Pool:
+        def malloc(self, size):
+            raise AssertionError('Capacity planning must not allocate')
+
+        def free_bytes(self):
+            return 500
+
+        def used_bytes(self):
+            return 300
+
+        def get_limit(self):
+            return limit
+
+    pool = Pool()
+    allocator = pool.malloc if own_pool else lambda size: None
+    cp = SimpleNamespace(get_default_memory_pool=lambda: pool,
+                         cuda=SimpleNamespace(get_allocator=lambda: allocator,
+                                              runtime=SimpleNamespace(memGetInfo=lambda: (100, 1000))))
+    assert module._available_capacity(cp) == (expected, 1000)
+
+
 @pytest.mark.parametrize('value', [None, 0, 1, 'all'])
 def test_all_toggle_requires_a_boolean(value):
     from test_direct_scf_regroup import _get, _method
@@ -242,7 +268,7 @@ def test_all_vram_exchange_scf_forces_and_capacity_failure(monkeypatch):
     from pyscf.scf import hf as cpu_hf
 
     from gpu4pyscf import dft
-    from gpu4pyscf.scf import hf
+    from gpu4pyscf.scf import _integral_cache, hf
 
     hf.overlap_zero_eigenvalue_threshold = 1e-10
     mol = gto.M(atom='F 0 0 0; H 0 0 .92', basis='def2-tzvpd', verbose=0)
@@ -279,7 +305,36 @@ def test_all_vram_exchange_scf_forces_and_capacity_failure(monkeypatch):
     grad.grid_response = True
     cp.testing.assert_allclose(actual_gradient, grad.kernel(), atol=2e-8, rtol=0)
     mf._opt_gpu[omega]._integral_cache = None
-    monkeypatch.setattr(cp.cuda.runtime, 'memGetInfo', lambda: (0, 10*1024**3))
+    monkeypatch.setattr(_integral_cache, '_available_capacity', lambda cp: (0, 10*1024**3))
     with pytest.raises(MemoryError, match='All-VRAM integral cache requires'):
         mf.get_k(mol, dm, 1, omega, alpha, hyb)
     assert mf._opt_gpu[omega]._integral_cache is None
+
+
+@pytest.mark.skipif(os.environ.get('DFT_GPU_TEST') != '1', reason='opt-in CUDA test')
+def test_all_vram_replacement_reuses_pooled_integral_buffers(monkeypatch):
+    import cupy as cp
+    from pyscf import gto
+
+    from gpu4pyscf import dft
+    from gpu4pyscf.scf import _integral_cache
+
+    mol = gto.M(atom='F 0 0 0; H 0 0 .92', basis='def2-tzvpd', verbose=0)
+    mf = dft.RKS(mol, xc='wb97m-v')
+    mf.direct_scf_regroup = mf.direct_scf_cache_all = True
+    dm = cp.asarray(mf.get_init_guess(mol, 'minao'))
+    omega, alpha, hyb = mf._numint.rsh_and_hybrid_coeff(mf.xc, spin=0)
+    original = mf.get_k(mol, dm, 1, omega, alpha, hyb)
+    opt = mf._opt_gpu[omega]
+    required = opt._integral_cache.planned_bytes
+    opt._integral_cache = None
+    total = cp.cuda.runtime.memGetInfo()[1]
+    reserve = max(256*1024**2, total//20)
+    with cp.cuda.using_allocator(cp.get_default_memory_pool().malloc):
+        monkeypatch.setattr(cp.cuda.runtime, 'memGetInfo', lambda: (reserve, total))
+        free, _ = _integral_cache._available_capacity(cp)
+        assert free-reserve >= required
+        # Driver-free space alone would fail; the returned old cache can fit.
+        actual = mf.get_k(mol, dm, 1, omega, alpha, hyb)
+    cp.testing.assert_allclose(actual, original, atol=2e-9, rtol=2e-10)
+    assert opt._integral_cache.statistics()['all_groups_resident']
