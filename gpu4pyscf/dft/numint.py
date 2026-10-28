@@ -31,6 +31,7 @@ from gpu4pyscf.dft import xc_deriv, libxc
 from gpu4pyscf.dft._tau_syrk import (
     _eligible as _tau_syrk_eligible, _symmetric_tau, _workspace_size as _tau_workspace_size)
 from gpu4pyscf.dft._tau_triangle import _eligible as _tau_triangle_eligible, _triangular_tau
+from gpu4pyscf.dft._initial_density import _density_orbitals
 from gpu4pyscf.lib import logger
 from gpu4pyscf.lib.multi_gpu import lru_cache
 from gpu4pyscf import __config__
@@ -579,6 +580,11 @@ def nr_rks(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
         opt = ni.gdftopt
     mo_coeff = getattr(dms, 'mo_coeff', None)
     mo_occ = getattr(dms,'mo_occ', None)
+
+    if mo_coeff is None and xctype == 'MGGA' and hermi == 1 and num_devices == 1:
+        initial = _density_orbitals(dms)
+        if initial is not None:
+            mo_coeff, mo_occ = initial
 
     if mo_coeff is not None:
         mo_coeff = opt.sort_orbitals(mo_coeff, axis=[0])

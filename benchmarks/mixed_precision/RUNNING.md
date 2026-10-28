@@ -299,6 +299,17 @@ SCF calls always evaluate ordinary integration, and verification still evaluates
 native exchange and VV10. Reuse is confined to the verified SCF scope and reports
 hit/miss counts in `mixed_precision_info['native_grid_reuse']`.
 
+`test_initial_density.py` checks automatic compact factors for initially untagged,
+Hermitian RKS MGGA densities on the matching compute-capability 8.6 native build.
+Run it with `DFT_GPU_TEST=1`. The existing DF eigendecomposition proposes factors;
+both maximum-element and Frobenius reconstruction checks must pass within
+`64 * float64 epsilon`. Its DF eigenvalue cutoff alone never qualifies a density.
+The recovered rank must be less than one third of the AO dimension, with at least
+128 AOs and a six-matrix work estimate no larger than 64 MiB. Other cases keep dense
+evaluation. Existing orbital tags, LDA/GGA, unrestricted and multi-GPU paths are
+unchanged. Tests cover streams, signed/full-rank/nonfinite densities, meaningful
+discarded eigenvalues, allocation/solver failure and complete N/O/S/F/Cl integrations.
+
 ## Fused VV10 response
 
 The full-response gradient now evaluates the float64 U/W/E fields and explicit coordinate

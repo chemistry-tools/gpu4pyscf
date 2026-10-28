@@ -65,6 +65,12 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
 - `test_gga_density.py`: adaptive float64 RKS GGA density products, fractional
   occupations and tagged-orbital identity. Sparse AO blocks can use one density/AO
   product instead of four occupied-orbital projections.
+- `gpu4pyscf/dft/_initial_density.py`, `test_initial_density.py`: compact float64
+  factors for untagged, Hermitian single-GPU RKS MGGA densities on compute capability
+  8.6. Reuse the existing DF decomposition, but require maximum-element and Frobenius
+  reconstruction errors within float64 roundoff. Meaningful screened components,
+  negative factors, large ranks, capacity/solver failures and unsupported inputs
+  keep dense evaluation. Orbital tags remain authoritative; no persistent cache is added.
 - `gpu4pyscf/df/_jk_contraction.py`, `test_df_exchange.py`: symmetric float64
   exchange updates, general-output accumulation, alias and stream guards, complete
   mixed-atom J/K comparisons and verified RKS/UKS SCF checks.

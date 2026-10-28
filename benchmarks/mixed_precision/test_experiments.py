@@ -24,7 +24,7 @@ def test_source_provenance_uses_active_overlay_and_exchange_helpers(tmp_path):
     names = ('dft/numint.py', 'dft/libxc.py', 'dft/gen_grid.py', 'scf/hf.py',
              'df/df_jk.py', 'df/_jk_contraction.py', 'df/_mixed_jk.py', 'df/_int8_gram.py',
              'dft/mixed_precision.py', 'dft/_native_grid_cache.py', 'grad/rks.py', 'grad/_density_products.py',
-             'dft/_nlc_force_cache.py', 'dft/_mixed_vv10.py', 'dft/_vv10_grad.py',
+             'dft/_nlc_force_cache.py', 'dft/_mixed_vv10.py', 'dft/_vv10_grad.py', 'dft/_initial_density.py',
              'df/df.py', 'df/_mapped_transfer.py', 'df/grad/rhf.py', 'df/grad/uhf.py', 'df/_response_products.py')
     for name in names:
         target = package / name
@@ -41,7 +41,7 @@ def test_source_provenance_uses_active_overlay_and_exchange_helpers(tmp_path):
         (package / 'df/_int8_gram.py').read_bytes()).hexdigest()
     for name in ('df/df.py', 'df/_mapped_transfer.py', 'df/grad/rhf.py', 'df/grad/uhf.py', 'df/_response_products.py',
                  'dft/mixed_precision.py', 'dft/_native_grid_cache.py', 'grad/rks.py', 'grad/_density_products.py',
-                 'dft/_nlc_force_cache.py', 'dft/_mixed_vv10.py', 'dft/_vv10_grad.py'):
+                 'dft/_nlc_force_cache.py', 'dft/_mixed_vv10.py', 'dft/_vv10_grad.py', 'dft/_initial_density.py'):
         assert report['source_sha256']['gpu4pyscf/'+name] == hashlib.sha256(
             (package/name).read_bytes()).hexdigest()
     assert report['native_library_sha256'] == hashlib.sha256(native.read_bytes()).hexdigest()

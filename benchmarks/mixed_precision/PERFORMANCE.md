@@ -1869,3 +1869,70 @@ allocation fallback during both preparation and consumption and replays the fina
 That final replay takes 55.457 seconds (8.894 seconds for forces), with a same-state
 force difference of `7.29e-14` Hartree/Bohr and no retained VV10 buffers afterward.
 Earlier failed profiling/test harness attempts remain in the versioned directories.
+
+## Compact factors for the supplied initial density (2026-10-28)
+
+The earlier 20.263-second ordinary-grid profile is cumulative across the initial
+integration and four SCF updates. A separate synchronized first-call profile of the
+681-AO organic measures 3.825 seconds in density-matrix field evaluation, while
+ordinary grid construction takes 0.113 seconds and the integrator build 0.002 seconds.
+The instrumented integration takes 8.091 seconds initially and 6.929 seconds when
+repeating that same untagged density; these are attribution measurements, not
+unprofiled speed comparisons. A tagged converged density follows a different,
+cheaper occupied-orbital path.
+
+A fixed-density probe recovers 143 positive factors from the supplied density.
+Its maximum reconstruction error is `8.89e-15`, with relative Frobenius error
+`2.60e-15`. Eigensolution takes 0.041 seconds. Alternating warm integrations take
+about 6.68 seconds with the dense matrix and 4.12–4.14 seconds with factors;
+electron count, XC energy and potential differ by at most `4.27e-14`, `1.43e-14`
+and `1.78e-15` respectively. Those timings isolate ordinary integration and exclude
+factor preparation; complete workflow timing is recorded separately below.
+
+The native RKS MGGA path now tries the existing DF decomposition for eligible
+untagged, Hermitian densities, then independently checks reconstruction using the
+actual square-root factors. Both maximum-element and Frobenius errors must be
+within `64 * float64 epsilon` relative to the supplied matrix. The DF eigenvalue
+cutoff is never sufficient for acceptance. Meaningful screened components, signed
+or high-rank densities, unsupported hardware/layouts and capacity/solver failures
+keep dense evaluation. Existing orbital tags remain authoritative. No grid,
+scientific convergence threshold, precision schedule or persistent cache changes.
+
+The complete sequential on/off comparison uses the same public 28-atom, 681-AO
+organic and supplied 99.9% retained-density / 0.1% MINAO guess as the preceding
+VV10 reuse experiment. Both retain that VV10 verification/force sharing. The
+RTX 3080 GPU 1, 260 W, CPUs 4–7, ωB97M-V/def2-TZVPD, 1,367 fitting functions,
+grids 5/3, Stratmann/no-radii partition, tolerances and full response are unchanged.
+
+| Scope | Dense initial density | Recovered factors |
+| --- | ---: | ---: |
+| SCF, fresh setup and required float64 verification | 46.871 s | 45.022 s |
+| Complete float64 forces | 8.921 s | 8.908 s |
+| Total | 55.792 s | 53.930 s |
+
+The saving is **1.862 seconds, or 3.34%** in this single pair, rather than a
+whole-call reduction equal to the fixed-density integration speedup. Cold factor
+preparation costs 0.420 seconds here; the separate warm eigensolution probe does
+not include all qualification/startup work. Both runs complete four SCF rounds,
+without recovery, and differ by `4.55e-13` Hartree. Their separately converged
+forces differ by `1.93e-8` Hartree/Bohr; the final density matrices differ by
+`8.72e-9` at the unchanged SCF tolerances. This is not a same-density force error.
+
+Acetamide, pyridine, DMSO, acetyl fluoride, acetyl chloride and the larger organic
+all recover compact supplied-density factors, pass the required native float64
+energy/orbital-gradient check and compute complete forces. The five smaller
+recovered ranks are 41, 56, 51, 39 and 47. Their independently converged native
+force-reference differences are at most `2.05e-8` Hartree/Bohr. Same-state cached
+versus uncached force checks remain within `2e-8` for every run. All 33 focused
+GPU tests pass, including forced acceleration on each mixed-element organic,
+meaningful discarded-component rejection and conservative fallback for MINAO
+mixtures that cannot be reconstructed at roundoff. The CPU precision/provenance
+suite has 111 passes and 51 opt-in GPU skips when including the new test module.
+Focused Ruff checks pass; the 14 pre-existing NumInt findings are unchanged.
+
+Profile/probe receipts are in `grid-integration-20261028-v1`; complete final-code
+reports, saved states, numerical assessment and GPU logs are in
+`initial-density-20261028-v3`, under `/scratch/failip/gpu4pyscf-benchmarks/`.
+Earlier failed API/test assumptions remain in `initial-density-20261028-v1` and
+`v2`. The earlier four-field MGGA product prototype is not integrated by this
+change. No held-out validation data or native libraries were changed.
