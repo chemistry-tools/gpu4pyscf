@@ -27,6 +27,8 @@ add_library(gvhf_rys SHARED
 
 set_target_properties(gvhf_rys PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}
+  CUDA_STANDARD 17
+  CUDA_STANDARD_REQUIRED ON
   CUDA_SEPARABLE_COMPILATION ON)
 
 target_link_libraries(gvhf_rys OpenMP::OpenMP_C)
