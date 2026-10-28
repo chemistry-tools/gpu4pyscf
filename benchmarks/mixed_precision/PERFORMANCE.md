@@ -1459,3 +1459,46 @@ Fock acceptance, original-grouping forces, finite differences, actual derivative
 operator dispatch and ABBA force agreement before marking this qualification
 complete. The tested numerical sources match `4bec190`; raw states, traces,
 reports, scripts and regression evidence are saved alongside the assessment.
+
+## Native direct-force arithmetic follow-up
+
+Changing the generic kernel layout alone is rejected for the larger case.
+Full/LR J/K force components take 81.33 and 81.36 seconds in the two native
+controls, versus 81.71 with half as many quartets per block and 83.87 with
+one quarter. Small-case gains do not generalize to the retained larger density.
+These checks preserve total block size, integral arithmetic and screening.
+
+An isolated native extension then tests additional persistent blocks together
+with the smaller layouts. The original entrypoint remains available as the
+control. Its two large controls take 81.32 and 81.36 seconds; two blocks per
+multiprocessor with the half layout take 86.98 seconds, the quarter layout
+88.60, and four blocks with the quarter layout 88.82. All numerical checks pass,
+but the 7–9% slowdown rejects these candidates. The first occupancy harness
+failed to update the copied gradient function's scheme binding; its `v6`
+timings are excluded. The corrected `v7` records and asserts actual scheme
+ratios. No launch-layout or worker-count change is integrated.
+
+A different prototype removes arithmetic from the Cartesian derivative loop.
+The native kernel already obtains the fourth center from translation symmetry,
+but does so before multiplying and summing every Cartesian integral term.
+The prototype first contracts the other three centers, then reconstructs the
+fourth. This is a float64 rearrangement of the same sum, without changing
+screening, density, basis, grid terms, block layout or worker count.
+The compiler reports the same 128 registers and no spills for both kernels.
+
+| Fixed-density J/K force components | Original median, s | Post-contraction median, s | Time reduction |
+| --- | ---: | ---: | ---: |
+| Acetyl fluoride | 3.610 | 3.193 | 11.6% |
+| Acetamide | 4.246 | 3.776 | 11.1% |
+| Pyridine | 9.398 | 8.328 | 11.4% |
+| Dimethyl sulfoxide | 11.111 | 10.072 | 9.3% |
+| Acetyl chloride | 9.611 | 8.700 | 9.5% |
+| Larger organic, 681 orbitals | 80.621 | 72.049 | 10.6% |
+
+Each median uses two samples in original/new/new/original order, on GPU 1
+with four CPUs and the shared locks. All six same-density component checks
+pass, with a maximum error of `2.07e-13` Hartree/Bohr. This is still a native
+ABI-extension prototype, not an integrated production change or a full-force
+timing claim. It is retained for the subsequent primitive-factor contraction
+experiment. Completed raw evidence is under `direct-jk-next-20261028-v5`,
+`v7` and `v8`; the invalid `v6` attempt and its diagnostic are also preserved.
