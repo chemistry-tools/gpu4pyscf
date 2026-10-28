@@ -1737,3 +1737,80 @@ Raw build/test logs, input states, arrays, failed controls and independent sourc
 audits remain in `/scratch/failip/gpu4pyscf-benchmarks/direct-integral-cache-20261028-v1`,
 `v2` and `v3`. The final `v3/assessment.json` links the six-case qualification to
 the final capacity fix and checks matching runtime/native hashes.
+
+## Fresh cached-native profile and derivative probes
+
+The qualified 681-orbital state was replayed with the 256 MiB exchange cache,
+regrouped full/LR derivatives and the matching native library above. GPU 1 and
+CPUs 4–7 ran sequentially under both shared locks. Grid/cache preparation and
+float64 state verification preceded the synchronized profile. These are retained
+state timings, not a fresh SCF or a cache-off comparison.
+
+| Component | Time, s |
+| --- | ---: |
+| Warm ordinary integration | 3.359 |
+| Warm float64 VV10 potential | 10.275 |
+| Warm Coulomb build | 4.348 |
+| Warm weighted exchange build | 11.034 |
+| Warm complete potential | 29.018 |
+| Ordinary full grid response | 3.571 |
+| VV10 full response | 15.475 |
+| Full-range J/K derivatives | 35.832 |
+| Long-range K derivatives | 31.636 |
+| Complete forces | 86.814 |
+
+J/K derivatives account for 77.7% of complete force time. The force agrees with
+the qualified retained result within `2.44e-13` Hartree/Bohr. The profiled
+potential deliberately uses float64 VV10; the existing production `auto` policy
+already uses float32 VV10 pairs with final float64 verification. This profile
+does not establish a new gain from that existing policy.
+
+Three subsequent derivative experiments kept the retained density and original
+`1e-13` screening. Each used two control and two candidate timing samples,
+except the additional reduced-layout-only control, which has one sample:
+
+| Larger-case experiment | Control, s | Candidate, s | Scope and outcome |
+| --- | ---: | ---: | --- |
+| Shared density-product scratch with fewer quartets per block | 66.959 | 68.711 | Full/LR two-electron force components; 2.6% slower |
+| Precomputed packed Cartesian index metadata | 67.510 | 67.145 | Same components; only 0.5% less time |
+| Reuse VV10 response algebra | 14.509 | 13.029 | Pair-response traversal; 10.2% less time |
+
+Shared scratch uses the native derivative arithmetic and passes the small and
+larger force-component comparisons within `1.78e-12` Hartree/Bohr. Reducing the
+quartets per block without moving scratch takes 68.395 seconds on the larger
+case, so shared storage adds no benefit. Neither native change is integrated.
+
+Packed Cartesian maps preserve the native launch geometry and arithmetic,
+replacing repeated Cartesian index/address reconstruction inside the root loop.
+The full table occupies 1,920,000 GPU bytes and takes 0.086–0.106 seconds to
+construct in the six-case panel. All five N/O/S/F/Cl organics and the larger case
+pass within `2.60e-13` Hartree/Bohr, but their component time reductions of
+0.5–1.7% do not justify integration from these samples.
+
+The VV10 prototype reuses the existing `ui` expression and its partner to form
+the coordinate pair term as `omega_i*ui + omega_j*uj`. It leaves screening,
+grid ordering, precision and response terms unchanged. The five small organics
+reduce pair-response time by 6.7–8.4%; all six complete NLC response arrays agree
+within `1.47e-18` Hartree/Bohr. The larger complete candidate NLC response takes
+14.067 seconds. Its approximately 1.48-second pair saving is a small candidate
+for integration, not a measured complete-force or SCF speedup. Final complete
+force qualification remains required before shipping it.
+
+A separate fixed-density cutoff experiment measures, rather than estimates,
+the screening tradeoff. Raising `1e-13` to `1e-12` cuts the larger full/LR
+derivative components from 67.531 to 60.225 seconds, but moves the force by
+`1.872e-8` Hartree/Bohr, near the existing `2e-8` bound, and the signed-density K
+comparison by `2.391e-9` Hartree, above the prior `2e-9` absolute comparison bound.
+At `1e-11` the derivative time is 51.913 seconds,
+but the force difference is `1.391e-7` Hartree/Bohr and fails that bound. These
+single-state cutoff probes are not complete SCF qualification; no tolerance or
+default was changed.
+
+Raw profile and cutoff receipts are in `direct-next-profile-20261028-v2` and
+`direct-screen-timing-20261028-v1` under `/scratch/failip/gpu4pyscf-benchmarks/`.
+Private native sources, matching object/library hashes and component arrays are
+in `direct-dd-shared-20261028-v1` and `direct-cart-map-20261028-v1`; VV10 sources,
+fields and complete response checks are in `direct-vv10-algebra-20261028-v2`.
+The earlier profile filename collision and VV10 output-type harness failure are
+retained in their respective `v1` directories. The qualified installation and its
+native library hash remain unchanged; all probe processes exited and released GPU 1.
