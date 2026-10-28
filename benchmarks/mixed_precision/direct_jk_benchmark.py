@@ -32,6 +32,9 @@ def main():
     parser.add_argument('--exchange', choices=('combined', 'split'), default='combined')
     parser.add_argument('--profile', action='store_true')
     parser.add_argument('--regroup', action=argparse.BooleanOptionalAction, default=None)
+    cache_options = parser.add_mutually_exclusive_group()
+    cache_options.add_argument('--integral-cache-mib', type=int, default=0)
+    cache_options.add_argument('--integral-cache-all', action='store_true')
     parser.add_argument('--screening-source', type=Path,
                         help='Diagnose screening using the matching native gvhf-rys source directory')
     parser.add_argument('--output', type=Path, required=True)
@@ -40,6 +43,10 @@ def main():
         parser.error('Positive repeats and matching metadata for external states are required')
     if args.regroup is not None and args.backend != 'direct':
         parser.error('Regrouping controls are supported only for direct J/K')
+    if args.integral_cache_mib < 0 or (args.integral_cache_mib or args.integral_cache_all) and (
+        args.backend != 'direct' or args.regroup is not True or args.exchange != 'combined'
+    ):
+        parser.error('A positive integral cache requires direct combined exchange and --regroup')
     if args.screening_source and (args.backend != 'direct' or args.regroup is not True
                                   or args.state is None or args.exchange != 'combined'):
         parser.error('Screening diagnostics require direct combined exchange, --regroup and a saved state')
@@ -86,6 +93,8 @@ def main():
     mf.direct_scf_tol = 1e-13
     if args.regroup is not None:
         mf.direct_scf_regroup = args.regroup
+    mf.direct_scf_cache_bytes = args.integral_cache_mib*1024**2
+    mf.direct_scf_cache_all = args.integral_cache_all
     if args.backend == 'df':
         mf = mf.density_fit(auxbasis='def2-universal-jkfit')
     if args.state:
@@ -190,12 +199,15 @@ def main():
     cderi_bytes = sum(cderi_by_operator.values())
     medians = {label: statistics.median(s['total_seconds'] for s in samples if s['label'] == label)
                for label in ('warm-full', 'warm-delta') if any(s['label'] == label for s in samples)}
-    sources = ['scf/hf.py', 'scf/jk.py', 'scf/j_engine.py', 'scf/_direct_scf.py',
+    sources = ['scf/hf.py', 'scf/jk.py', 'scf/j_engine.py', 'scf/_direct_scf.py', 'scf/_integral_cache.py',
                'df/df.py', 'df/df_jk.py', 'dft/rks.py']
     report = {'case': args.case, 'backend': args.backend, 'basis': mol.basis, 'cart': mol.cart,
                   'exchange_assembly': args.exchange if args.backend == 'direct' else 'split',
                   'profiled': args.profile,
                   'direct_scf_regroup': mf.direct_scf_regroup,
+                  'integral_cache': {str(key): opt._integral_cache.statistics()
+                                     for key, opt in mf._opt_gpu.items()
+                                     if opt is not None and getattr(opt, '_integral_cache', None) is not None},
                   'internal_basis': {str(key): {'nao': opt.sorted_mol.nao, 'nbas': opt.sorted_mol.nbas,
                                                 'diffuse_cutoff': opt.diffuse_cutoff,
                                                 'groups': opt.sorted_mol.uniq_l_ctr.tolist(),

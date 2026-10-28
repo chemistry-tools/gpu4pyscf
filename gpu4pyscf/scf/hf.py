@@ -715,6 +715,8 @@ class SCF(pyscf_lib.StreamObject):
     direct_scf          = hf_cpu.SCF.direct_scf
     direct_scf_tol      = hf_cpu.SCF.direct_scf_tol
     direct_scf_regroup  = False
+    direct_scf_cache_bytes = 0
+    direct_scf_cache_all = False
     conv_check          = hf_cpu.SCF.conv_check
     callback            = hf_cpu.SCF.callback
 
@@ -722,7 +724,9 @@ class SCF(pyscf_lib.StreamObject):
         'conv_tol', 'conv_tol_grad', 'conv_tol_cpscf', 'max_cycle', 'init_guess',
         'sap_basis', 'DIIS', 'diis', 'diis_space', 'diis_damp', 'diis_start_cycle',
         'diis_file', 'diis_space_rollback', 'damp', 'level_shift',
-        'direct_scf', 'direct_scf_tol', 'direct_scf_regroup', 'conv_check', 'callback',
+        'direct_scf', 'direct_scf_tol', 'direct_scf_regroup', 'direct_scf_cache_bytes',
+        'direct_scf_cache_all',
+        'conv_check', 'callback',
         'mol', 'chkfile', 'mo_energy', 'mo_coeff', 'mo_occ',
         'e_tot', 'converged', 'cycles', 'scf_summary',
         'disp', 'disp_with_3body',

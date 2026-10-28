@@ -425,13 +425,16 @@ class _VHFOpt:
         # Hold cache on GPU devices
         self.sorted_mol = None
         self._rys_envs = {}
+        self._integral_cache = None
 
     def reset(self, mol):
         self.mol = mol
         self.sorted_mol = None
         self._rys_envs = {}
+        self._integral_cache = None
 
     def build(self, group_size=None, verbose=None):
+        self._integral_cache = None
         log = logger.new_logger(self.mol, verbose)
         cput0 = log.init_timer()
         mol = self.sorted_mol = SortedGTO.from_mol(
@@ -861,6 +864,10 @@ class _VHFOpt:
             kern_counts = 0
             kern = libvhf_rys.RYS_build_k
 
+            from gpu4pyscf.scf._integral_cache import get_cache
+            cache = get_cache(self, dms, hermi, (omega, lr_factor, sr_factor),
+                              bas_pair_cache, libvhf_rys, num_devices)
+
             for task in tasks:
                 i, j, k, l = task
                 shls_slice = l_ctr_bas_loc[[i, i+1, j, j+1, k, k+1, l, l+1]]
@@ -869,6 +876,14 @@ class _VHFOpt:
                 npairs_ij = pair_ij_mapping.size
                 npairs_kl = pair_kl_mapping.size
                 if npairs_ij == 0 or npairs_kl == 0:
+                    continue
+                if cache is not None and cache.contract(
+                    self, task, bas_pair_cache, shls_slice, pool, dms, dm_cond,
+                    vk, log_cutoff, dm_penalty, libvhf_rys, SHM_SIZE
+                ):
+                    if log.verbose >= logger.DEBUG1:
+                        label = f'cache {task}'
+                        t1 = timing_collection.collect(label, t1, label)
                     continue
                 llll = f'({l_symb[i]}{l_symb[j]}|{l_symb[k]}{l_symb[l]})'
                 err = kern(

@@ -77,6 +77,22 @@ float64 BLAS and synchronous single-GPU dispatch. Every patch is scoped and rest
 
 ### Direct versus fitted J/K
 
+For the experimental integral cache, add `--integral-cache-mib 256 --regroup`
+to a combined-exchange direct run. The cache is disabled otherwise. Rebuild the
+native RYS library first and run `DFT_GPU_TEST=1 pytest test_integral_cache.py`
+from this directory. Reports include the owned array bytes and build/hit counts.
+The first call includes construction, so compare complete sequences including
+that call. The complete `direct_scf_validation.py` harness accepts the same option
+and checks that SCF actually reuses entries. See the
+[cache contract](../../docs/direct_scf.md#experimental-bounded-integral-reuse)
+for limits and fallback behavior.
+
+Use `--integral-cache-all` instead of a MiB budget to require every exchange group
+to remain in VRAM. The harness rejects specifying both options. This mode checks
+the complete storage requirement before integral allocation and raises when it
+cannot fit; it does not spill to disk. Test it on a small molecule before using
+a large-memory GPU for a larger case.
+
 `direct_jk_benchmark.py` compares the existing CUDA integral-direct path with density
 fitting at the pinned functional and basis. Run each backend in a fresh process, under
 the shared benchmark lock, after activating a matching native installation:

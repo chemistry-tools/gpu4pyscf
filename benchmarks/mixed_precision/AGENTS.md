@@ -20,6 +20,16 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
   looser-cutoff counts do not change integral calculations or establish speed/error
   bounds. The NVCC diagnostic requires matching `create_tasks.cu` and `vhf.cuh`;
   it does not replace native libraries or cover the MD Coulomb-energy screen.
+- `gpu4pyscf/scf/_integral_cache.py`, `test_integral_cache.py`: experimental bounded
+  float64 integral groups for qualified direct exchange, with geometry-only fills
+  and native density screening on every reuse. `direct_scf_cache_bytes` defaults to
+  zero; `--integral-cache-mib` selects a budget in the direct J/K and complete-SCF
+  harnesses. A matching `RYS_fill_int4c2e_k` native build is required. Cache arrays
+  are bounded per exchange optimizer; existing native queues are reused. Account
+  for cold construction in five-round comparisons; this does not cache derivatives.
+  `direct_scf_cache_all=True` / `--integral-cache-all` requests every exchange
+  group, overriding the byte budget with a complete capacity preflight. It must
+  either retain all groups or raise; no silent partial/disk fallback is allowed.
 - `gpu4pyscf/scf/_direct_scf.py`, `test_direct_scf_regroup.py`: conservative, opt-in
   primitive regrouping for qualified native direct RKS, shared with ground-state forces.
   The same qualification selects full/LR derivative passes to avoid doubled SR roots;

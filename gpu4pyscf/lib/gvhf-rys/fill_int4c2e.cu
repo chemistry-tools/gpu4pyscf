@@ -86,7 +86,8 @@ void int4c2e_kernel(double *out, RysIntEnvVars envs, BoundsInfo bounds,
                     float *q_cond_ij, float *q_cond_kl,
                     int *ij_pair_loc, int *kl_pair_loc,
                     uint32_t *pool, int *head, int nf, int nao_pairs,
-                    int reserved_shm_size, double omega)
+                    int reserved_shm_size, double omega,
+                    double lr_factor, double sr_factor)
 {
     // sq is short for shl_quartet
     int sq_id = threadIdx.x;
@@ -284,7 +285,7 @@ while (1) {
                     double rr = xpq*xpq + ypq*ypq + zpq*zpq;
                     double theta = aij * akl / (aij + akl);
                     int nroots = bounds.nroots;
-                    rys_roots_for_k(nroots, theta, rr, rw, omega, 1., 1.);
+                    rys_roots_for_k(nroots, theta, rr, rw, omega, lr_factor, sr_factor);
                     for (int irys = 0; irys < nroots; ++irys) {
                         BUILD_4C_GXYZ(lj, ll, task_id < ntasks);
                         if (task_id >= ntasks) {
@@ -363,8 +364,8 @@ static void threads_scheme(int *scheme, BoundsInfo &bounds, int shm_size, int nf
     scheme[3] = reserved_shm_size;
 }
 
-extern "C" {
-int RYS_fill_int4c2e(double *out, int nao_pairs, double omega,
+static int fill_int4c2e(double *out, int nao_pairs, double omega,
+                     double lr_factor, double sr_factor,
                      RysIntEnvVars *envs, int *shls_slice, int shm_size,
                      int npairs_ij, int npairs_kl,
                      uint32_t *pair_ij_mapping, uint32_t *pair_kl_mapping,
@@ -430,7 +431,7 @@ int RYS_fill_int4c2e(double *out, int nao_pairs, double omega,
 
     int4c2e_kernel<<<workers, threads, buflen>>>(
         out, *envs, bounds, q_cond_ij, q_cond_kl, ij_pair_loc, kl_pair_loc,
-        pool, head, nf, nao_pairs, reserved_shm_size, omega);
+        pool, head, nf, nao_pairs, reserved_shm_size, omega, lr_factor, sr_factor);
 
     err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -439,5 +440,37 @@ int RYS_fill_int4c2e(double *out, int nao_pairs, double omega,
         return 1;
     }
     return 0;
+}
+
+extern "C" {
+// Preserve the existing AO2MO entrypoint and its argument layout.
+int RYS_fill_int4c2e(double *out, int nao_pairs, double omega,
+                     RysIntEnvVars *envs, int *shls_slice, int shm_size,
+                     int npairs_ij, int npairs_kl,
+                     uint32_t *pair_ij_mapping, uint32_t *pair_kl_mapping,
+                     float *q_cond_ij, float *q_cond_kl,
+                     int *ij_pair_loc, int *kl_pair_loc,
+                     float cutoff, uint32_t *pool, int *bas)
+{
+    return fill_int4c2e(out, nao_pairs, omega, 1., 1., envs, shls_slice,
+                      shm_size, npairs_ij, npairs_kl, pair_ij_mapping,
+                      pair_kl_mapping, q_cond_ij, q_cond_kl, ij_pair_loc,
+                      kl_pair_loc, cutoff, pool, bas);
+}
+
+// The operator uses exactly the normalized range fractions of RYS_build_k.
+int RYS_fill_int4c2e_k(double *out, int nao_pairs, double omega,
+                     double lr_factor, double sr_factor,
+                     RysIntEnvVars *envs, int *shls_slice, int shm_size,
+                     int npairs_ij, int npairs_kl,
+                     uint32_t *pair_ij_mapping, uint32_t *pair_kl_mapping,
+                     float *q_cond_ij, float *q_cond_kl,
+                     int *ij_pair_loc, int *kl_pair_loc,
+                     float cutoff, uint32_t *pool, int *bas)
+{
+    return fill_int4c2e(out, nao_pairs, omega, lr_factor, sr_factor, envs,
+                      shls_slice, shm_size, npairs_ij, npairs_kl,
+                      pair_ij_mapping, pair_kl_mapping, q_cond_ij, q_cond_kl,
+                      ij_pair_loc, kl_pair_loc, cutoff, pool, bas);
 }
 }

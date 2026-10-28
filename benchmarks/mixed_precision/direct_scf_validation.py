@@ -22,11 +22,16 @@ def main():
     parser.add_argument('--state', type=Path)
     parser.add_argument('--finite-difference', action='store_true')
     parser.add_argument('--require-contracted-forces', action='store_true')
+    cache_options = parser.add_mutually_exclusive_group()
+    cache_options.add_argument('--integral-cache-mib', type=int, default=0)
+    cache_options.add_argument('--integral-cache-all', action='store_true')
     parser.add_argument('--require-gpu-source', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if bool(args.geometry_report) != bool(args.state):
         parser.error('External geometry and orbital state must be supplied together')
+    if args.integral_cache_mib < 0 or (args.integral_cache_mib or args.integral_cache_all) and not args.regroup:
+        parser.error('A positive integral cache requires --regroup')
     _resources([int(x) for x in args.cpus.split(',')])
     if os.environ.get('CUDA_VISIBLE_DEVICES') != str(args.gpu):
         raise RuntimeError('Unexpected physical GPU selection')
@@ -74,6 +79,8 @@ def main():
         mf.conv_tol_grad = 1e-4 if tolerance is None else 1e-6
         mf.max_cycle, mf.chkfile = settings['max_cycle'], None
         mf.direct_scf_tol, mf.direct_scf_regroup = 1e-13, args.regroup
+        mf.direct_scf_cache_bytes = args.integral_cache_mib*1024**2
+        mf.direct_scf_cache_all = args.integral_cache_all
         return mf
 
     mf = method(mol)
@@ -114,6 +121,12 @@ def main():
              mo_energy=cp.asnumpy(mf.mo_energy))
     (args.output/'scf.json').write_text(json.dumps({'energy_hartree': energy, 'cycles': cycles}, indent=2)+'\n')
     selected_cutoffs = {str(k): opt.diffuse_cutoff for k, opt in mf._opt_gpu.items() if opt is not None}
+    cache_stats = {str(k): opt._integral_cache.statistics() for k, opt in mf._opt_gpu.items()
+                   if opt is not None and getattr(opt, '_integral_cache', None) is not None}
+    if (args.integral_cache_mib or args.integral_cache_all) and not any(s['hits'] > 0 for s in cache_stats.values()):
+        raise RuntimeError('The requested integral cache did not reuse any groups')
+    if args.integral_cache_all and not all(s['all_groups_resident'] for s in cache_stats.values()):
+        raise RuntimeError('The requested full integral cache is incomplete')
     if set(selected_cutoffs.values()) != {10. if args.regroup else .3}:
         raise RuntimeError(f'The requested representation was not exercised: {selected_cutoffs}')
 
@@ -153,21 +166,26 @@ def main():
 
     # Run controls after the timed force call so that verification cannot replace
     # the reusable SCF exchange optimizer before its derivative uses it.
+    cache_all = mf.direct_scf_cache_all
+    mf.direct_scf_cache_all = False
     mf.direct_scf_regroup = False
     try:
         check = _full_check(mf, energy)
     finally:
         mf.direct_scf_regroup = args.regroup
+        mf.direct_scf_cache_all = cache_all
     (args.output/'native-check.json').write_text(json.dumps(check, indent=2)+'\n')
     if not check['passed']:
         raise RuntimeError(f'Original-representation Fock verification failed: {check}')
     reference_error = None
     if args.regroup:
+        mf.direct_scf_cache_all = False
         mf.direct_scf_regroup = False
         try:
             reference_grad = gradient(mf)
         finally:
             mf.direct_scf_regroup = True
+            mf.direct_scf_cache_all = cache_all
         np.save(args.output/'native-same-state-gradient.npy', reference_grad)
         reference_error = float(np.max(np.abs(reference_grad-grad)))
         np.testing.assert_allclose(grad, reference_grad, atol=2e-8, rtol=0)
@@ -193,7 +211,7 @@ def main():
         if abs(numerical-grad[atom_index, axis]) > 3e-6:
             raise RuntimeError('Analytic force failed the independent energy finite difference')
 
-    files = ['scf/hf.py', 'scf/jk.py', 'scf/_direct_scf.py', 'grad/rhf.py', 'grad/rks.py',
+    files = ['scf/hf.py', 'scf/jk.py', 'scf/_direct_scf.py', 'scf/_integral_cache.py', 'grad/rhf.py', 'grad/rks.py',
              'dft/rks.py', 'dft/numint.py', 'tools/ase_interface.py']
     report = {'case': args.case, 'regrouped': args.regroup, 'geometry_angstrom': atom,
               'charge': charge, 'multiplicity': multiplicity, 'basis': mol.basis, 'cart': mol.cart,
@@ -205,6 +223,7 @@ def main():
               'entry_point': 'ASE' if atoms is not None else 'kernel with controlled supplied density',
               'supplied_guess': None if guess is None else '99.9% retained DF density plus 0.1% MINAO',
               'original_representation_verification': check, 'selected_scf_cutoffs': selected_cutoffs,
+              'integral_cache': cache_stats,
               'selected_force_cutoffs': force_cutoffs,
               'selected_force_kernels': force_kernels,
               'same_state_force_max_abs': reference_error, 'finite_difference': finite_difference,
