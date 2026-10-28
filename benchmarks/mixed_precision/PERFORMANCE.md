@@ -1643,6 +1643,9 @@ kernel time, **56.4%** of full-force kernel time and **55.6%** of LR-force time.
 The largest aggregated force families remain `(fp|dp)`, `(dp|dp)` and `(fd|dp)`;
 their full-plus-LR times are respectively 3.40, 3.16 and 3.02 seconds. Significant
 cost remains in the surviving d/f work even after screening.
+The three largest individual full-force groups already have one primitive on
+each of their four shells. Further primitive splitting cannot shorten those
+groups' primitive loops.
 
 The counter also evaluates hypothetical larger cutoffs without applying them to
 the timed integrals. Weighting survivors by primitive products, Cartesian products
