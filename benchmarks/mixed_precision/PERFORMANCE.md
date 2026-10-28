@@ -1412,3 +1412,50 @@ are in `direct-jk-next-20261028-v3`, under `/scratch/failip/gpu4pyscf-benchmarks
 The native libraries remain unchanged. CPU policy/algebra checks pass 54 tests
 with 19 opt-in CUDA tests skipped locally. The matching GPU installation passes
 40 focused policy/cache checks, including its real CUDA isolation case.
+
+The integrated code at `4bec190` also passes all six complete SCF/force cases,
+including fresh MINAO/ASE energy-to-force reuse for the five small organics,
+the controlled supplied-guess large case, a rebuilt original-representation
+physical Fock and complete same-state original-grouping forces. The force
+optimizer keys confirm that the qualified derivative uses the positive-omega
+LR operator and does not build an SR operator. The timed force call now precedes
+the representation-changing controls so that normal SCF optimizer reuse is retained.
+
+| Case | SCF cycles, unchanged | Fresh SCF, s | Complete forces, s | Complete call, s |
+| --- | ---: | ---: | ---: | ---: |
+| Acetyl fluoride | 10 | 26.58 | 5.43 | 32.01 |
+| Acetamide | 10 | 33.47 | 6.64 | 40.11 |
+| Pyridine | 10 | 56.68 | 12.74 | 69.42 |
+| Dimethyl sulfoxide | 9 | 53.08 | 14.17 | 67.25 |
+| Acetyl chloride | 10 | 45.36 | 11.65 | 57.01 |
+| Larger organic, 681 orbitals | 4 | 143.06 | 100.40 | 243.45 |
+
+These are fresh calls in separate processes under the same GPU/CPU allocation.
+The earlier 278.62-second regrouped and 329.09-second original-grouping large
+calls provide context: the new call is respectively 12.6% and 26.0% shorter.
+Those historical call times are not a new interleaved timing experiment.
+The largest complete same-state force difference from the original grouping is
+`1.60e-9` Hartree/Bohr, and the independent acetyl fluoride energy finite
+difference passes with an error of `1.46e-6` Hartree/Bohr at the unchanged
+`3e-6` bound. The full qualification reports and subsequent alternating
+same-state complete-force timings are retained in `direct-jk-next-20261028-v4`.
+
+Alternating complete-force replays at the identical retained large state confirm
+the gain independently of SCF iteration counts. Both representations use the
+same current library and prepared optimizer caches; only the old `energy_ee`
+routine is bound to the reference gradient instance. There is no global kernel
+patch or precision change. In short/long/long/short order, times are 134.877,
+100.248, 100.257 and 134.665 seconds. The two-sample medians are **134.771 versus
+100.253 seconds**, a **25.6% reduction in complete-force time**. Maximum force
+error is `4.78e-10` Hartree/Bohr against the retained old-decomposition array.
+
+All six complete cases pass the independent report assessment. Six existing
+native RKS/UKS regressions also pass, covering global hybrids, range separation,
+nonlocal correlation, grid response and Cartesian/open-shell behavior that must
+retain the original split. A final audit verifies all matching source inputs,
+all 12 unchanged native libraries and preservation of the shared baseline.
+The retained `assessment.json` checks recipe/resource/source identity, physical
+Fock acceptance, original-grouping forces, finite differences, actual derivative
+operator dispatch and ABBA force agreement before marking this qualification
+complete. The tested numerical sources match `4bec190`; raw states, traces,
+reports, scripts and regression evidence are saved alongside the assessment.
