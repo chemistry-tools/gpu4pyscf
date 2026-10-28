@@ -39,6 +39,14 @@ full/SR derivative passes, and its LR optimizer can reuse the SCF exchange cache
 Other methods retain their original force decomposition. Screening thresholds,
 precision, density and grid response are unchanged.
 
+Matching native builds also contract the generic J/K force raising/lowering terms
+before applying primitive exponents and center offsets. The fourth-center force
+is reconstructed after contraction using translation symmetry. The same per-instance
+qualification selects this float64 rearrangement; block layouts, screening and
+workspaces stay unchanged. Older native libraries fall back to their original
+force entrypoint. Rebuild the native package to use this additional optimization.
+Its complete SCF/force qualification is recorded separately in the measured results.
+
 The precision option is independent: regrouping does not introduce float32
 exchange. Qualification passes complete float64 SCF and physical-Fock checks
 on five mixed-element organics and a 681-orbital development case, full forces
@@ -52,4 +60,5 @@ See [reproduction instructions](../benchmarks/mixed_precision/RUNNING.md#direct-
 for the fixed-density and complete SCF/force checks, and
 [measured results](../benchmarks/mixed_precision/PERFORMANCE.md#direct-exchange-profile-and-primitive-grouping)
 for the scope of the component timings. A matching native installation is
-required; the Python integration does not change its CUDA library ABI.
+required. The original CUDA entrypoint remains available; the arithmetic optimization
+adds an optional entrypoint with the same argument layout.

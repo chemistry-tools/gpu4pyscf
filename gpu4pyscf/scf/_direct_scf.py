@@ -51,7 +51,17 @@ def get_optimizer(mf, mol, omega, *, optimizer_type, device_count, capability):
     ):
         with mol.with_range_coulomb(omega):
             opt = optimizer_type(mol, mf.direct_scf_tol, diffuse_cutoff=cutoff).build()
+        opt._direct_scf_regroup = cutoff == REGROUPED_PRIMITIVE_CUTOFF
         # Scanners/copies may initially share the old dictionary. Publish a new one
         # only after a successful build, without changing the source instance.
         mf._opt_gpu = {**mf._opt_gpu, omega: opt}
     return opt
+
+
+def force_kernel(opt, native_library):
+    """Select contracted derivatives only for an owner-qualified optimizer."""
+    if getattr(opt, '_direct_scf_regroup', False) is True:
+        contracted = getattr(native_library, 'RYS_per_atom_jk_ip1_contract', None)
+        if contracted is not None:
+            return contracted
+    return native_library.RYS_per_atom_jk_ip1

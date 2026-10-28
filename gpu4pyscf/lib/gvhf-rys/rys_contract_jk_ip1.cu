@@ -350,6 +350,7 @@ while (1) {
 }
 }
 
+template <bool CONTRACT_FACTORS>
 __global__ static
 void rys_ejk_ip1_kernel(RysIntEnvVars envs, JKEnergy jk, BoundsInfo bounds,
                         float *q_cond_ij, float *q_cond_kl, float dm_penalty,
@@ -512,6 +513,12 @@ while (1) {
             rlrk[2*nsq_per_block] = zlzk;
         }
 
+        double local_ix = 0.;
+        double local_iy = 0.;
+        double local_iz = 0.;
+        double local_jx = 0.;
+        double local_jy = 0.;
+        double local_jz = 0.;
         double v_kx = 0;
         double v_ky = 0;
         double v_kz = 0;
@@ -634,6 +641,24 @@ while (1) {
                 int nroots = bounds.nroots;
                 rys_roots_for_k(nroots, theta, rr, rw, jk.omega, jk.lr_factor, jk.sr_factor,
                                 nsq_per_block, gout_stride, gout_id);
+                // Primitive exponents and center offsets are constant across
+                // Cartesian terms and Rys roots for this primitive quartet.
+                double raise_ix = 0.;
+                double raise_iy = 0.;
+                double raise_iz = 0.;
+                double raise_kx = 0.;
+                double raise_ky = 0.;
+                double raise_kz = 0.;
+                double lower_ix = 0.;
+                double lower_iy = 0.;
+                double lower_iz = 0.;
+                double lower_jx = 0.;
+                double lower_jy = 0.;
+                double lower_jz = 0.;
+                double lower_kx = 0.;
+                double lower_ky = 0.;
+                double lower_kz = 0.;
+                double base = 0.;
                 for (int irys = 0; irys < nroots; ++irys) {
                     BUILD_4C_GXYZ(lj, ll, task_id < ntasks);
                     if (task_id >= ntasks) {
@@ -671,27 +696,70 @@ while (1) {
                         double prod_xy = Ix * Iy * dd;
                         double prod_xz = Ix * Iz * dd;
                         double prod_yz = Iy * Iz * dd;
-                        double gix = gx[addrx+i_1];
-                        double giy = gx[addry+i_1];
-                        double giz = gx[addrz+i_1];
-                        double gkx = gx[addrx+k_1];
-                        double gky = gx[addry+k_1];
-                        double gkz = gx[addrz+k_1];
-                        double fix = ai2 * gix; if (ix > 0) { fix -= ix * gx[addrx-i_1]; } v_ix += fix * prod_yz;
-                        double fiy = ai2 * giy; if (iy > 0) { fiy -= iy * gx[addry-i_1]; } v_iy += fiy * prod_xz;
-                        double fiz = ai2 * giz; if (iz > 0) { fiz -= iz * gx[addrz-i_1]; } v_iz += fiz * prod_xy;
-                        double fkx = ak2 * gkx; if (kx > 0) { fkx -= kx * gx[addrx-k_1]; } v_kx += fkx * prod_yz;
-                        double fky = ak2 * gky; if (ky > 0) { fky -= ky * gx[addry-k_1]; } v_ky += fky * prod_xz;
-                        double fkz = ak2 * gkz; if (kz > 0) { fkz -= kz * gx[addrz-k_1]; } v_kz += fkz * prod_xy;
-                        double fjx = aj2 * (gix - rjri[0] * Ix); if (jx > 0) { fjx -= jx * gx[addrx-j_1]; } v_jx += fjx * prod_yz;
-                        double fjy = aj2 * (giy - rjri[1] * Iy); if (jy > 0) { fjy -= jy * gx[addry-j_1]; } v_jy += fjy * prod_xz;
-                        double fjz = aj2 * (giz - rjri[2] * Iz); if (jz > 0) { fjz -= jz * gx[addrz-j_1]; } v_jz += fjz * prod_xy;
-                        double flx = -fix - fjx - fkx; v_lx += flx * prod_yz;
-                        double fly = -fiy - fjy - fky; v_ly += fly * prod_xz;
-                        double flz = -fiz - fjz - fkz; v_lz += flz * prod_xy;
+                        if constexpr (CONTRACT_FACTORS) {
+                            raise_ix += gx[addrx+i_1] * prod_yz;
+                            raise_kx += gx[addrx+k_1] * prod_yz;
+                            if (ix > 0) { lower_ix += (ix * gx[addrx-i_1]) * prod_yz; }
+                            if (jx > 0) { lower_jx += (jx * gx[addrx-j_1]) * prod_yz; }
+                            if (kx > 0) { lower_kx += (kx * gx[addrx-k_1]) * prod_yz; }
+                            raise_iy += gx[addry+i_1] * prod_xz;
+                            raise_ky += gx[addry+k_1] * prod_xz;
+                            if (iy > 0) { lower_iy += (iy * gx[addry-i_1]) * prod_xz; }
+                            if (jy > 0) { lower_jy += (jy * gx[addry-j_1]) * prod_xz; }
+                            if (ky > 0) { lower_ky += (ky * gx[addry-k_1]) * prod_xz; }
+                            raise_iz += gx[addrz+i_1] * prod_xy;
+                            raise_kz += gx[addrz+k_1] * prod_xy;
+                            if (iz > 0) { lower_iz += (iz * gx[addrz-i_1]) * prod_xy; }
+                            if (jz > 0) { lower_jz += (jz * gx[addrz-j_1]) * prod_xy; }
+                            if (kz > 0) { lower_kz += (kz * gx[addrz-k_1]) * prod_xy; }
+                            base += Ix * prod_yz;
+                        } else {
+                            double gix = gx[addrx+i_1];
+                            double giy = gx[addry+i_1];
+                            double giz = gx[addrz+i_1];
+                            double gkx = gx[addrx+k_1];
+                            double gky = gx[addry+k_1];
+                            double gkz = gx[addrz+k_1];
+                            double fix = ai2 * gix; if (ix > 0) { fix -= ix * gx[addrx-i_1]; } v_ix += fix * prod_yz;
+                            double fiy = ai2 * giy; if (iy > 0) { fiy -= iy * gx[addry-i_1]; } v_iy += fiy * prod_xz;
+                            double fiz = ai2 * giz; if (iz > 0) { fiz -= iz * gx[addrz-i_1]; } v_iz += fiz * prod_xy;
+                            double fkx = ak2 * gkx; if (kx > 0) { fkx -= kx * gx[addrx-k_1]; } v_kx += fkx * prod_yz;
+                            double fky = ak2 * gky; if (ky > 0) { fky -= ky * gx[addry-k_1]; } v_ky += fky * prod_xz;
+                            double fkz = ak2 * gkz; if (kz > 0) { fkz -= kz * gx[addrz-k_1]; } v_kz += fkz * prod_xy;
+                            double fjx = aj2 * (gix - rjri[0] * Ix); if (jx > 0) { fjx -= jx * gx[addrx-j_1]; } v_jx += fjx * prod_yz;
+                            double fjy = aj2 * (giy - rjri[1] * Iy); if (jy > 0) { fjy -= jy * gx[addry-j_1]; } v_jy += fjy * prod_xz;
+                            double fjz = aj2 * (giz - rjri[2] * Iz); if (jz > 0) { fjz -= jz * gx[addrz-j_1]; } v_jz += fjz * prod_xy;
+                            double flx = -fix - fjx - fkx; v_lx += flx * prod_yz;
+                            double fly = -fiy - fjy - fky; v_ly += fly * prod_xz;
+                            double flz = -fiz - fjz - fkz; v_lz += flz * prod_xy;
+                        }
                     }
                 }
+                if constexpr (CONTRACT_FACTORS) {
+                    local_ix += ai2 * raise_ix - lower_ix;
+                    local_jx += aj2 * (raise_ix - rjri[0] * base) - lower_jx;
+                    v_kx += ak2 * raise_kx - lower_kx;
+                    local_iy += ai2 * raise_iy - lower_iy;
+                    local_jy += aj2 * (raise_iy - rjri[1] * base) - lower_jy;
+                    v_ky += ak2 * raise_ky - lower_ky;
+                    local_iz += ai2 * raise_iz - lower_iz;
+                    local_jz += aj2 * (raise_iz - rjri[2] * base) - lower_jz;
+                    v_kz += ak2 * raise_kz - lower_kz;
+                }
             }
+        }
+        if constexpr (CONTRACT_FACTORS) {
+            // Translational invariance after density contraction avoids a
+            // fourth derivative contraction for every Cartesian term/root.
+            v_ix += local_ix;
+            v_jx += local_jx;
+            v_lx = -(local_ix + local_jx + v_kx);
+            v_iy += local_iy;
+            v_jy += local_jy;
+            v_ly = -(local_iy + local_jy + v_ky);
+            v_iz += local_iz;
+            v_jz += local_jz;
+            v_lz = -(local_iz + local_jz + v_kz);
         }
         int ka = bas[ksh*BAS_SLOTS+ATOM_OF];
         int la = bas[lsh*BAS_SLOTS+ATOM_OF];
@@ -1739,7 +1807,7 @@ int RYS_build_jk_ip1(double *vj, double *vk, double *dm, int n_dm, int nao, int 
     return 0;
 }
 
-int RYS_per_atom_jk_ip1(double *ejk, double j_factor, double k_factor,
+static int _per_atom_jk_ip1(double *ejk, double j_factor, double k_factor,
                         double *dm, int n_dm, int nao,
                         double omega, double lr_factor, double sr_factor,
                         RysIntEnvVars envs, int *scheme, int *shls_slice,
@@ -1748,7 +1816,7 @@ int RYS_per_atom_jk_ip1(double *ejk, double j_factor, double k_factor,
                         float *q_cond_ij, float *q_cond_kl, float *s_cond_ij, float *s_cond_kl,
                         float *diffuse_exps, float *dm_cond, float cutoff, float dm_penalty,
                         uint32_t *pool, double *dd_pool,
-                        int *atm, int natm, int *bas, int nbas, double *env)
+                        int *atm, int natm, int *bas, int nbas, double *env, bool contract_factors)
 {
     int ish0 = shls_slice[0];
     int jsh0 = shls_slice[2];
@@ -1808,7 +1876,11 @@ int RYS_per_atom_jk_ip1(double *ejk, double j_factor, double k_factor,
         int reserved_shm_size = max(buflen, 6*gout_stride*quartets_per_block);
         buflen = (reserved_shm_size + ij_prims)*sizeof(double);
         if (buflen > 48000) {
-            cudaFuncSetAttribute(rys_ejk_ip1_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, buflen);
+            if (contract_factors) {
+                cudaFuncSetAttribute(rys_ejk_ip1_kernel<true>, cudaFuncAttributeMaxDynamicSharedMemorySize, buflen);
+            } else {
+                cudaFuncSetAttribute(rys_ejk_ip1_kernel<false>, cudaFuncAttributeMaxDynamicSharedMemorySize, buflen);
+            }
             cudaError_t err = cudaGetLastError();
             if (err != cudaSuccess) {
                 fprintf(stderr, "Failed to set CUDA shm size %d: %s\n", buflen,
@@ -1816,10 +1888,17 @@ int RYS_per_atom_jk_ip1(double *ejk, double j_factor, double k_factor,
                 return 1;
             }
         }
-        rys_ejk_ip1_kernel<<<workers, threads, buflen>>>(
-            envs, jk, bounds, q_cond_ij, q_cond_kl, dm_penalty,
-            s_cond_ij, s_cond_kl, diffuse_exps, pool, head, dd_pool, nf,
-            reserved_shm_size);
+        if (contract_factors) {
+            rys_ejk_ip1_kernel<true><<<workers, threads, buflen>>>(
+                envs, jk, bounds, q_cond_ij, q_cond_kl, dm_penalty,
+                s_cond_ij, s_cond_kl, diffuse_exps, pool, head, dd_pool, nf,
+                reserved_shm_size);
+        } else {
+            rys_ejk_ip1_kernel<false><<<workers, threads, buflen>>>(
+                envs, jk, bounds, q_cond_ij, q_cond_kl, dm_penalty,
+                s_cond_ij, s_cond_kl, diffuse_exps, pool, head, dd_pool, nf,
+                reserved_shm_size);
+        }
     }
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -1832,6 +1911,42 @@ int RYS_per_atom_jk_ip1(double *ejk, double j_factor, double k_factor,
         return 1;
     }
     return 0;
+}
+
+int RYS_per_atom_jk_ip1(double *ejk, double j_factor, double k_factor,
+                        double *dm, int n_dm, int nao,
+                        double omega, double lr_factor, double sr_factor,
+                        RysIntEnvVars envs, int *scheme, int *shls_slice,
+                        int npairs_ij, int npairs_kl,
+                        uint32_t *pair_ij_mapping, uint32_t *pair_kl_mapping,
+                        float *q_cond_ij, float *q_cond_kl, float *s_cond_ij, float *s_cond_kl,
+                        float *diffuse_exps, float *dm_cond, float cutoff, float dm_penalty,
+                        uint32_t *pool, double *dd_pool,
+                        int *atm, int natm, int *bas, int nbas, double *env)
+{
+    return _per_atom_jk_ip1(ejk, j_factor, k_factor, dm, n_dm, nao,
+        omega, lr_factor, sr_factor, envs, scheme, shls_slice, npairs_ij, npairs_kl,
+        pair_ij_mapping, pair_kl_mapping, q_cond_ij, q_cond_kl, s_cond_ij, s_cond_kl,
+        diffuse_exps, dm_cond, cutoff, dm_penalty, pool, dd_pool,
+        atm, natm, bas, nbas, env, false);
+}
+
+int RYS_per_atom_jk_ip1_contract(double *ejk, double j_factor, double k_factor,
+                        double *dm, int n_dm, int nao,
+                        double omega, double lr_factor, double sr_factor,
+                        RysIntEnvVars envs, int *scheme, int *shls_slice,
+                        int npairs_ij, int npairs_kl,
+                        uint32_t *pair_ij_mapping, uint32_t *pair_kl_mapping,
+                        float *q_cond_ij, float *q_cond_kl, float *s_cond_ij, float *s_cond_kl,
+                        float *diffuse_exps, float *dm_cond, float cutoff, float dm_penalty,
+                        uint32_t *pool, double *dd_pool,
+                        int *atm, int natm, int *bas, int nbas, double *env)
+{
+    return _per_atom_jk_ip1(ejk, j_factor, k_factor, dm, n_dm, nao,
+        omega, lr_factor, sr_factor, envs, scheme, shls_slice, npairs_ij, npairs_kl,
+        pair_ij_mapping, pair_kl_mapping, q_cond_ij, q_cond_kl, s_cond_ij, s_cond_kl,
+        diffuse_exps, dm_cond, cutoff, dm_penalty, pool, dd_pool,
+        atm, natm, bas, nbas, env, true);
 }
 
 // only support RHF density matrices

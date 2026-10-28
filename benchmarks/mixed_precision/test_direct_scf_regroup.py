@@ -159,6 +159,7 @@ def test_cache_rebuilds_changed_inputs_and_keeps_other_entries(change):
     mf = _method()
     first = _get(mf)
     assert first.diffuse_cutoff == 10. and first.build_omega == .3
+    assert first._direct_scf_regroup is True
     assert _get(mf) is first and mf.mol.omega == 0.
     other = _get(mf, -.3)
     if change == 'policy':
@@ -169,6 +170,7 @@ def test_cache_rebuilds_changed_inputs_and_keeps_other_entries(change):
         mf.mol = _Molecule()
     second = _get(mf)
     assert second is not first
+    assert second._direct_scf_regroup is (change != 'policy')
     assert mf._opt_gpu[-.3] is other
 
 
@@ -181,7 +183,23 @@ def test_scanner_copy_does_not_mutate_source_cache():
     replacement = _get(scanner)
     assert scanner._opt_gpu is not source._opt_gpu
     assert replacement.diffuse_cutoff == .3
+    assert replacement._direct_scf_regroup is False
     assert source._opt_gpu[.3] is original and original.diffuse_cutoff == 10.
+    assert original._direct_scf_regroup is True
+
+
+@pytest.mark.parametrize('qualified', [False, True])
+@pytest.mark.parametrize('has_symbol', [False, True])
+def test_force_kernel_qualification_and_old_library_fallback(qualified, has_symbol):
+    module = _module()
+    native, contracted = object(), object()
+    library = SimpleNamespace(RYS_per_atom_jk_ip1=native)
+    if has_symbol:
+        library.RYS_per_atom_jk_ip1_contract = contracted
+    opt = SimpleNamespace(_direct_scf_regroup=qualified)
+    assert module.force_kernel(opt, library) is (contracted if qualified and has_symbol else native)
+    # A matching primitive cutoff alone does not establish MF ownership/eligibility.
+    assert module.force_kernel(SimpleNamespace(diffuse_cutoff=10.), library) is native
 
 
 def test_failed_build_keeps_cache_and_restores_range_context():
@@ -235,3 +253,47 @@ def test_native_instance_isolation_reset_and_coulomb_representation():
     assert scanner._opt_gpu == {None: None} and scanner.direct_scf_regroup is True
     scanner.get_k(shifted, dm, 1, omega, alpha, hyb)
     assert scanner._opt_gpu[omega].mol is shifted
+
+
+@pytest.mark.skipif(os.environ.get('DFT_GPU_TEST') != '1', reason='opt-in CUDA test')
+@pytest.mark.parametrize('has_symbol', [False, True])
+def test_native_force_dispatch_and_older_library_control(monkeypatch, has_symbol):
+    import cupy as cp
+    from ase.build import molecule
+    from pyscf import gto
+
+    from gpu4pyscf import dft
+    from gpu4pyscf.grad import rhf
+
+    atoms = molecule('CH3COF')
+    mol = gto.M(atom=list(zip(atoms.get_chemical_symbols(), atoms.positions)),
+                basis='def2-tzvpd', verbose=0)
+    mf = dft.RKS(mol, xc='wb97m-v')
+    mf.direct_scf_regroup = True
+    dm = cp.asarray(mf.get_init_guess(mol, 'minao'))
+    opt = mf._get_jk_opt(mol, None)
+    assert opt._direct_scf_regroup is True
+    original = rhf.libvhf_rys.RYS_per_atom_jk_ip1
+    contracted = getattr(rhf.libvhf_rys, 'RYS_per_atom_jk_ip1_contract', None)
+    if has_symbol:
+        assert contracted is not None, 'Rebuild native RYS to test contracted derivatives'
+    counts = {'original': 0, 'contracted': 0}
+
+    def wrap(kernel, name):
+        def call(*args):
+            counts[name] += 1
+            return kernel(*args)
+        return call
+
+    library = SimpleNamespace(RYS_per_atom_jk_ip1=wrap(original, 'original'))
+    if has_symbol:
+        library.RYS_per_atom_jk_ip1_contract = wrap(contracted, 'contracted')
+    monkeypatch.setattr(rhf, 'libvhf_rys', library)
+    actual = rhf._jk_energy_per_atom(opt, dm, j_factor=1., k_factor=.15)
+    assert counts['contracted' if has_symbol else 'original'] > 0
+    assert counts['original' if has_symbol else 'contracted'] == 0
+    # Removing owner qualification must use the original API, even at cutoff 10.
+    monkeypatch.setattr(opt, '_direct_scf_regroup', False)
+    reference = rhf._jk_energy_per_atom(opt, dm, j_factor=1., k_factor=.15)
+    assert counts['original'] > 0
+    cp.testing.assert_allclose(actual, reference, atol=2e-8, rtol=0)

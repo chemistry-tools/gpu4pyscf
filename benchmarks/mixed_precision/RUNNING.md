@@ -136,6 +136,11 @@ python benchmarks/mixed_precision/direct_scf_validation.py \
   --require-gpu-source /absolute/path/to/native/gpu4pyscf --output /outside/checkout/regrouped-scf
 ```
 
+Add `--require-contracted-forces` to a regrouped run to require the rebuilt native
+derivative entrypoint. Without this assertion, older native libraries correctly
+fall back to their original kernel. The focused CUDA policy tests exercise both
+the contracted call and the older-library/per-instance controls.
+
 Small public mixed-element cases use fresh MINAO guesses through ASE, followed by
 forces that reuse the accepted SCF. Every state must pass a rebuilt original-representation
 float64 Fock check at the original convergence thresholds. Regrouped derivatives

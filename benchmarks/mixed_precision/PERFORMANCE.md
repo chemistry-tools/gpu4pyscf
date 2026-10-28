@@ -1530,3 +1530,14 @@ SCF/force qualification and whole-force timings are still required for it.
 The raw evidence and `assessment-numeric.json` are retained in
 `direct-jk-next-20261028-v9`. No native arithmetic change has yet been enabled
 in the library by these component experiments.
+
+Production integration now uses one templated generic kernel with compile-time
+original/contracted branches. The original native ABI remains intact and the new
+optional entrypoint uses its existing arguments, workers, layout and workspace.
+Only an optimizer qualified by the owning SCF instance can select it; older native
+libraries use the original kernel. The library default remains `False`.
+The isolated matching RYS build passes 46 focused policy/CUDA tests, including
+actual new-entrypoint execution, original-kernel controls and missing-symbol fallback.
+The compiler reports 128/160 registers for the original/contracted generic kernels,
+with no spills. Full SCF/force, finite-difference and complete-force timing
+qualification is still in progress; component timings above do not establish it.

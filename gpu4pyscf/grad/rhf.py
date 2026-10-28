@@ -29,6 +29,7 @@ from gpu4pyscf.__config__ import props as gpu_specs
 from gpu4pyscf.df import int3c2e_bdiv
 from gpu4pyscf.lib import logger
 from gpu4pyscf.lib import multi_gpu
+from gpu4pyscf.scf._direct_scf import force_kernel
 from gpu4pyscf.scf.jk import (
     LMAX, QUEUE_DEPTH, SHM_SIZE, THREADS, libvhf_rys, _VHFOpt,
     _nearest_power2, _TimingCollector, _check_rsh_factors)
@@ -106,7 +107,8 @@ def _jk_energy_per_atom(vhfopt, dm, j_factor=1., k_factor=1.,
 
         timing_collection = _TimingCollector(log.timer_debug1)
         kern_counts = 0
-        kern = libvhf_rys.RYS_per_atom_jk_ip1
+        kern = force_kernel(vhfopt, libvhf_rys)
+        kern.restype = ctypes.c_int
 
         _dms = cp.asarray(dms, order='C')
         ejk = cp.zeros((mol.natm, 3))

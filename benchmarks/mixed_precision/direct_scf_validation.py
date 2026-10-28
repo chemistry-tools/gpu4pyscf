@@ -21,6 +21,7 @@ def main():
     parser.add_argument('--geometry-report', type=Path)
     parser.add_argument('--state', type=Path)
     parser.add_argument('--finite-difference', action='store_true')
+    parser.add_argument('--require-contracted-forces', action='store_true')
     parser.add_argument('--require-gpu-source', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
@@ -42,6 +43,7 @@ def main():
     import gpu4pyscf
     from gpu4pyscf import dft
     from gpu4pyscf.dft.mixed_precision import _full_check
+    from gpu4pyscf.grad import rhf
     from gpu4pyscf.scf import hf
     from gpu4pyscf.tools.ase_interface import PySCF
 
@@ -120,16 +122,30 @@ def main():
         grad.grid_response = True
         return np.asarray(cp.asnumpy(grad.kernel()))
 
+    force_kernels = []
+    select_kernel = rhf.force_kernel
+
+    def record_kernel(opt, library):
+        kernel = select_kernel(opt, library)
+        force_kernels.append(kernel.__name__)
+        return kernel
+
+    rhf.force_kernel = record_kernel
     started = time.perf_counter()
-    if atoms is not None:
-        grad = -atoms.get_forces()*BOHR/HARTREE2EV
-        if not atoms.calc.calculation_info['scf_reused'] or atoms.calc.calculation_info['scf_seconds'] != 0:
-            raise RuntimeError('ASE forces must reuse the accepted unchanged-geometry SCF')
-    else:
-        grad = gradient(mf)
+    try:
+        if atoms is not None:
+            grad = -atoms.get_forces()*BOHR/HARTREE2EV
+            if not atoms.calc.calculation_info['scf_reused'] or atoms.calc.calculation_info['scf_seconds'] != 0:
+                raise RuntimeError('ASE forces must reuse the accepted unchanged-geometry SCF')
+        else:
+            grad = gradient(mf)
+    finally:
+        rhf.force_kernel = select_kernel
     cp.cuda.runtime.deviceSynchronize()
     force_seconds = time.perf_counter()-started
     np.save(args.output/'gradient.npy', grad)
+    if args.require_contracted_forces and set(force_kernels) != {'RYS_per_atom_jk_ip1_contract'}:
+        raise RuntimeError(f'The contracted native forces were not exercised: {force_kernels}')
     force_cutoffs = {str(k): opt.diffuse_cutoff for k, opt in mf._opt_gpu.items() if opt is not None}
     omega = mf._numint.rsh_and_hybrid_coeff(mf.xc, spin=mol.spin)[0]
     if (str(-omega) in force_cutoffs) == args.regroup:
@@ -190,6 +206,7 @@ def main():
               'supplied_guess': None if guess is None else '99.9% retained DF density plus 0.1% MINAO',
               'original_representation_verification': check, 'selected_scf_cutoffs': selected_cutoffs,
               'selected_force_cutoffs': force_cutoffs,
+              'selected_force_kernels': force_kernels,
               'same_state_force_max_abs': reference_error, 'finite_difference': finite_difference,
               'gradient_hartree_bohr': grad.tolist(), 'imported_package': str(package),
               'cpu_affinity': sorted(os.sched_getaffinity(0)), 'threadpools': threadpool_info(),
