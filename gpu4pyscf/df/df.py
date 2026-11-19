@@ -32,7 +32,8 @@ from gpu4pyscf.lib import multi_gpu
 from gpu4pyscf.df import int3c2e_bdiv
 from gpu4pyscf.df import df_jk
 from gpu4pyscf.df._mapped_transfer import _MappedCderiWriter
-from gpu4pyscf.df._whitening import _BlockedWhitening, _whiten
+from gpu4pyscf.df._whitening import (
+    _BlockedWhitening, _SOLVE_PANEL_BYTES, _TriangularWhitening, _whiten)
 from gpu4pyscf.gto.mole import SortedMole
 from gpu4pyscf import __config__
 
@@ -640,8 +641,8 @@ def _cholesky_eri(intopt, *, omega=None, lr_factor=None, sr_factor=None,
         pair_addresses = cp.asarray(pair_addresses, dtype=np.int32)
         cderi_idx = (pair_addresses, diag_addrs)
 
-    aux_coef, tag = _decompose_j2c(auxmol, aux_sorting, omega, lr_factor, sr_factor)
-    if num_devices > 1:
+    aux_coef, tag, factor = _decompose_j2c(auxmol, aux_sorting, omega, lr_factor, sr_factor)
+    if num_devices > 1 and factor is None:
         # cupy cannot copy non-contiguous array aux_coef[:,aux0:aux1] between
         # devices. This slicing is a contiguous array in the F-order storage.
         aux_coef = cp.asarray(aux_coef, order='F')
@@ -649,8 +650,20 @@ def _cholesky_eri(intopt, *, omega=None, lr_factor=None, sr_factor=None,
     naux = aux_coef.shape[1]
     naux_per_device = min(naux, (naux + num_devices - 1) // num_devices)
 
+    def whitening_plan(first, last):
+        if factor is not None:
+            coefficient = cp.asarray(aux_coef)
+            return coefficient, _TriangularWhitening(coefficient, cp.asarray(factor), first, last)
+        coefficient = cp.asarray(aux_coef[:, first:last])
+        plan = _BlockedWhitening.create(coefficient, tag) if num_devices == 1 else None
+        return coefficient, plan
+
     cp.get_default_memory_pool().free_all_blocks()
     word_avail -= batch_size * naux_sorted
+    if factor is not None:
+        # The full factor is needed on each device, with up to two bounded
+        # panels for a gathered or distributed solve.
+        word_avail -= factor.size + 2 * _SOLVE_PANEL_BYTES // factor.itemsize
     if needs_recontraction:
         word_avail -= batch_size * naux_per_device
 
@@ -671,7 +684,6 @@ def _cholesky_eri(intopt, *, omega=None, lr_factor=None, sr_factor=None,
 
         def proc(batch_iter):
             device_id = cp.cuda.device.get_device_id()
-            c = cp.asarray(aux_coef)
             _eval_j3c = eval_j3c
             if device_id != current_device:
                 _eval_j3c = intopt.int3c2e_evaluator(
@@ -686,7 +698,7 @@ def _cholesky_eri(intopt, *, omega=None, lr_factor=None, sr_factor=None,
             writer = (_MappedCderiWriter.create(cderi_cpu, cderi_batch_size)
                       if num_devices == 1 else None)
             try:
-                whitening = _BlockedWhitening.create(c, tag) if num_devices == 1 else None
+                c, whitening = whitening_plan(0, naux)
                 for batch_id in batch_iter:
                     log.debug1('processing cderi batch %d', batch_id)
                     j3c = _eval_j3c(shl_pair_batch_id=batch_id, out=work)
@@ -725,7 +737,6 @@ def _cholesky_eri(intopt, *, omega=None, lr_factor=None, sr_factor=None,
             device_id = cp.cuda.device.get_device_id()
             aux0 = naux_per_device * device_id
             aux1 = min(naux, aux0 + naux_per_device)
-            c = cp.asarray(aux_coef[:,aux0:aux1])
 
             _eval_j3c = eval_j3c
             if device_id != current_device:
@@ -738,7 +749,7 @@ def _cholesky_eri(intopt, *, omega=None, lr_factor=None, sr_factor=None,
             if needs_recontraction:
                 work1 = cp.empty(naux_per_device * batch_size)
 
-            whitening = _BlockedWhitening.create(c, tag) if num_devices == 1 else None
+            c, whitening = whitening_plan(aux0, aux1)
             for batch_id in range(num_batches):
                 j3c = _eval_j3c(batch_id, out=work)
                 p0, p1 = cderi_offsets[batch_id:batch_id+2]
@@ -758,12 +769,22 @@ def _decompose_j2c(auxmol, aux_sorting=None,
     j2c = int3c2e_bdiv.int2c2e(auxmol, omega=omega, lr_factor=lr_factor,
                                sr_factor=sr_factor)
 
+    factor = None
     try:
         cd_low = cholesky(j2c)
         aux_coef = auxmol.ctr_coeff
+        rhs_norm = cp.linalg.norm(aux_coef, ord=1)
         aux_coef = solve_triangular(
             cd_low, aux_coef.T, lower=True, overwrite_b=True).T
         tag = 'cd'
+        # The norm of the transformed inverse gives a lower bound on the
+        # condition number of L. If cond(L)^2 * eps >= 1, applying the explicit
+        # inverse can lose accuracy even when L itself solves a vector well.
+        condition = (cp.linalg.norm(cd_low, ord=cp.inf)
+                     * cp.linalg.norm(aux_coef, ord=1) / rhs_norm)
+        if float(condition) >= 1 / np.sqrt(np.finfo(cd_low.dtype).eps):
+            aux_coef = auxmol.ctr_coeff
+            factor = cd_low
     except RuntimeError:
         w, v = eigh_std(j2c)
         idx = cp.where(w > LINEAR_DEP_THR)[0]
@@ -776,4 +797,4 @@ def _decompose_j2c(auxmol, aux_sorting=None,
     if aux_sorting is not None:
         aux_coef, tmp = cp.empty_like(aux_coef), aux_coef
         aux_coef[aux_sorting] = tmp
-    return aux_coef, tag
+    return aux_coef, tag, factor

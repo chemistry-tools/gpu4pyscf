@@ -243,6 +243,33 @@ H       4.224    0.640    0.837
 
 
 class SmallMetricAndResponse(unittest.TestCase):
+    def test_ill_conditioned_whitening_preserves_auxiliary_rank(self):
+        from unittest.mock import patch
+
+        from scipy.linalg import solve_triangular
+        from gpu4pyscf.df import df as gpu_df
+        from gpu4pyscf.df._whitening import _TriangularWhitening
+
+        metric = np.diag([1e-20, 2.0, 7.0])
+        coefficients = np.array([[0.0, 2.0, 0.0], [0.0, 0.0, -3.0], [4.0, 0.0, 0.0]])
+        class AuxBasis:
+            @property
+            def ctr_coeff(self):
+                return cp.asarray(coefficients)
+
+        order = np.array([2, 0, 1])
+        raw = np.array([[1.0, 2e-10, 3.0], [2.0, -4e-10, 1.0]])
+        with patch.object(gpu_df.int3c2e_bdiv, 'int2c2e', return_value=cp.asarray(metric)):
+            transform, tag, factor = gpu_df._decompose_j2c(AuxBasis(), cp.asarray(order))
+        assert tag == 'cd' and factor is not None
+        expected = solve_triangular(np.linalg.cholesky(metric),
+                                    (raw[:, order] @ coefficients).T, lower=True).T
+        for first, last in ((0, 3), (1, 3)):
+            result = cp.empty((len(raw), last-first))
+            plan = _TriangularWhitening(transform, factor, first, last)
+            plan.apply(cp.asarray(raw), result)
+            np.testing.assert_allclose(result.get(), expected[:, first:last], atol=1e-12, rtol=0)
+
     def setUp(self):
         self.mol = pyscf.M(atom='H .1 0 0; H -.1 .2 .8', basis='6-31g', verbose=0)
 

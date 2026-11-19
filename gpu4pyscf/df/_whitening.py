@@ -1,4 +1,4 @@
-"""Bounded float64 whitening that skips exactly zero coefficient rows."""
+"""Bounded float64 whitening for molecular density fitting."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ _MIN_AUX = 2048
 _BLOCK_COLUMNS = 512
 _MAX_ROWS = 4096
 _MAX_WORKSPACE_BYTES = 512*1024**2
+_SOLVE_PANEL_BYTES = 64*1024**2
 _MAX_RETAINED_FRACTION = .75
 _SOURCE = r'''
 extern "C" __global__ void whitening_rows(
@@ -181,3 +182,40 @@ def _whiten(raw, coefficient, out, prepared):
     if prepared is not None and prepared.apply(raw, out):
         return out
     return raw.dot(coefficient, out=out)
+
+
+class _TriangularWhitening:
+    """Solve the Cholesky system on the integrals without applying an inverse."""
+
+    def __init__(self, coefficient, factor, first, last):
+        import cupy as cp
+
+        self.coefficient = coefficient
+        self.factor = factor
+        self.columns = slice(first, last)
+        self.full = first == 0 and last == len(factor)
+        self.rows = None
+        if bool(cp.all(cp.count_nonzero(coefficient, axis=0) == 1)):
+            self.rows = cp.argmax(cp.abs(coefficient), axis=0)
+            self.scales = coefficient[self.rows, cp.arange(len(factor))]
+
+    def apply(self, raw, out):
+        import cupy as cp
+        from cupyx.scipy.linalg import solve_triangular
+
+        # Bound temporary gathers and multi-device solve panels.
+        rows = max(1, min(1024, _SOLVE_PANEL_BYTES // (len(self.factor) * out.itemsize)))
+        scratch = None
+        if not self.full:
+            scratch = cp.empty((min(rows, len(raw)), len(self.factor)), dtype=out.dtype)
+        for first in range(0, len(raw), rows):
+            last = min(first + rows, len(raw))
+            block = out[first:last] if self.full else scratch[:last-first]
+            if self.rows is None:
+                raw[first:last].dot(self.coefficient, out=block)
+            else:
+                cp.multiply(raw[first:last, self.rows], self.scales, out=block)
+            solved = solve_triangular(self.factor, block.T, lower=True, overwrite_b=True)
+            if not self.full or solved.data.ptr != block.data.ptr:
+                out[first:last] = solved.T[:, self.columns]
+        return True
