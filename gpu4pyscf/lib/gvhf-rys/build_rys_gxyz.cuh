@@ -15,25 +15,25 @@
  */
 
 
-#define BUILD_4C_GXYZ(lj, ll, active) \
+#define BUILD_4C_GXYZ_TYPED(Real, root_weight, lj, ll, active) \
         __syncthreads(); \
         int gx_len = nsq_per_block * g_size; \
         if (gout_id == 0) { \
-            gx[gx_len*2] = rw[(irys*2+1)*nsq_per_block]; \
+            gx[gx_len*2] = (root_weight); \
         } \
-        double rt = rw[irys*2*nsq_per_block]; \
-        double aij = aij_cache[0]; \
-        double rt_aa = rt / (aij + akl); \
-        double s0x, s1x, s2x; \
+        Real rt = rw[irys*2*nsq_per_block]; \
+        Real aij = aij_cache[0]; \
+        Real rt_aa = rt / (aij + Real(akl)); \
+        Real s0x, s1x, s2x; \
         if (lij > 0) { \
-            double aj_aij = aij_cache[1]; \
-            double rt_aij = rt_aa * akl; \
-            double b10 = .5/aij * (1 - rt_aij); \
+            Real aj_aij = aij_cache[1]; \
+            Real rt_aij = rt_aa * Real(akl); \
+            Real b10 = Real(.5)/aij * (1 - rt_aij); \
             __syncthreads(); \
             for (int n = gout_id; n < 3; n += gout_stride) { \
-                double *_gx = gx + n * gx_len; \
-                double Rpa = rjri[n] * aj_aij; \
-                double c0x = Rpa - rt_aij * Rpq[n*nsq_per_block]; \
+                Real *_gx = gx + n * gx_len; \
+                Real Rpa = Real(rjri[n]) * aj_aij; \
+                Real c0x = Rpa - rt_aij * Real(Rpq[n*nsq_per_block]); \
                 s0x = _gx[0]; \
                 s1x = c0x * s0x; \
                 _gx[nsq_per_block] = s1x; \
@@ -46,17 +46,17 @@
             } \
         } \
         if (lkl > 0) { \
-            double rt_akl = rt_aa * aij; \
-            double b00 = .5 * rt_aa; \
-            double b01 = .5/akl * (1 - rt_akl); \
+            Real rt_akl = rt_aa * aij; \
+            Real b00 = Real(.5) * rt_aa; \
+            Real b01 = Real(.5)/Real(akl) * (1 - rt_akl); \
             int lij3 = (lij+1)*3; \
             for (int n = gout_id; n < lij3+gout_id; n += gout_stride) { \
                 __syncthreads(); \
                 int i = n / 3; \
                 int _ix = n - i * 3; \
-                double *_gx = gx + (i + _ix * g_size) * nsq_per_block; \
-                double Rqc = rlrk[_ix*nsq_per_block] * al_akl; \
-                double cpx = Rqc + rt_akl * Rpq[_ix*nsq_per_block]; \
+                Real *_gx = gx + (i + _ix * g_size) * nsq_per_block; \
+                Real Rqc = Real(rlrk[_ix*nsq_per_block]) * Real(al_akl); \
+                Real cpx = Rqc + rt_akl * Real(Rpq[_ix*nsq_per_block]); \
                 if (n < lij3) { \
                     s0x = _gx[0]; \
                     s1x = cpx * s0x; \
@@ -86,8 +86,8 @@
                 for (int m = gout_id; m < lkl3; m += gout_stride) { \
                     int k = m / 3; \
                     int _ix = m - k * 3; \
-                    double xjxi = rjri[_ix]; \
-                    double *_gx = gx + (_ix*g_size + k*stride_k) * nsq_per_block; \
+                    Real xjxi = rjri[_ix]; \
+                    Real *_gx = gx + (_ix*g_size + k*stride_k) * nsq_per_block; \
                     for (int j = 0; j < lj; ++j) { \
                         int ij = (lij-j) + j*stride_j; \
                         s1x = _gx[ij*nsq_per_block]; \
@@ -106,8 +106,8 @@
                 for (int n = gout_id; n < stride_k*3; n += gout_stride) { \
                     int i = n / 3; \
                     int _ix = n - i * 3; \
-                    double xlxk = rlrk[_ix*nsq_per_block]; \
-                    double *_gx = gx + (_ix*g_size + i) * nsq_per_block; \
+                    Real xlxk = rlrk[_ix*nsq_per_block]; \
+                    Real *_gx = gx + (_ix*g_size + i) * nsq_per_block; \
                     for (int l = 0; l < ll; ++l) { \
                         int kl = (lkl-l)*stride_k + l*stride_l; \
                         s1x = _gx[kl*nsq_per_block]; \
@@ -121,6 +121,9 @@
             } \
         } \
         __syncthreads()
+
+#define BUILD_4C_GXYZ(lj, ll, active) \
+        BUILD_4C_GXYZ_TYPED(double, rw[(irys*2+1)*nsq_per_block], lj, ll, active)
 
 #define BUILD_3C_GXYZ(lj, lk, rjri_stride, active) \
         __syncthreads(); \

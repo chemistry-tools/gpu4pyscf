@@ -75,6 +75,30 @@ float64 BLAS and synchronous single-GPU dispatch. Every patch is scoped and rest
 
 ## Kernel checks
 
+### Contribution-based direct force precision
+
+`direct_force_precision.py` replays complete analytic forces at saved orbitals for the
+restricted spherical recipe in `protocol.json`. Build the matching native RYS library
+with `RYS_per_atom_jk_ip1_mixed`, select one idle RTX 3080, and keep the four-CPU affinity
+and shared benchmark locks. Pass the retained geometry and orbital files from the same
+calculation, plus an unused output directory. For example:
+
+```sh
+CUDA_VISIBLE_DEVICES=7 python benchmarks/mixed_precision/direct_force_precision.py \
+  --geometry-report /path/to/retained/report.json --state /path/to/retained/state.npz \
+  --require-gpu-source /path/to/native/gpu4pyscf --gpu 7 --cpus 12,13,14,15 \
+  --cutoffs 1e-7 1e-5 1e-3 --count-quartets --output /tmp/new-force-precision-panel
+```
+
+The native screening cutoff stays fixed. The experimental cutoff splits already
+accepted generic shell quartets by an estimated density-weighted contribution. It
+is a heuristic, not a bound on the final force error. The weak batch uses float32
+recurrences and products, with float64 roots, Gaussian prefactors and force sums.
+The specialized kernels stay native. Reports compare full native and experimental
+forces with a `2e-8` Hartree/Bohr maximum component tolerance. Use `--repeats 2`
+without `--count-quartets` for timing; the counts cover only the generic kernels.
+The experimental interface is used only by the benchmark driver.
+
 ### Direct versus fitted J/K
 
 For the experimental integral cache, add `--integral-cache-mib 256 --regroup`

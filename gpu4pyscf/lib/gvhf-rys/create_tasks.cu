@@ -816,12 +816,14 @@ void _fill_sr_vjk_tasks_nosym(int& ntasks, int& pair_kl0, uint32_t *bas_kl_idx,
     __syncthreads();
 }
 
+template <int PrecisionBatch = 0>
 __device__
 static void _fill_ejk_tasks(int& ntasks, int& pair_kl0, uint32_t *bas_kl_idx,
                             int pair_ij, int ish, int jsh,
                             float *q_cond_ij, float *q_cond_kl,
                             int *swap,
-                            JKEnergy &jk, RysIntEnvVars envs, BoundsInfo bounds)
+                            JKEnergy &jk, RysIntEnvVars envs, BoundsInfo bounds,
+                            float log_weak_cutoff = 0, float log_j_scale = 0, float log_k_scale = 0)
 {
     int t_id = threadIdx.y * blockDim.x + threadIdx.x;
     int threads = blockDim.x * blockDim.y;
@@ -862,9 +864,19 @@ static void _fill_ejk_tasks(int& ntasks, int& pair_kl0, uint32_t *bas_kl_idx,
                 uint32_t ksh = bas_kl / nbas;
                 uint32_t lsh = bas_kl - nbas * ksh;
                 float d_cutoff = kl_cutoff - q_kl;
-                keep = ((do_k && (dm_cond[ish*nbas+lsh]+dm_cond[jsh*nbas+ksh] > d_cutoff ||
-                                  dm_cond[ish*nbas+ksh]+dm_cond[jsh*nbas+lsh] > d_cutoff)) ||
-                        (do_j && d_ij+dm_cond[bas_kl] > d_cutoff));
+                float dk1 = dm_cond[ish*nbas+lsh] + dm_cond[jsh*nbas+ksh];
+                float dk2 = dm_cond[ish*nbas+ksh] + dm_cond[jsh*nbas+lsh];
+                float dj = d_ij + dm_cond[bas_kl];
+                keep = ((do_k && (dk1 > d_cutoff || dk2 > d_cutoff)) ||
+                        (do_j && dj > d_cutoff));
+                if constexpr (PrecisionBatch != 0) {
+                    // Classify only surviving quartets. This ERI contribution
+                    // score is a proxy for derivative accuracy, not an error bound.
+                    float estimate = fmaxf(dj + log_j_scale, fmaxf(dk1, dk2) + log_k_scale);
+                    float score = q_ij + q_kl + estimate;
+                    bool weak = isfinite(score) && score < log_weak_cutoff;
+                    keep = keep && (weak == (PrecisionBatch == 2));
+                }
             }
         }
         int offset = mask_to_index(keep, swap, threads, t_id);

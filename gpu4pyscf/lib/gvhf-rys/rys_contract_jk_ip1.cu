@@ -18,6 +18,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <type_traits>
 
 #include "vhf.cuh"
 #include "rys_roots_for_k.cu"
@@ -349,14 +350,18 @@ while (1) {
 }
 }
 
-template <bool CONTRACT_FACTORS>
+template <bool CONTRACT_FACTORS, int PrecisionBatch = 0>
 __global__ static
 void rys_ejk_ip1_kernel(RysIntEnvVars envs, JKEnergy jk, BoundsInfo bounds,
                         float *q_cond_ij, float *q_cond_kl, float dm_penalty,
                         float *s_cond_ij, float *s_cond_kl, float *diffuse_exps,
                         uint32_t *pool, int *head, double *dd_pool, int nf,
-                        int reserved_shm_size)
+                        int reserved_shm_size, float log_weak_cutoff = 0,
+                        float log_j_scale = 0, float log_k_scale = 0,
+                        unsigned long long *precision_counts = nullptr)
 {
+    constexpr bool weak_batch = PrecisionBatch == 2;
+    using Real = std::conditional_t<weak_batch, float, double>;
     int sq_id = threadIdx.x;
     int nsq_per_block = blockDim.x;
     int gout_id = threadIdx.y;
@@ -401,7 +406,11 @@ void rys_ejk_ip1_kernel(RysIntEnvVars envs, JKEnergy jk, BoundsInfo bounds,
 
     double *rlrk = shared_memory + sq_id;
     double *Rpq = shared_memory + nsq_per_block * 3 + sq_id;
-    double *gx = shared_memory + nsq_per_block * 6 + sq_id;
+    double *recurrence_storage = shared_memory + nsq_per_block * 6;
+    Real *gx = reinterpret_cast<Real *>(recurrence_storage) + sq_id;
+    // Float recurrence uses only the first half of the original workspace.
+    // Preserve the Gaussian prefactors and Rys weights in double precision.
+    double *weak_prefactor = recurrence_storage + nsq_per_block * (2*g_size) + sq_id;
     double *rw = shared_memory + nsq_per_block * (g_size*3+6) + sq_id;
     double *cicj_cache = shared_memory + reserved_shm_size;
     const int *idx_i = _c_cartesian_lexical_xyz + lex_xyz_offset(li);
@@ -424,9 +433,10 @@ while (1) {
         break;
     }
     if (jk.lr_factor != 0) {
-        _fill_ejk_tasks(ntasks, pair_kl0, bas_kl_idx, pair_ij, ish, jsh,
+        _fill_ejk_tasks<PrecisionBatch>(ntasks, pair_kl0, bas_kl_idx, pair_ij, ish, jsh,
                         q_cond_ij, q_cond_kl,
-                        (int *)shared_memory, jk, envs, bounds);
+                        (int *)shared_memory, jk, envs, bounds,
+                        log_weak_cutoff, log_j_scale, log_k_scale);
     } else {
         _fill_sr_ejk_tasks(ntasks, pair_kl0, bas_kl_idx, pair_ij, ish, jsh,
                            q_cond_ij, q_cond_kl,
@@ -435,6 +445,11 @@ while (1) {
     }
     if (ntasks == 0) {
         continue;
+    }
+    if constexpr (PrecisionBatch != 0) {
+        if (precision_counts != nullptr && t_id == 0) {
+            atomicAdd(precision_counts + (PrecisionBatch - 1), static_cast<unsigned long long>(ntasks));
+        }
     }
 
     int do_j = jk.j_factor != 0.;
@@ -603,7 +618,12 @@ while (1) {
                 double theta_kl = ak * al_akl;
                 double Kcd = exp(-theta_kl * rr_kl);
                 double ckcl = env[ck+kp] * env[cl+lp] * Kcd;
-                gx[0] = ckcl;
+                if constexpr (weak_batch) {
+                    weak_prefactor[0] = ckcl;
+                    gx[0] = 1;
+                } else {
+                    gx[0] = ckcl;
+                }
             }
             for (int ijp = 0; ijp < iprim*jprim; ++ijp) {
                 __syncthreads();
@@ -629,7 +649,13 @@ while (1) {
                     Rpq[1*nsq_per_block] = ypq;
                     Rpq[2*nsq_per_block] = zpq;
                     double cicj = cicj_cache[ijp];
-                    gx[nsq_per_block*g_size] = cicj / (aij*akl*sqrt(aij+akl));
+                    double prefactor = cicj / (aij*akl*sqrt(aij+akl));
+                    if constexpr (weak_batch) {
+                        weak_prefactor[nsq_per_block] = prefactor;
+                        gx[nsq_per_block*g_size] = 1;
+                    } else {
+                        gx[nsq_per_block*g_size] = prefactor;
+                    }
                     if (sq_id == 0) {
                         aij_cache[0] = aij;
                         aij_cache[1] = aj_aij;
@@ -659,7 +685,12 @@ while (1) {
                 double lower_kz = 0.;
                 double base = 0.;
                 for (int irys = 0; irys < nroots; ++irys) {
-                    BUILD_4C_GXYZ(lj, ll, task_id < ntasks);
+                    BUILD_4C_GXYZ_TYPED(Real, weak_batch ? 1. : rw[(irys*2+1)*nsq_per_block],
+                                        lj, ll, task_id < ntasks);
+                    double scale = 1.;
+                    if constexpr (weak_batch) {
+                        scale = weak_prefactor[0] * weak_prefactor[nsq_per_block] * rw[(irys*2+1)*nsq_per_block];
+                    }
                     if (task_id >= ntasks) {
                         continue;
                     }
@@ -685,16 +716,19 @@ while (1) {
                         int lx = idx_l[l*3+0];
                         int ly = idx_l[l*3+1];
                         int lz = idx_l[l*3+2];
-                        double dd = dd_cache[n*nsq_per_block];
+                        Real dd = dd_cache[n*nsq_per_block];
+                        if constexpr (weak_batch) {
+                            dd = static_cast<Real>(dd_cache[n*nsq_per_block] * scale);
+                        }
                         int addrx = (ix + jx*stride_j + kx*stride_k + lx*stride_l) * nsq_per_block;
                         int addry = (iy + jy*stride_j + ky*stride_k + ly*stride_l + g_size) * nsq_per_block;
                         int addrz = (iz + jz*stride_j + kz*stride_k + lz*stride_l + g_size*2) * nsq_per_block;
-                        double Ix = gx[addrx];
-                        double Iy = gx[addry];
-                        double Iz = gx[addrz];
-                        double prod_xy = Ix * Iy * dd;
-                        double prod_xz = Ix * Iz * dd;
-                        double prod_yz = Iy * Iz * dd;
+                        Real Ix = gx[addrx];
+                        Real Iy = gx[addry];
+                        Real Iz = gx[addrz];
+                        Real prod_xy = Ix * Iy * dd;
+                        Real prod_xz = Ix * Iz * dd;
+                        Real prod_yz = Iy * Iz * dd;
                         if constexpr (CONTRACT_FACTORS) {
                             raise_ix += gx[addrx+i_1] * prod_yz;
                             raise_kx += gx[addrx+k_1] * prod_yz;
@@ -1721,6 +1755,35 @@ extern int rys_ejk_ip1_unrolled(RysIntEnvVars *envs, JKEnergy *jk, BoundsInfo *b
                                 float *s_cond_ij, float *s_cond_kl, float *diffuse_exps,
                                 uint32_t *pool, double *dd_pool, int *head, int workers, cudaStream_t stream);
 
+template <bool ContractFactors, int PrecisionBatch = 0>
+static int launch_ejk_ip1(RysIntEnvVars envs, JKEnergy jk, BoundsInfo bounds,
+                         float *q_cond_ij, float *q_cond_kl, float dm_penalty,
+                         float *s_cond_ij, float *s_cond_kl, float *diffuse_exps,
+                         uint32_t *pool, int *head, double *dd_pool, int nf, int reserved_shm_size,
+                         int workers, dim3 threads, int buflen, cudaStream_t stream,
+                         float log_weak_cutoff = 0, float log_j_scale = 0, float log_k_scale = 0,
+                         unsigned long long *precision_counts = nullptr)
+{
+    if (buflen > 48000) {
+        cudaError_t error = cudaFuncSetAttribute(rys_ejk_ip1_kernel<ContractFactors, PrecisionBatch>,
+                                                cudaFuncAttributeMaxDynamicSharedMemorySize, buflen);
+        if (error != cudaSuccess) {
+            fprintf(stderr, "Failed to set CUDA shm size %d: %s\n", buflen, cudaGetErrorString(error));
+            return 1;
+        }
+    }
+    rys_ejk_ip1_kernel<ContractFactors, PrecisionBatch><<<workers, threads, buflen, stream>>>(
+        envs, jk, bounds, q_cond_ij, q_cond_kl, dm_penalty, s_cond_ij, s_cond_kl, diffuse_exps,
+        pool, head, dd_pool, nf, reserved_shm_size, log_weak_cutoff, log_j_scale, log_k_scale, precision_counts);
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        fprintf(stderr, "CUDA error launching derivative precision batch %d: %s\n",
+                PrecisionBatch, cudaGetErrorString(error));
+        return 1;
+    }
+    return 0;
+}
+
 extern "C" {
 int RYS_build_jk_ip1(double *vj, double *vk, double *dm, int n_dm, int nao, int atom_offset,
                      double omega, double lr_factor, double sr_factor,
@@ -1817,7 +1880,8 @@ static int _per_atom_jk_ip1(double *ejk, double j_factor, double k_factor,
                         float *diffuse_exps, float *dm_cond, float cutoff, float dm_penalty,
                         uint32_t *pool, double *dd_pool,
                         int *atm, int natm, int *bas, int nbas, double *env, cudaStream_t stream,
-                        bool contract_factors)
+                        bool contract_factors, float log_weak_cutoff = -INFINITY,
+                        unsigned long long *precision_counts = nullptr)
 {
     int ish0 = shls_slice[0];
     int jsh0 = shls_slice[2];
@@ -1876,29 +1940,32 @@ static int _per_atom_jk_ip1(double *ejk, double j_factor, double k_factor,
         int buflen = (nroots*2 + g_size*3 + 6) * quartets_per_block;
         int reserved_shm_size = max(buflen, 6*gout_stride*quartets_per_block);
         buflen = (reserved_shm_size + ij_prims)*sizeof(double);
-        if (buflen > 48000) {
-            if (contract_factors) {
-                cudaFuncSetAttribute(rys_ejk_ip1_kernel<true>, cudaFuncAttributeMaxDynamicSharedMemorySize, buflen);
-            } else {
-                cudaFuncSetAttribute(rys_ejk_ip1_kernel<false>, cudaFuncAttributeMaxDynamicSharedMemorySize, buflen);
-            }
-            cudaError_t err = cudaGetLastError();
-            if (err != cudaSuccess) {
-                fprintf(stderr, "Failed to set CUDA shm size %d: %s\n", buflen,
-                        cudaGetErrorString(err));
-                return 1;
-            }
-        }
-        if (contract_factors) {
-            rys_ejk_ip1_kernel<true><<<workers, threads, buflen, stream>>>(
-                envs, jk, bounds, q_cond_ij, q_cond_kl, dm_penalty,
-                s_cond_ij, s_cond_kl, diffuse_exps, pool, head, dd_pool, nf,
-                reserved_shm_size);
+        bool mixed = isfinite(log_weak_cutoff) && contract_factors && n_dm == 1
+            && jk.k_factor != 0 && omega >= 0. && lr_factor != 0.;
+        if (mixed) {
+            // The maximum of the two K terms and one J term, with a factor
+            // of three, bounds their sum in the existing ERI screening model.
+            float log_j_scale = logf(3.f * fabsf(jk.j_factor));
+            float log_k_scale = logf(3.f * fabsf(jk.k_factor));
+            int err = launch_ejk_ip1<true, 1>(envs, jk, bounds, q_cond_ij, q_cond_kl, dm_penalty,
+                s_cond_ij, s_cond_kl, diffuse_exps, pool, head, dd_pool, nf, reserved_shm_size,
+                workers, threads, buflen, stream, log_weak_cutoff, log_j_scale, log_k_scale, precision_counts);
+            if (err) return err;
+            cudaMemsetAsync(head, 0, sizeof(int), stream);
+            err = launch_ejk_ip1<true, 2>(envs, jk, bounds, q_cond_ij, q_cond_kl, dm_penalty,
+                s_cond_ij, s_cond_kl, diffuse_exps, pool, head, dd_pool, nf, reserved_shm_size,
+                workers, threads, buflen, stream, log_weak_cutoff, log_j_scale, log_k_scale, precision_counts);
+            if (err) return err;
+        } else if (contract_factors) {
+            int err = launch_ejk_ip1<true>(envs, jk, bounds, q_cond_ij, q_cond_kl, dm_penalty,
+                s_cond_ij, s_cond_kl, diffuse_exps, pool, head, dd_pool, nf, reserved_shm_size,
+                workers, threads, buflen, stream);
+            if (err) return err;
         } else {
-            rys_ejk_ip1_kernel<false><<<workers, threads, buflen, stream>>>(
-                envs, jk, bounds, q_cond_ij, q_cond_kl, dm_penalty,
-                s_cond_ij, s_cond_kl, diffuse_exps, pool, head, dd_pool, nf,
-                reserved_shm_size);
+            int err = launch_ejk_ip1<false>(envs, jk, bounds, q_cond_ij, q_cond_kl, dm_penalty,
+                s_cond_ij, s_cond_kl, diffuse_exps, pool, head, dd_pool, nf, reserved_shm_size,
+                workers, threads, buflen, stream);
+            if (err) return err;
         }
     }
     cudaError_t err = cudaGetLastError();
@@ -1948,6 +2015,25 @@ int RYS_per_atom_jk_ip1_contract(double *ejk, double j_factor, double k_factor,
         pair_ij_mapping, pair_kl_mapping, q_cond_ij, q_cond_kl, s_cond_ij, s_cond_kl,
         diffuse_exps, dm_cond, cutoff, dm_penalty, pool, dd_pool,
         atm, natm, bas, nbas, env, stream, true);
+}
+
+int RYS_per_atom_jk_ip1_mixed(double *ejk, double j_factor, double k_factor,
+                        double *dm, int n_dm, int nao,
+                        double omega, double lr_factor, double sr_factor,
+                        RysIntEnvVars envs, int *scheme, int *shls_slice,
+                        int npairs_ij, int npairs_kl,
+                        uint32_t *pair_ij_mapping, uint32_t *pair_kl_mapping,
+                        float *q_cond_ij, float *q_cond_kl, float *s_cond_ij, float *s_cond_kl,
+                        float *diffuse_exps, float *dm_cond, float cutoff, float dm_penalty,
+                        uint32_t *pool, double *dd_pool,
+                        int *atm, int natm, int *bas, int nbas, double *env, cudaStream_t stream,
+                        float log_weak_cutoff, unsigned long long *precision_counts)
+{
+    return _per_atom_jk_ip1(ejk, j_factor, k_factor, dm, n_dm, nao,
+        omega, lr_factor, sr_factor, envs, scheme, shls_slice, npairs_ij, npairs_kl,
+        pair_ij_mapping, pair_kl_mapping, q_cond_ij, q_cond_kl, s_cond_ij, s_cond_kl,
+        diffuse_exps, dm_cond, cutoff, dm_penalty, pool, dd_pool,
+        atm, natm, bas, nbas, env, stream, true, log_weak_cutoff, precision_counts);
 }
 
 // only support RHF density matrices
