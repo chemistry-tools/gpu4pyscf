@@ -94,6 +94,8 @@ def _pair_response(coords, rw, omega, kappa, atoms, natm, *, block=128):
     Atom labels must be nonnegative and sorted, as in atom-ordered gradient grids.
     Same-atom pairs contribute to U/W/E but cancel in the coordinate response.
     The final reduction is deterministic and uses no floating-point atomics.
+    Large grids on supported devices can accumulate both directions of a pair
+    together, preserving float64 arithmetic and the full quadrature.
     """
     import cupy as cp
     import numpy as np
@@ -112,18 +114,25 @@ def _pair_response(coords, rw, omega, kappa, atoms, natm, *, block=128):
         raise ValueError('Grid atom labels must match the fields')
     if n > np.iinfo(np.int32).max:
         raise ValueError('VV10 grid exceeds the native int32 index range')
-    u, w, e = (cp.empty(n, dtype=cp.float64) for _ in range(3))
-    result = cp.zeros((natm, 3), dtype=cp.float64)
     if not n:
-        return u, w, e, result
+        return (*(cp.empty(0, dtype=cp.float64) for _ in range(3)),
+                cp.zeros((natm, 3), dtype=cp.float64))
     if bool(cp.any((atoms < 0) | (atoms >= natm))) or bool(cp.any(atoms[1:] < atoms[:-1])):
         raise ValueError('Grid atom labels must be valid and sorted')
     counts = cp.bincount(atoms, minlength=natm)
+    pair, reduce = _kernels(cp.cuda.Device().id, block)
+    if block == 128:
+        from gpu4pyscf.dft._vv10_symmetric import _try_symmetric_response
+
+        symmetric = _try_symmetric_response(coords, rw, omega, kappa, counts, reduce)
+        if symmetric is not None:
+            return symmetric
+    u, w, e = (cp.empty(n, dtype=cp.float64) for _ in range(3))
+    result = cp.zeros((natm, 3), dtype=cp.float64)
     offsets = cp.empty(natm+1, dtype=cp.int32)
     offsets[0] = 0
     offsets[1:] = cp.cumsum(counts, dtype=cp.int32)
     response = cp.empty((3, n), dtype=cp.float64)
-    pair, reduce = _kernels(cp.cuda.Device().id, block)
     pair(((n+block-1)//block,), (block,),
          (u, w, e, response, coords, rw, omega, kappa, atoms, np.int32(n)))
     reduce((natm, 3), (256,), (result, response, offsets, np.int32(n)))

@@ -34,11 +34,18 @@ def test_fused_fields_and_signed_weight_response(block, n, natm):
         cp.testing.assert_array_equal(actual[3], 0)
 
 
-def test_coordinate_response_matches_independent_energy_difference():
+@pytest.mark.parametrize('symmetric', [False, True])
+def test_coordinate_response_matches_independent_energy_difference(symmetric, monkeypatch):
     import cupy as cp
     import numpy as np
 
+    from gpu4pyscf.dft import _vv10_symmetric
     from gpu4pyscf.dft._vv10_grad import _pair_response
+
+    if symmetric:
+        if cp.cuda.Device().compute_capability != '86':
+            pytest.skip('Symmetric VV10 is qualified on compute capability 8.6')
+        monkeypatch.setattr(_vv10_symmetric, '_MIN_POINTS', 0)
 
     rng = np.random.default_rng(219)
     coords = rng.normal(size=(29, 3))
@@ -102,3 +109,44 @@ def test_independent_cuda_streams_do_not_share_response_buffers():
     for result, reference in zip(results, references):
         for actual, expected in zip(result, reference):
             cp.testing.assert_allclose(actual, expected, atol=1e-12, rtol=2e-12)
+
+
+def test_symmetric_batches_and_workspace_fallback(monkeypatch):
+    import cupy as cp
+    import numpy as np
+
+    from gpu4pyscf.dft import _vv10_symmetric
+    from gpu4pyscf.dft._vv10_grad import _pair_response
+    from gpu4pyscf.lib import cupy_helper
+
+    if cp.cuda.Device().compute_capability != '86':
+        pytest.skip('Symmetric VV10 is qualified on compute capability 8.6')
+    rng = np.random.default_rng(497)
+    counts = [0, 105, 328, 0, 99, 100]
+    size = sum(counts)
+    coords = cp.asarray(rng.normal(size=(size, 3)))
+    rw = cp.asarray(rng.normal(scale=.025, size=size))
+    omega, kappa = (cp.asarray(x) for x in rng.uniform(.2, 2., (2, size)))
+    atoms = cp.repeat(cp.arange(len(counts), dtype=cp.int32), cp.asarray(counts))
+    inputs = coords, rw, omega, kappa, atoms, len(counts)
+    reference = _pair_response(*inputs)
+    monkeypatch.setattr(_vv10_symmetric, '_MIN_POINTS', 1)
+    monkeypatch.setattr(_vv10_symmetric, '_TILES_PER_BATCH', 2)
+    monkeypatch.setattr(cupy_helper, 'get_avail_mem', lambda: 1 << 30)
+    native_tiles = _vv10_symmetric._pair_tiles
+    calls = []
+
+    def counted(*args):
+        calls.append(True)
+        return native_tiles(*args)
+
+    monkeypatch.setattr(_vv10_symmetric, '_pair_tiles', counted)
+    result = _pair_response(*inputs)
+    assert calls == [True]
+    for actual, expected in zip(result, reference):
+        cp.testing.assert_allclose(actual, expected, atol=1e-12, rtol=2e-12)
+    cp.testing.assert_allclose(result[3].sum(axis=0), 0., atol=1e-12)
+    monkeypatch.setattr(cupy_helper, 'get_avail_mem', lambda: 0)
+    for actual, expected in zip(_pair_response(*inputs), reference):
+        cp.testing.assert_array_equal(actual, expected)
+    assert calls == [True]
