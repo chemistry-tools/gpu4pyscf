@@ -191,10 +191,8 @@ def _method(case, charge=0, spin=0, cart=True):
 
 @gpu
 @pytest.mark.parametrize('case', ['CH3CONH2', 'C5H5N', 'C2H6SO', 'CH3COF', 'CH3COCl'])
-def test_sparse_metric_matches_same_native_eigenpairs_bitwise(case, products, monkeypatch):
+def test_sparse_auxiliary_transforms_match_native_bitwise(case, products, monkeypatch):
     import cupy as cp
-
-    from gpu4pyscf.df.grad import rhf
 
     mf = _method(case)
     mf.with_df.build(build_cderi=False)
@@ -205,15 +203,12 @@ def test_sparse_metric_matches_same_native_eigenpairs_bitwise(case, products, mo
     sorted_coefficient[sorting] = coefficient
     plan = products._SparseAuxTransform.create(auxmol, sorting, sorted_coefficient)
     assert plan is not None
-    j2c = rhf.int2c2e(auxmol)
-    w, v = rhf.eigh(j2c)
-    monkeypatch.setattr(rhf, 'eigh', lambda *args: (w, v))
-    expected = sorted_coefficient @ rhf._gen_metric_solver(j2c, 'ED')(sorted_coefficient.T)
-    solver = rhf._gen_metric_solver(j2c, 'ED', _rhs_projector=plan.project_rhs)
-    actual = plan.apply(solver(sorted_coefficient.T))
-    cp.testing.assert_array_equal(actual, expected)
-    other = cp.arange(len(coefficient)*3, dtype=cp.float64).reshape(len(coefficient), 3)/1000
-    cp.testing.assert_array_equal(plan.project_rhs(v, other), v.T @ other)
+    panel = cp.arange(len(coefficient)*6, dtype=cp.float64).reshape(len(coefficient), 6)[:, ::2]/1000
+    out = cp.empty_like(panel, order='F')
+    for transpose in (False, True):
+        matrix = sorted_coefficient.T if transpose else sorted_coefficient
+        assert plan.apply(panel, out=out, transpose=transpose) is out
+        cp.testing.assert_array_equal(out, matrix @ panel)
     with monkeypatch.context() as patch:
         patch.setattr(products, '_available_memory', lambda: 0)
         assert products._SparseAuxTransform.create(auxmol, sorting, sorted_coefficient) is None
@@ -238,9 +233,9 @@ def test_complete_forces_match_unmodified_reference(case, charge, spin, products
     apply = products._SparseAuxTransform.apply
     gram = products._symmetric_aux_gram
 
-    def counted_apply(self, matrix):
+    def counted_apply(self, *args, **kwargs):
         calls['metric'] += 1
-        return apply(self, matrix)
+        return apply(self, *args, **kwargs)
 
     def counted_gram(*args):
         result = gram(*args)

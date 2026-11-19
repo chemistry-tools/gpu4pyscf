@@ -22,6 +22,7 @@ __all__ = [
 
 import numpy as np
 import cupy as cp
+from gpu4pyscf.lib.cusolver import eigh_std
 from pyscf import lib
 from pyscf.pbc.scf import hf as hf_cpu
 from gpu4pyscf.lib import logger, utils
@@ -71,7 +72,7 @@ def eigh_with_canonical_orth(h, s):
         x = mol_hf.canonical_orthogonalization(s[k])
         nmo_k = x.shape[1]
         xhx = x.conj().T.dot(h[k]).dot(x)
-        e, c = cp.linalg.eigh(xhx)
+        e, c = eigh_std(xhx)
         mo_energy[k,:nmo_k] = e
         mo_coeff[k,:,:nmo_k] = x.dot(c)
         if nmo_k < nao:
@@ -218,7 +219,9 @@ class SCF(mol_hf.SCF):
         # By initializing self._numint, get_j and get_hcore will use the
         # MultiGridNumInt integrator to evaluate Coulomb integrals, skipping the
         # self.with_df code path.
-        if isinstance(self.with_df, df.FFTDF) and self._numint is None:
+        # Keep the default FFTDF route on HIP, as in get_hcore below.
+        if (isinstance(self.with_df, df.FFTDF) and self._numint is None
+                and not cp.cuda.runtime.is_hip):
             from gpu4pyscf.pbc.dft import multigrid_v3
             self._numint = multigrid_v3.MultiGridNumInt(self.cell)
 
@@ -244,9 +247,17 @@ class SCF(mol_hf.SCF):
 
         if isinstance(self._numint, multigrid.MultiGridNumIntBase):
             ni = self._numint
-        elif np.prod(cell.mesh) < ALLOWED_FFT_MESH_SIZE:
+        elif (cell.dimension == 3 and np.prod(cell.mesh) < ALLOWED_FFT_MESH_SIZE
+                and not cp.cuda.runtime.is_hip):
+            # Automatic MultiGrid nuclear potentials are only available in 3D.
             # In the pseudo and all-electron mixed case, MultiGridNumInt is
             # still more efficient if Ecut is not too high.
+            # On ROCm/HIP the multigrid pseudopotential collocation kernel
+            # hard-hangs the GPU for sharp / short-range GTH pseudos (e.g. MgO's
+            # semicore Mg: HW Exception "GPU Hang", core dump), so skip this
+            # opportunistic optimization there and use FFTDF get_pp instead --
+            # hcore is built once, so the cost is negligible. The CUDA path is
+            # unchanged.
             ni = multigrid_v3.MultiGridNumInt(cell)
         else:
             ni = self.with_df
@@ -337,11 +348,7 @@ class SCF(mol_hf.SCF):
             raise NotImplementedError
         return cell.enuc
 
-    def get_init_guess(self, cell=None, key='minao', s1e=None):
-        if cell is None: cell = self.cell
-        dm = mol_hf.SCF.get_init_guess(self, cell, key)
-        dm = normalize_dm_(self, dm, s1e)
-        return dm
+    get_init_guess = NotImplemented
 
     # hf_cpu.SCF.init_guess_by_1e calls additional checks. Enabling the
     # following line to enable this.
@@ -393,6 +400,15 @@ class RHF(SCF):
     energy_elec = mol_hf.RHF.energy_elec
     newton = mol_hf.RHF.newton
     canonicalize = mol_hf.RHF.canonicalize
+
+    init_guess_by_minao = mol_hf.RHF.init_guess_by_minao
+    init_guess_by_atom = mol_hf.RHF.init_guess_by_atom
+
+    def get_init_guess(self, cell=None, key='minao', s1e=None):
+        assert isinstance(key, str)
+        if cell is None: cell = self.cell
+        dm = mol_hf.RHF.get_init_guess(self, cell, key)
+        return normalize_dm_(self, dm, s1e)
 
     def get_veff(self, cell=None, dm=None, dm_last=None, vhf_last=None,
                  hermi=1, kpt=None, kpts_band=None):

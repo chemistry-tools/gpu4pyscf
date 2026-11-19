@@ -130,7 +130,9 @@ def grad_elec(td_grad, x_y, singlet=True, atmlst=None, verbose=logger.INFO,
         veff = vj[1] * 2 - vk[1]
     else:
         veff = -vk[1]
-    if with_solvent:
+    if with_solvent and singlet:
+        # A triplet's transition density carries no charge, so it has no
+        # LR-PCM term (see WithSolventTDSCF.gen_response)
         veff += td_grad.solvent_response(dmxpy + dmxpy.T)
     veff0mop = reduce(cp.dot, (mo_coeff.T, veff, mo_coeff))
     wvo -= contract("ki,ai->ak", veff0mop[:nocc, :nocc], xpy) * 2  # 2 for dm + dm.T
@@ -212,7 +214,8 @@ def grad_elec(td_grad, x_y, singlet=True, atmlst=None, verbose=logger.INFO,
 
     dh1e_ground_and_td = int3c2e.get_dh1e(mol, dm_correlated)  # 1/r like terms
     if len(mol._ecpbas) > 0:
-        dh1e_ground_and_td += rhf_grad.get_dh1e_ecp(mol, dm_correlated)  # 1/r like terms
+        ecp_atoms = np.unique(mol._ecpbas[:, gto.ATOM_OF])
+        dh1e_ground_and_td[ecp_atoms] += rhf_grad.get_dh1e_ecp(mol, dm_correlated)  # 1/r like terms
 
     if mol._pseudo:
         raise NotImplementedError("Pseudopotential gradient not supported for molecular system yet")
@@ -264,6 +267,24 @@ def grad_elec(td_grad, x_y, singlet=True, atmlst=None, verbose=logger.INFO,
         for i, t in enumerate(time_list):
             logger.note(td_grad, f"Time for step {i}: {t*1e-3:.5f}s")
     return de
+
+
+def scf_geometry_corrections(td_grad, atmlst=None):
+    '''Gradient of the SCF's dispersion and gCP/SRB corrections. They enter
+    the excited-state energy through the SCF energy but are absent from
+    grad_elec and grad_nuc. A function rather than a method because the
+    unrestricted TD gradients borrow Gradients.kernel without inheriting it.'''
+    mf = td_grad.base._scf
+    correction = np.zeros((td_grad.mol.natm, 3))
+    if mf.do_disp() or mf.do_gcp():
+        mf_grad = mf.Gradients()
+        if mf.do_disp():
+            correction += mf_grad.get_dispersion()
+        if mf.do_gcp():
+            correction += mf_grad.get_gcp()
+    if atmlst is not None:
+        correction = correction[atmlst]
+    return correction
 
 
 def as_scanner(td_grad, state=1):
@@ -348,7 +369,6 @@ def _jk_energies_per_atom(vhfopt, dm_pairs, j_factor=None, k_factor=None,
     ao_loc = mol.ao_loc
     uniq_l_ctr = mol.uniq_l_ctr
     uniq_l = uniq_l_ctr[:,0]
-    lmax = uniq_l.max()
     l_ctr_bas_loc = np.append(0, np.cumsum(mol.l_ctr_counts))
     l_symb = [lib.param.ANGULAR[i] for i in uniq_l]
     assert uniq_l.max() <= LMAX
@@ -365,16 +385,15 @@ def _jk_energies_per_atom(vhfopt, dm_pairs, j_factor=None, k_factor=None,
              for l in range(k+1)]
     schemes = {t: _ejk_quartets_scheme(mol, uniq_l_ctr[list(t)]) for t in tasks}
 
+    nf = (uniq_l + 1) * (uniq_l + 2) // 2
+    nf = nf[:,None] * nf
+    nf = nf[:,:,None,None] * nf
+    dd_cache_maxsize = max(scheme[0] * nf[tuple(task)] for task, scheme in schemes.items())
     if sum_results:
         kern = libvhf_rys.RYS_per_atom_jk_ip1_sum
-        uniq_l = uniq_l_ctr[:,0]
-        nf = (uniq_l + 1) * (uniq_l + 2) // 2
-        nf = nf[:,None] * nf
-        nf = nf[:,:,None,None] * nf
-        dd_cache_maxsize = max(scheme[0] * nf[tuple(task)] for task, scheme in schemes.items())
     else:
         kern = libvhf_rys.RYS_per_atom_jk_ip1_multidm
-        dd_cache_maxsize = DD_CACHE_MAX[lmax] * n_dm
+        dd_cache_maxsize *= n_dm
 
     tasks = iter(tasks)
 
@@ -449,7 +468,8 @@ def _jk_energies_per_atom(vhfopt, dm_pairs, j_factor=None, k_factor=None,
                 ctypes.cast(dd_pool.data.ptr, ctypes.c_void_p),
                 ctypes.c_int(dd_cache_maxsize),
                 mol._atm.ctypes, ctypes.c_int(mol.natm),
-                mol._bas.ctypes, ctypes.c_int(mol.nbas), mol._env.ctypes)
+                mol._bas.ctypes, ctypes.c_int(mol.nbas), mol._env.ctypes,
+                ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
             if err != 0:
                 raise RuntimeError(f'RYS_per_atom_jk_ip1 kernel for {llll} failed')
             kern_counts += 1
@@ -591,6 +611,7 @@ class Gradients(rhf_grad.GradientsBase):
         self.de = de = de + self.grad_nuc(atmlst=atmlst)
         if self.mol.symmetry:
             self.de = self.symmetrize(self.de, atmlst)
+        self.de += scf_geometry_corrections(self, atmlst)
         self._finalize()
         return self.de
 
@@ -691,6 +712,7 @@ class Gradients(rhf_grad.GradientsBase):
         out.cphf_max_cycle = method.cphf_max_cycle
         out.cphf_conv_tol = method.cphf_conv_tol
         out.state = method.state
+        out.atmlst = method.atmlst
         out.de = method.de
         return out
 

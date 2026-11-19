@@ -2,6 +2,13 @@
 #include <stdint.h>
 #include <stddef.h>
 
+// CUDA headers for every C++ TU that includes vhf.cuh; the plain C files that
+// include it only need the structs.
+#ifdef __cplusplus
+#include <cuda.h>
+#include <cuda_runtime.h>
+#endif
+
 #define PTR_RANGE_OMEGA 8
 // slots of atm
 #define CHARGE_OF       0
@@ -139,12 +146,17 @@ typedef struct {
     uint8_t fold2yz;
 } Fold3Index;
 
-#ifdef __CUDACC__
+#if defined(__CUDACC__) || defined(__HIPCC__)
 __device__ __forceinline__ unsigned get_smid()
 {
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+    // AMD equivalent of PTX %smid (hardware compute-unit id).
+    return __smid();
+#else
     unsigned smid;
     asm volatile("mov.u32 %0, %%smid;" : "=r"(smid));
     return smid;
+#endif
 }
 
 // to ensure that each SM only executes one block

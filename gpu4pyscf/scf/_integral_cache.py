@@ -218,7 +218,8 @@ class _IntegralCache:
             ctypes.byref(envs), (ctypes.c_int*8)(*shls_slice), ctypes.c_int(shm_size),
             ctypes.c_int(pa.size), ctypes.c_int(pb.size), pointer(pa), pointer(pb),
             pointer(qa), pointer(qb), pointer(loca), pointer(locb),
-            ctypes.c_float(-math.inf), pointer(pool), opt.sorted_mol._bas.ctypes)
+            ctypes.c_float(-math.inf), pointer(pool), opt.sorted_mol._bas.ctypes,
+            ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
         if error:
             raise RuntimeError(f'Integral cache fill failed for {task}')
         return values, loca, locb

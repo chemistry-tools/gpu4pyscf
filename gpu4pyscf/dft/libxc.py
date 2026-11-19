@@ -12,10 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import numpy as np
 import ctypes
-import ctypes.util
 import cupy
 import copy
 from ctypes import POINTER
@@ -23,12 +21,8 @@ from ctypes import POINTER
 # which uses pyscf.scf.dispersion.parse_dft. The local gpu4pyscf.scf.dispersion.parse_dft is not used here.
 from pyscf.dft import libxc as libxc_cpu
 from gpu4pyscf.dft.libxc_structs import xc_lda_out_params, xc_gga_out_params, xc_mgga_out_params
-from gpu4pyscf.lib.cupy_helper import load_library
+from gpu4pyscf.lib.utils import load_library
 from gpu4pyscf.dft import libxc_structs
-
-import site
-path_list = [os.path.abspath(os.path.join(__file__, '..', '..', '..'))] + site.getsitepackages()
-path_list.append(site.USER_SITE)    # Search for the directory where user-specific packages are installed
 
 # monkey patch libxc reference due to a bug in nvcc
 __reference__ = 'unable to decode the reference due to https://github.com/NVIDIA/cuda-python/issues/29'
@@ -38,34 +32,35 @@ is_nlc           = libxc_cpu.is_nlc
 is_hybrid_xc     = libxc_cpu.is_hybrid_xc
 test_deriv_order = libxc_cpu.test_deriv_order
 
-for path in path_list:
-    libxc_path = os.path.abspath(os.path.join(path, 'gpu4pyscf', 'lib', 'deps', 'lib'))
-    try:
-        _libxc = np.ctypeslib.load_library('libxc', libxc_path)
-        break
-    except Exception:
-        _libxc = None
+try:
+    _libxc = load_library('libxc', path='gpu4pyscf/lib/deps/lib')
+except OSError:
+    # ROCm/HIP builds do not include the CUDA libXC fork. Keep libXC optional
+    # there so XC is evaluated on CPU via PySCF's libXC (see below); a missing
+    # libXC remains a hard error on CUDA.
+    if not cupy.cuda.runtime.is_hip:
+        raise
+    _libxc = None
 
 libgdft = load_library('libgdft')
 libgdft.GDFT_xc_lda.argtypes = (
     ctypes.c_void_p,
-    ctypes.c_void_p,
     ctypes.c_int,
     ctypes.c_void_p,
     POINTER(xc_lda_out_params),
-    POINTER(xc_lda_out_params))
+    POINTER(xc_lda_out_params),
+    ctypes.c_void_p)
 
 libgdft.GDFT_xc_gga.argtypes = (
-    ctypes.c_void_p,
     ctypes.c_void_p,
     ctypes.c_int,
     ctypes.c_void_p,
     ctypes.c_void_p,
     POINTER(xc_gga_out_params),
-    POINTER(xc_gga_out_params))
+    POINTER(xc_gga_out_params),
+    ctypes.c_void_p)
 
 libgdft.GDFT_xc_mgga.argtypes = (
-    ctypes.c_void_p,
     ctypes.c_void_p,
     ctypes.c_int,
     ctypes.c_void_p,
@@ -73,27 +68,26 @@ libgdft.GDFT_xc_mgga.argtypes = (
     ctypes.c_void_p,
     ctypes.c_void_p,
     POINTER(xc_mgga_out_params),
-    POINTER(xc_mgga_out_params))
+    POINTER(xc_mgga_out_params),
+    ctypes.c_void_p)
 
 if _libxc is None:
     import warnings
     warnings.warn(
-        "Cannot find installed libXC. DFT modules may not work.\n \
-        You can install libXC by \n \
-        `pip3 install gpu4pyscf-libxc-cuda11x` \n \
-        OR \n \
-        `pip3 install gpu4pyscf-libxc-cuda12x`"
+        "GPU libXC is not available on ROCm/HIP; XC functionals are "
+        "evaluated on CPU via PySCF's libXC."
     )
-
-_libxc.xc_version_string.restype = ctypes.c_char_p
-_libxc_version = _libxc.xc_version_string().decode()
-__version__ = _libxc_version + ' (CUDA)'
-# The packaged 7.0.0 fork inserts params_size before the four thresholds.
-# Select the layout before binding xc_func_alloc and the other C functions.
-if _libxc_version == '7.0.0':
-    xc_func_type = libxc_structs.xc_func_type_700
+    __version__ = 'libXC not available'
 else:
-    xc_func_type = libxc_structs.xc_func_type
+    _libxc.xc_version_string.restype = ctypes.c_char_p
+    _libxc_version = _libxc.xc_version_string().decode()
+    __version__ = _libxc_version + ' (CUDA)'
+    # The packaged 7.0.0 fork inserts params_size before the four thresholds.
+    # Select the layout before binding xc_func_alloc and the other C functions.
+    if _libxc_version == '7.0.0':
+        xc_func_type = libxc_structs.xc_func_type_700
+    else:
+        xc_func_type = libxc_structs.xc_func_type
 
 LDA_OUTPUT_LABELS = [
                 "zk",       # 1, 1
@@ -175,6 +169,13 @@ if _libxc is not None:
         if xc_name in libxc_cpu.XC_CODES:
             assert libxc_cpu.XC_CODES[xc_name] == xc_id, \
                     'Libxc for PySCF and GPU4PySCF incompatible'
+else:
+    # No GPU libXC available (e.g. on ROCm/HIP, where the CUDA libXC fork is not
+    # built). Leave the GPU functional tables empty so every functional reports
+    # on_gpu=False; XC is then evaluated on CPU via PySCF's libXC (see the
+    # eval_xc_eff fallback in numint), while the rest of DFT stays on GPU.
+    XC_IDS = np.zeros(0, dtype=np.int32)
+    XC_CODES = {}
 
 
 def _has_omega(func):
@@ -237,6 +238,8 @@ class XCfun:
     def compute(self, inp, output=None, do_exc=True, do_vxc=True, do_fxc=False, do_kxc=False, do_lxc=False):
         assert not do_lxc
         assert self.on_gpu
+        stream = cupy.cuda.get_current_stream().ptr
+        assert stream == 0, 'libxc CUDA evaluation requires the default stream'
 
         if isinstance(inp, cupy.ndarray):
             inp = {"rho": cupy.asarray(inp, dtype=cupy.double)}
@@ -268,14 +271,13 @@ class XCfun:
                 if array is not None:
                     setattr(out_params, label, array[0].data.ptr)
                     setattr(buf_params, label, array[1].data.ptr)
-            stream = cupy.cuda.get_current_stream()
             err = libgdft.GDFT_xc_lda(
-                stream.ptr,
                 self.xc_func,
                 npoints,
                 inp['rho'].data.ptr,
                 ctypes.byref(out_params),
-                ctypes.byref(buf_params)
+                ctypes.byref(buf_params),
+                stream
             )
             if err != 0:
                 raise RuntimeError('Failed in xc_gga')
@@ -296,15 +298,14 @@ class XCfun:
                     setattr(out_params, label, array[0].data.ptr)
                     setattr(buf_params, label, array[1].data.ptr)
 
-            stream = cupy.cuda.get_current_stream()
             err = libgdft.GDFT_xc_gga(
-                stream.ptr,
                 self.xc_func,
                 npoints,
                 inp['rho'].data.ptr,
                 inp['sigma'].data.ptr,
                 ctypes.byref(out_params),
-                ctypes.byref(buf_params)
+                ctypes.byref(buf_params),
+                stream
             )
             if err != 0:
                 raise RuntimeError('Failed in xc_gga')
@@ -325,10 +326,8 @@ class XCfun:
                 if array is not None:
                     setattr(out_params, label, array[0].data.ptr)
                     setattr(buf_params, label, array[1].data.ptr)
-            stream = cupy.cuda.get_current_stream()
             lapl = cupy.empty(0)
             err = libgdft.GDFT_xc_mgga(
-                stream.ptr,
                 self.xc_func,
                 npoints,
                 inp['rho'].data.ptr,
@@ -336,7 +335,8 @@ class XCfun:
                 lapl.data.ptr,
                 inp['tau'].data.ptr,
                 ctypes.byref(out_params),
-                ctypes.byref(buf_params)
+                ctypes.byref(buf_params),
+                stream
             )
             if err != 0:
                 raise RuntimeError('Failed in xc_mgga')

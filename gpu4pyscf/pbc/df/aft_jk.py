@@ -28,8 +28,8 @@ import numpy as np
 import cupy as cp
 from pyscf import lib
 from pyscf.pbc.df.df_jk import _format_kpts_band
-from pyscf.pbc.lib.kpts_helper import is_zero, group_by_conj_pairs, kk_adapted_iter
-from gpu4pyscf.pbc.tools.k2gamma import kpts_to_kmesh
+from pyscf.pbc.lib.kpts_helper import is_zero
+from gpu4pyscf.pbc.lib.kpts_helper import kpts_to_bvkmesh
 from gpu4pyscf.pbc.df.ft_ao import FTOpt, libpbc
 from gpu4pyscf.pbc.df.fft_jk import (
     _format_dms, _format_jks, _ewald_exxdiv_for_G0, _factorize_dm)
@@ -37,18 +37,16 @@ from gpu4pyscf.lib.cupy_helper import contract, get_avail_mem, asarray, ndarray
 from gpu4pyscf.lib import logger
 from gpu4pyscf.gto.mole import SortedCell
 from gpu4pyscf.scf.jk import SHM_SIZE, _check_rsh_factors
-from gpu4pyscf.pbc.lib.kpts_helper import kk_adapted_iter as bvk_kk_adapted_iter
-from gpu4pyscf.pbc.lib.kpts_helper import conj_images_in_bvk_cell
+from gpu4pyscf.pbc.lib.kpts_helper import kk_adapted_iter
+from gpu4pyscf.pbc.lib.kpts_helper import conj_kpts, _normalize_kpts, _get_kmesh
 from gpu4pyscf.pbc.gto.cell import get_Gv_weights
 
 def get_j_kpts(mydf, dm_kpts, hermi=1, kpts=None, kpts_band=None):
     if kpts_band is not None:
         return get_j_for_bands(mydf, dm_kpts, hermi, kpts, kpts_band)
 
-    if kpts is None:
-        kpts = np.zeros((1,3))
-    else:
-        kpts = kpts.reshape(-1, 3)
+    input_kpts = kpts
+    kpts, _ = _normalize_kpts(kpts)
 
     dm_kpts = cp.asarray(dm_kpts, order='C')
     dms = _format_dms(dm_kpts, kpts)
@@ -62,7 +60,7 @@ def get_j_kpts(mydf, dm_kpts, hermi=1, kpts=None, kpts_band=None):
 
     if is_zero(kpts):
         vj_kpts = vj_kpts.real
-    return _format_jks(vj_kpts, dm_kpts, kpts_band, kpts)
+    return _format_jks(vj_kpts, dm_kpts, kpts_band, input_kpts)
 
 def _update_vj_(vj_kpts, Gpq, dms, coulG, weight=None):
     r'''Compute the Coulomb matrix
@@ -82,10 +80,8 @@ def _update_vj_(vj_kpts, Gpq, dms, coulG, weight=None):
 
 def get_j_for_bands(mydf, dm_kpts, hermi=1, kpts=None, kpts_band=None):
     raise NotImplementedError
-    if kpts is None:
-        kpts = np.zeros((1,3))
-    else:
-        kpts = kpts.reshape(-1, 3)
+    input_kpts = kpts
+    kpts, _ = _normalize_kpts(kpts)
     dm_kpts = lib.asarray(dm_kpts, order='C')
     dms = _format_dms(dm_kpts, kpts)
     nset, nkpts, nao = dms.shape[:3]
@@ -108,17 +104,15 @@ def get_j_for_bands(mydf, dm_kpts, hermi=1, kpts=None, kpts_band=None):
 
     if is_zero(kpts_band):
         vj_kpts = vj_kpts.real
-    return _format_jks(vj_kpts, dm_kpts, input_band, kpts)
+    return _format_jks(vj_kpts, dm_kpts,
+                       kpts_band if input_band is not None else None, input_kpts)
 
 def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=None, kpts_band=None, exxdiv=None, *,
                omega=None, lr_factor=None, sr_factor=None):
     if kpts_band is not None:
         return get_k_for_bands(mydf, dm_kpts, hermi, kpts, kpts_band, exxdiv)
 
-    if kpts is None:
-        kpts = np.zeros((1,3))
-    else:
-        kpts = kpts.reshape(-1, 3)
+    kpts, _ = _normalize_kpts(kpts)
 
     log = logger.new_logger(mydf)
     cpu0 = cpu1 = log.init_timer()
@@ -126,9 +120,9 @@ def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=None, kpts_band=None, exxdiv=None, *
     mesh = mydf.mesh
     ngrids = np.prod(mesh)
 
-    bvk_kmesh = kpts_to_kmesh(cell, kpts, rcut=cell.rcut+10, bound_by_supmol=False)
-    log.debug('bvk_kmesh = %s', bvk_kmesh)
-    bvk_ncells = np.prod(bvk_kmesh)
+    bvkmesh = kpts_to_bvkmesh(cell, kpts, rcut=cell.rcut+10, bound_by_supmol=False)
+    log.debug('bvkmesh = %s', bvkmesh)
+    bvk_ncells = np.prod(bvkmesh)
 
     orbl, orbr = _factorize_dm(dm_kpts, kpts)
     n_dm, nkpts, nao, nocc = orbl.shape
@@ -143,14 +137,17 @@ def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=None, kpts_band=None, exxdiv=None, *
          (cell.dimension == 2 and cell.low_dim_ft_type == 'inf_vacuum'))):
         raise NotImplementedError
 
-    if bvk_ncells == nkpts:
-        kpt_iters = ((kpts[kp], ki_idx, kj_idx, kp==kp_conj)
-                     for kp, kp_conj, ki_idx, kj_idx in bvk_kk_adapted_iter(bvk_kmesh))
-        t_rev_pairs = conj_images_in_bvk_cell(bvk_kmesh, return_pair=True)
-    else:
-        kpt_iters = kk_adapted_iter(cell, kpts)
-        t_rev_pairs = group_by_conj_pairs(cell, kpts, return_kpts_pairs=False)
-        t_rev_pairs = np.asarray(t_rev_pairs, dtype=np.int32, order='F')
+    kmesh, with_gamma_point = _get_kmesh(cell, kpts, bvkmesh)
+    assert kmesh is not None, "A complete MP mesh in cell.make_kpts ordering is required"
+    # transfer_mesh (for q = kj - ki) must include gamma point.
+    # For off-gamma MP mesh, the common k-shift in ki and kj cancels.
+    # This mesh can be made the same to the MP mesh.
+    transfer_mesh = kmesh
+    qpts = cell.make_kpts(transfer_mesh, with_gamma_point=True)
+    kk_iters = ((qpts[q], ki_idx, kj_idx, q == q_conj)
+                 for q, q_conj, ki_idx, kj_idx in
+                 kk_adapted_iter(kmesh, with_gamma_point))
+    t_rev_pairs = conj_kpts(kmesh, with_gamma_point, return_pair=True)
     log.debug1('Num time-reversal pairs %d', len(t_rev_pairs))
 
     time_reversal_symmetry = mydf.time_reversal_symmetry
@@ -192,10 +189,7 @@ def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=None, kpts_band=None, exxdiv=None, *
         update_vk = _update_vk_dmf
     log.debug2('set update_vk to %s', update_vk)
 
-    ft_opt = FTOpt(cell, bvk_kmesh)
-    # permutation_symmetry between bra-in-cell0 and ket-in-bvkcell currently
-    # only supports the complete set of kpts within MP mesh.
-    ft_opt.permutation_symmetry = bvk_ncells == nkpts
+    ft_opt = FTOpt(cell, bvkmesh)
     ft_kern = ft_opt.gen_ft_kernel(transform_ao=False, kpts=kpts)
 
     Gv, Gvbase, kws = get_Gv_weights(cell, mesh)
@@ -209,7 +203,7 @@ def get_k_kpts(mydf, dm_kpts, hermi=1, kpts=None, kpts_band=None, exxdiv=None, *
 
     Gpq_buf = cp.empty(unit*Gblksize + n_dm*nkpts*nao1**2, dtype=np.complex128)
     buf = Gpq_buf[nao1**2*bvk_ncells*Gblksize:]
-    for group_id, (kpt, ki_idx, kj_idx, self_conj) in enumerate(kpt_iters):
+    for group_id, (kpt, ki_idx, kj_idx, self_conj) in enumerate(kk_iters):
         vkcoulG = mydf.weighted_coulG(kpt, exxdiv, mesh, omega, kpts,
                                       lr_factor=lr_factor, sr_factor=sr_factor)
         vkcoulG *= weight
@@ -418,12 +412,8 @@ def get_ej_derivatives(mydf, dm, kpts=None, omega=None):
         _get_weighted_coulG_strain_derivatives as get_wcoulG)
     log = logger.new_logger(mydf)
     cell = mydf.cell
-    if kpts is None:
-        kpts = np.zeros((1,3))
-        kmesh = np.array([1, 1, 1])
-    else:
-        kpts = kpts.reshape(-1, 3)
-        kmesh = kpts_to_kmesh(cell, kpts)
+    kpts, _ = _normalize_kpts(kpts)
+    bvkmesh = kpts_to_bvkmesh(cell, kpts)
     is_gamma_point = is_zero(kpts)
     dms = _format_dms(dm, kpts)
     n_dm, nkpts, nao = dms.shape[:3]
@@ -433,7 +423,7 @@ def get_ej_derivatives(mydf, dm, kpts=None, omega=None):
     elif n_dm > 1:
         raise NotImplementedError
 
-    ft_opt = FTOpt(cell, kmesh)
+    ft_opt = FTOpt(cell, bvkmesh)
     ft_kern = ft_opt.gen_ft_kernel(transform_ao=False, kpts=kpts)
 
     cell = ft_opt.cell
@@ -448,7 +438,7 @@ def get_ej_derivatives(mydf, dm, kpts=None, omega=None):
         dms_bvkcell = cp.asarray(dms_bvkcell.real, order='C')
         expLk = None
 
-    bvk_ncells = np.prod(ft_opt.bvk_kmesh)
+    bvk_ncells = np.prod(ft_opt.bvkmesh)
     nao = cell.nao
     Gv = cell.get_Gv(mydf.mesh)
     ngrids = len(Gv)
@@ -496,7 +486,8 @@ def get_ej_derivatives(mydf, dm, kpts=None, omega=None):
             ctypes.cast(bas_ij_idx.data.ptr, ctypes.c_void_p),
             ctypes.cast(bas_ij_img_idx.data.ptr, ctypes.c_void_p),
             ctypes.cast(shl_pair_offsets.data.ptr, ctypes.c_void_p),
-            ctypes.c_int(int(ft_opt.permutation_symmetry)))
+            ctypes.c_int(int(ft_opt.permutation_symmetry)),
+            ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
         if err != 0:
             raise RuntimeError('PBC_ft_aopair_ej_deriv failed')
     if not ft_opt.permutation_symmetry:
@@ -526,12 +517,8 @@ def get_ek_derivatives(mydf, dm, kpts=None, exxdiv=None,
     log = logger.new_logger(mydf)
     cpu0 = cpu1 = log.init_timer()
     cell = mydf.cell
-    if kpts is None:
-        kpts = np.zeros((1,3))
-        kmesh = np.array([1, 1, 1])
-    else:
-        kpts = kpts.reshape(-1, 3)
-        kmesh = kpts_to_kmesh(cell, kpts)
+    kpts, _ = _normalize_kpts(kpts)
+    bvkmesh = kpts_to_bvkmesh(cell, kpts)
     is_gamma_point = is_zero(kpts)
     dm0 = _format_dms(dm, kpts)
     n_dm, nkpts, nao = dm0.shape[:3]
@@ -542,7 +529,12 @@ def get_ek_derivatives(mydf, dm, kpts=None, exxdiv=None,
     omega, lr_factor, sr_factor = _check_rsh_factors(cell, omega, lr_factor, sr_factor)
     omega = abs(omega)
 
-    ft_opt = FTOpt(cell, kmesh)
+    ft_opt = FTOpt(cell, bvkmesh)
+    kmesh, with_gamma_point = _get_kmesh(cell, kpts, bvkmesh)
+    assert kmesh is not None, "A complete MP mesh in cell.make_kpts ordering is required"
+    # transfer_mesh for q = kj - ki
+    transfer_mesh = kmesh
+    qpts = cell.make_kpts(transfer_mesh, with_gamma_point=True)
     ft_kern = ft_opt.gen_ft_kernel(transform_ao=False, kpts=kpts)
     cell = ft_opt.cell
     dms = cp.asarray(dm0.reshape(-1,nao,nao))
@@ -553,7 +545,7 @@ def get_ek_derivatives(mydf, dm, kpts=None, exxdiv=None,
     if not is_gamma_point:
         expLk = cp.exp(1j*cp.asarray(ft_opt.bvkmesh_Ls).dot(cp.asarray(kpts).T))
 
-    bvk_ncells = np.prod(ft_opt.bvk_kmesh)
+    bvk_ncells = np.prod(ft_opt.bvkmesh)
     Gv = cell.get_Gv(mydf.mesh)
     ngrids = len(Gv)
     # memory buffer required by ft_kern
@@ -585,8 +577,9 @@ def get_ek_derivatives(mydf, dm, kpts=None, exxdiv=None,
     kern = libpbc.PBC_ft_aopair_ek_deriv
     ek_sigma = cp.zeros([cell.natm+3, 3])
     sigma = cp.zeros((3, 3))
-    for group_id, (kp, kp_conj, ki_idx, kj_idx) in enumerate(bvk_kk_adapted_iter(kmesh)):
-        kpt = kpts[kp]
+    kk_iters = kk_adapted_iter(kmesh, with_gamma_point)
+    for group_id, (kp, kp_conj, ki_idx, kj_idx) in enumerate(kk_iters):
+        kpt = qpts[kp]
         Gvk = Gv + kpt
         remove_G0 = is_zero(kpt)
         wcoulG_0, wcoulG_1 = weighted_coulG_derivatives(Gvk, 0., remove_G0)
@@ -607,9 +600,7 @@ def get_ek_derivatives(mydf, dm, kpts=None, exxdiv=None,
             nGv = p1 - p0
             pqG = ft_kern(Gv[p0:p1], kpt, kj_idx=kj_idx).transpose(0,2,3,1)
             pqG_conj = pqG.conj()
-            # pqG.conj() can be computed equivalently as
-            #pqG_conj = ft_kern(-Gv[p0:p1], -kpt, -kpts)
-            #pqG_conj = pqG_conj.transpose(0,2,3,1)
+            # This is also the FT at (-Gv, -kpt) with sampling -kpts.
 
             if is_gamma_point:
                 tmp = contract('sjk,lkg->sjlg', dms[:,0], pqG_conj[0])
@@ -681,7 +672,8 @@ def get_ek_derivatives(mydf, dm, kpts=None, exxdiv=None,
                 ctypes.cast(bas_ij_idx.data.ptr, ctypes.c_void_p),
                 ctypes.cast(bas_ij_img_idx.data.ptr, ctypes.c_void_p),
                 ctypes.cast(shl_pair_offsets.data.ptr, ctypes.c_void_p),
-                ctypes.c_int(int(ft_opt.permutation_symmetry)))
+                ctypes.c_int(int(ft_opt.permutation_symmetry)),
+                ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
             pqG = pqG_conj = dm_k = tmp = dm_vG = None
             if err != 0:
                 raise RuntimeError('PBC_ft_aopair_ek_deriv failed')
@@ -754,7 +746,7 @@ def _exxdiv_ewald_strain_deriv(cell, kpts, omega):
         Gv_bases = multigrid_v3._get_Gv_bases(mesh, ecell.reciprocal_vectors())
         ne_deriv = multigrid_v3._ne_derivatives(ecell, ZSI, Gv_bases, omega).get()
         ewald_G0_response = -ne_deriv[-3:]
-        energy = multigrid_v3._get_coulomb_in_place(ZSI, Gv_bases, omega)[0].get()
+        energy = multigrid_v3._get_coulomb_in_place(ecell, ZSI, Gv_bases, omega)[0].get()
         energy *= 1. / ecell.vol
         ewald_G0_response += np.eye(3) * energy
         if omega < 0:
@@ -799,24 +791,28 @@ def get_jk(mydf, dm, hermi=1, kpt=np.zeros(3), kpts_band=None, with_j=True,
         vkcoulG = mydf.weighted_coulG(kpt_allow, exxdiv, mesh, omega)
         vk = cp.zeros((nset,nao,nao), dtype=np.complex128)
 
-    # TODO: apply ft_opt.coeff to the dms; skip the AO ordering transformation
-    # in ft_kern.
-    if is_zero(kpt):
-        bvk_kmesh = np.ones(3, dtype=int)
-    else:
-        bvk_kmesh = kpts_to_kmesh(cell, kpt.reshape(1, 3))
-    ft_opt = FTOpt(cell, bvk_kmesh)
-    ft_kern = ft_opt.gen_ft_kernel(verbose=log)
+    assert kpt.ndim == 1
+    bvkmesh = kpts_to_bvkmesh(cell, kpt.reshape(1, 3), rcut=cell.rcut+10,
+                              bound_by_supmol=True)
+    ft_opt = FTOpt(cell, bvkmesh)
+    ft_opt.permutation_symmetry = is_zero(kpt)
+    ft_kern = ft_opt.gen_ft_kernel(verbose=log, kpts=kpt.reshape(1, 3))
 
     Gv, Gvbase, kws = get_Gv_weights(cell, mesh)
     ngrids = len(Gv)
     avail_mem = get_avail_mem(exclude_memory_pool=True) * .8
-    Gblksize = max(16, int(avail_mem/(16*nao**2*2)//8*8))
+    # The FT workspace spans the BvK supercell, even for a single k-point.
+    # Also allow for the density-matrix contraction and retained intermediates.
+    bvk_ncells = len(ft_opt.bvkmesh_Ls)
+    unit = nao**2 * (2*bvk_ncells + nset + 2)
+    Gblksize = int(avail_mem/(16*unit))//8*8
+    if Gblksize < 8:
+        raise MemoryError('Insufficient memory for evaluating ft_aopair')
     Gblksize = min(Gblksize, ngrids, 16384)
     log.debug1('Gblksize = %d', Gblksize)
 
     for p0, p1 in lib.prange(0, ngrids, Gblksize):
-        Gpq = ft_kern(Gv[p0:p1], None, kpt.reshape(1, 3))[0]
+        Gpq = ft_kern(Gv[p0:p1])[0]
         if with_j:
             rho = contract('npq,Gpq->nG', dms.conj(), Gpq).conj()
             rho *= vjcoulG[p0:p1]

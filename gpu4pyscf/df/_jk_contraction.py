@@ -27,6 +27,8 @@ def _symmetric_k_update(rhok, out):
     """Accumulate one real Gram product, returning False for the general fallback."""
     import cupy as cp
     import numpy as np
+    if cp.cuda.runtime.is_hip:
+        return False
     from cupy_backends.cuda.libs import cublas
 
     if (

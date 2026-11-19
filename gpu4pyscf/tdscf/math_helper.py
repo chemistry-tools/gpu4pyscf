@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import cupy as cp
+from gpu4pyscf.lib.cusolver import eigh_std
 import scipy, cupyx
 import time
 
@@ -87,7 +88,7 @@ def cond_number(A):
 
 def matrix_power(S,a, epsilon=None):
     '''X == S^a'''
-    s,ket = cp.linalg.eigh(S)
+    s,ket = eigh_std(S)
     # s = s**a
     if epsilon:
         if s[0] < epsilon:
@@ -98,7 +99,7 @@ def matrix_power(S,a, epsilon=None):
 
     s = s**a
 
-    X = cp.dot(ket*s,ket.T)
+    X = cp.dot(ket*s,ket.conj().T)
 
     return X
 
@@ -299,6 +300,8 @@ def Gram_Schmidt_fill_holder(V, count, vecs, double = False):
     '''
     nvec = cp.shape(vecs)[0]
     for j in range(nvec):
+        if count >= V.shape[1]:
+            break
         vec = vecs[j, :].reshape(1,-1)
         vec = Gram_Schmidt_bvec(V[:count, :], vec)   #single orthonormalize
         if double:
@@ -404,7 +407,7 @@ def VW_Gram_Schmidt_fill_holder(V_holder, W_holder, m, X_new, Y_new, double=Fals
         xy_norm = (cp.dot(x_tmp, x_tmp.T) + cp.dot(y_tmp, y_tmp.T))**0.5
 
 
-        if  xy_norm > 1e-14:
+        if  xy_norm.item() > 1e-14:
             x_tmp = x_tmp/xy_norm
             y_tmp = y_tmp/xy_norm
 
@@ -425,10 +428,7 @@ def VW_nKs_fill_holder(V_holder, W_holder, m, X_new, Y_new, double=False):
         y_tmp = Y_new[j,:].reshape(1,-1)
         x_tmp,y_tmp = S_symmetry_orthogonal(x_tmp,y_tmp)
         xy_norm = (cp.dot(x_tmp, x_tmp.T) + cp.dot(y_tmp, y_tmp.T))**0.5
-        x_tmp = x_tmp/xy_norm
-        y_tmp = y_tmp/xy_norm
-
-        if  xy_norm > 1e-18:
+        if  xy_norm.item() > 1e-18:
             x_tmp = x_tmp/xy_norm
             y_tmp = y_tmp/xy_norm
 
@@ -456,7 +456,7 @@ def solve_AX_Xla_B(A, omega, Q):
     Qnorm = cp.linalg.norm(Q, axis=0, keepdims=True)
     Q = Q/Qnorm
     N_vectors = len(omega)
-    a, u = cp.linalg.eigh(A)
+    a, u = eigh_std(A)
     uq = cp.dot(u.T, Q)
     ux = cp.zeros_like(Q)
     for k in range(N_vectors):
@@ -486,7 +486,7 @@ def TDDFT_subspace_eigen_solver2(a, b, sigma, pi, nroots):
 
     G = cp.linalg.cholesky(GGT)
     if cp.any(cp.isnan(G)):
-        eig, eigv = cp.linalg.eigh(GGT)
+        eig, eigv = eigh_std(GGT)
         if eig[0] < -1e-4:
             error_msg = (
                 "GGT matrix is not positive definite.\n"
@@ -501,7 +501,7 @@ def TDDFT_subspace_eigen_solver2(a, b, sigma, pi, nroots):
     d_apb_d = cp.einsum('i,ij,j->ij', d_mh, a+b, d_mh)
     M = cp.dot(G.T, cp.dot(L_inv, cp.dot(d_apb_d, cp.dot(L_inv.T, G))))
 
-    omega2, Z = cp.linalg.eigh(M)
+    omega2, Z = eigh_std(M)
     if cp.any(omega2 <= 0):
         idx = cp.nonzero(omega2 > 0)[0]
         omega2 = omega2[idx[:nroots]]
@@ -546,7 +546,7 @@ def TDDFT_subspace_eigen_solver3(a, b, sigma, pi, k):
     B_neg_tmp = matrix_power(B, -0.5)
     M = cp.dot(B_neg_tmp, A)  # B^-1/2 A
     M = cp.dot(M, B_neg_tmp)  # B^-1/2 A B^-1/2
-    omega, Z = cp.linalg.eigh(M)
+    omega, Z = eigh_std(M)
 
     omega = omega[half_size:k]
     Z = Z[:, half_size:k]
@@ -586,7 +586,7 @@ def TDDFT_subspace_eigen_solver(a, b, sigma, pi, k):
     A_neg_tmp = matrix_power(A, -0.5, 1e-14)
     M = cp.dot(A_neg_tmp, B)
     M = cp.dot(M,A_neg_tmp )
-    omega, Z = cp.linalg.eigh(M)
+    omega, Z = eigh_std(M)
 
     omega = 1/omega[-k:][::-1]
     Z = Z[:, -k:][:, ::-1]
@@ -630,7 +630,7 @@ def TDDFT_subspace_linear_solver(a, b, sigma, pi, p, q, omega):
 
     G = cp.linalg.cholesky(GGT)
     if cp.any(cp.isnan(G)):
-        eig, eigv = cp.linalg.eigh(GGT)
+        eig, eigv = eigh_std(GGT)
         if eig[0] < -1e-4:
             error_msg = (
                 "GGT matrix is not positive definite.\n"

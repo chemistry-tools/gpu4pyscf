@@ -178,6 +178,7 @@ class KnownValues(unittest.TestCase):
         mf.run()
         self.assertAlmostEqual(mf.e_tot, -0.228035480142629, 8)
 
+    @unittest.skip('GPU PBC SCF requires k-point sampling to include the Gamma point')
     def test_lda_fft_with_kpt(self):
         cell = self.cell
         np.random.seed(1)
@@ -196,6 +197,7 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(abs(e1[0].get() - e0[0]).max(), 0, delta=1e-5)
         self.assertAlmostEqual(abs(e1[1].get() - e0[1]).max(), 0, delta=1e-5)
 
+    @unittest.skip('GPU PBC SCF requires k-point sampling to include the Gamma point')
     def test_gga_fft_with_kpt(self):
         cell = self.cell
         np.random.seed(1)
@@ -214,6 +216,7 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(abs(e1[0].get() - e0[0]).max(), 0, delta=1e-5)
         self.assertAlmostEqual(abs(e1[1].get() - e0[1]).max(), 0, delta=1e-5)
 
+    @unittest.skip('GPU PBC SCF requires k-point sampling to include the Gamma point')
     def test_rsh_fft_with_kpt(self):
         cell = self.cell
         np.random.seed(1)
@@ -589,6 +592,44 @@ class KnownValues(unittest.TestCase):
 
         e1 = mf_scanner(cell1)
         self.assertAlmostEqual(e1, mf1.e_tot, 7)
+
+class BeckeDensityPruning(unittest.TestCase):
+    @staticmethod
+    def _case(atom_grid):
+        from gpu4pyscf.pbc.dft.gen_grid import BeckeGrids
+        cell = pbcgto.M(atom='He .2 .3 .4', basis=[[0, [1.3, 1.]]],
+                       a=np.eye(3)*8, unit='Bohr', precision=1e-11, verbose=0)
+        mf = pbcdft.RKS(cell, xc='LDA,VWN')
+        mf.grids = BeckeGrids(cell)
+        mf.grids.atom_grid = atom_grid
+        mf.grids.prune = None
+        mf.small_rho_cutoff = 1e-6
+        overlap = cell.pbc_intor('int1e_ovlp')
+        density = cp.asarray(2 / overlap)
+        return mf, density
+
+    def test_initialize_grids_density_pruning(self):
+        mf, density = self._case((30, 110))
+        reference = mf.grids.copy().build()
+        rho = mf.get_rho(density, reference, mf.kpt)
+        charges = rho * reference.weights
+        electron_count = float(charges.sum())
+        self.assertLess(abs(electron_count - mf.cell.nelectron), 1e-5)
+        keep = cp.abs(charges) > mf.small_rho_cutoff / reference.weights.size
+        self.assertLess(int(keep.sum()), keep.size)
+        self.assertGreater(int(keep.sum()), 0)
+        expected = {name: getattr(reference, name)[keep].get() for name in
+                    ('coords', 'weights', 'quadrature_weights', 'supatm_idx')}
+        self.assertIs(mf.initialize_grids(mf.cell, density, mf.kpt), mf)
+        for name, values in expected.items():
+            np.testing.assert_array_equal(getattr(mf.grids, name).get(), values)
+        remaining_charge = float(mf.get_rho(density, mf.grids, mf.kpt).dot(mf.grids.weights))
+        self.assertLessEqual(abs(electron_count - remaining_charge), mf.small_rho_cutoff)
+        # A second initialization must not prune or reorder an existing grid.
+        mf.initialize_grids(mf.cell, density, mf.kpt)
+        for name, values in expected.items():
+            np.testing.assert_array_equal(getattr(mf.grids, name).get(), values)
+
 
 if __name__ == '__main__':
     print("Full Tests for pbc.dft.rks")

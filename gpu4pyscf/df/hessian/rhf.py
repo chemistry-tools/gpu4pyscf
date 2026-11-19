@@ -24,9 +24,11 @@ Ref:
 import ctypes
 import numpy as np
 import cupy as cp
+from gpu4pyscf.lib.cusolver import eigh_std
 from pyscf import lib
 from pyscf.gto import ATOM_OF
 from gpu4pyscf.lib import logger
+from gpu4pyscf.lib.utils import splits_by_blocksize
 from gpu4pyscf.lib.cupy_helper import (
     contract, ndarray, transpose_sum, get_avail_mem, empty_mapped, fill_symmetric)
 from gpu4pyscf.df.int3c2e_bdiv import (
@@ -40,6 +42,7 @@ from gpu4pyscf.grad import rhf as rhf_grad
 from gpu4pyscf.hessian import rhf as rhf_hess
 from gpu4pyscf.hessian.rhf import _hcore_energy, _aggregate_to_atoms
 from gpu4pyscf.lib import multi_gpu
+from gpu4pyscf.gto.mole import _split_l_ctr_groups
 
 num_devices = multi_gpu.num_devices
 
@@ -188,8 +191,11 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1,
         laux = auxmol.uniq_l_ctr[:,0].max()
         shm_size_max = shm_size[:laux+1,:lmax+1,:lmax+1].max()
 
+        # Bound serial work in each derivative-integral task.
+        pair_batch_size = np.minimum(nsp_per_block[0]*4,
+                                     np.maximum(nsp_per_block[0]//4, 16))
         bas_ij_idx, shl_pair_offsets = mol.aggregate_shl_pairs(
-            int3c2e_opt.bas_ij_cache, nsp_per_block[0]*4)
+            int3c2e_opt.bas_ij_cache, pair_batch_size)
         ao_pair_loc = get_ao_pair_loc(mol.uniq_l_ctr[:,0], int3c2e_opt.bas_ij_cache)
 
         l_ctr_aux_offsets = np.append(0, np.cumsum(auxmol.l_ctr_counts))
@@ -199,7 +205,12 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1,
         ksh_offsets_cpu = l_ctr_aux_offsets
         ksh_offsets_gpu = cp.asarray(ksh_offsets_cpu+mol.nbas, dtype=np.int32)
         aux_offsets = aux_loc[ksh_offsets_cpu]
-        num_aux_batches = len(aux_offsets) - 1
+        # Keep device tasks small enough to distribute, retaining the existing
+        # group boundaries that define the auxiliary function ordering.
+        aux_batch_size = min(batch_size, max(np.diff(aux_offsets).max(),
+                                             (naux+num_devices-1)//num_devices))
+        aux_splits = splits_by_blocksize(aux_offsets, aux_batch_size)
+        num_aux_batches = len(aux_splits) - 1
 
         # (20|0)(0|0)(0|00) + (10|1)(0|0)(0|00)
         int3c2e_envs = int3c2e_opt.int3c2e_envs
@@ -208,10 +219,12 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1,
         buf = cp.empty((nao_pair*batch_size))
         buf2 = cp.empty((blksize, nao, nao))
         buf1 = cp.empty((blksize, nao, nocc))
-        for kbatch in aux_batch_iter:
-            if kbatch >= num_aux_batches:
+        # Distribute packed auxiliary tiles through the existing device iterator.
+        for batch_id in aux_batch_iter:
+            if batch_id >= num_aux_batches:
                 break
-            naux_in_batch = aux_offsets[kbatch+1] - aux_offsets[kbatch]
+            kbatch, kend = aux_splits[batch_id:batch_id+2]
+            naux_in_batch = aux_offsets[kend] - aux_offsets[kbatch]
             aux0 = aux1 = aux_ao_offset = aux_loc[ksh_offsets_cpu[kbatch]]
             compressed = ndarray((nao_pair, naux_in_batch), buffer=buf)
             for k0, k1 in lib.prange(0, naux_in_batch, blksize):
@@ -237,14 +250,15 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1,
                 ctypes.byref(int3c2e_envs),
                 ctypes.c_int(shm_size_max),
                 ctypes.c_int(len(shl_pair_offsets) - 1),
-                ctypes.c_int(1),
+                ctypes.c_int(kend-kbatch),
                 ctypes.cast(shl_pair_offsets.data.ptr, ctypes.c_void_p),
                 ctypes.cast(bas_ij_idx.data.ptr, ctypes.c_void_p),
                 ctypes.cast(ksh_offsets_gpu[kbatch:].data.ptr, ctypes.c_void_p),
                 ctypes.cast(gout_stride.data.ptr, ctypes.c_void_p),
                 ctypes.cast(ao_pair_loc.data.ptr, ctypes.c_void_p),
                 ctypes.c_int(aux_ao_offset),
-                ctypes.c_int(naux_in_batch))
+                ctypes.c_int(naux_in_batch),
+                ctypes.c_void_p(stream.ptr))
             if err != 0:
                 raise RuntimeError('ejk_int3c2e_ip2 failed')
             if num_devices > 1:
@@ -345,21 +359,33 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1,
             j2c_10, tmp = cp.empty_like(j2c_10), j2c_10
             j2c_10[:,_aux_sorting[:,None], _aux_sorting] = tmp
             j2c_10v = ndarray((3, naux, metric_size), buffer=tmp)
-            j2c_10v = contract('xrs,st->xrt', j2c_10, _metric_v)
+            j2c_10v = contract('xrs,st->xrt', j2c_10, _metric_v, out=j2c_10v)
+            tmp = None
 
+            # The split response involves the product of
+            # [(00|0)((1|0)+(0|1)) + (00|1)] [((1|0)+(0|1))(0|00) + (1|00)]
+            # This can be decomposed and evaluated separately
             # j3c_oo1p = (1|0)(0|00) + (1|00)
             j3c_oo1p = contract('xuv,vij->xuij', j2c_10, dm_oo, alpha=-1, beta=1, out=j3c_oo1)
             # (00|1)(1|0)(0|00) + (00|1)(0|0)(1|00) +
             # (00|0)(0|1)(1|00) + (00|0)(0|1)(1|0)(0|00)
-            # = 001p * 001p
-            h_aux = contract('xrij,ysij->xrys', j3c_oo1p, j3c_oo1p, -.5*k_factor)
+            # = j3c_oo1p * j3c_oo1p
+            # _aux_metric_response combines this product, both cross terms
+            # with the other metric center, and the quadratic metric term
+            # (00|0)(1|0) * (0|1)(0|00). The helper forms the complete
+            # response on each atom before contracting the two responses.
+            ejk += _aux_metric_response(
+                _metric_w, _metric_v, j2c_10v, dm_oo, j3c_oo1p,
+                aux_atm_labels, natm) * (-.5*k_factor)
             if j_factor != 0 and batch_id == 0:
                 contract('xuv,v->xu', j2c_10, _auxvec, -1, 1, out=auxvec_ipauxp)
-                contract('xr,ys->xrys', auxvec_ipauxp, auxvec_ipauxp, j_factor, 1, h_aux)
-            j2c_inv = (_metric_v / _metric_w).dot(_metric_v.T)
-            h_aux *= j2c_inv[None,:,None,:]
+                ejk += _aux_metric_response(
+                    _metric_w, _metric_v, j2c_10v, _auxvec[:,None],
+                    auxvec_ipauxp[:,:,None], aux_atm_labels, natm) * j_factor
 
-            # (00|0)(1|0)(0|1)(0|00)
+            # Pair density for the genuine second derivative of the metric.
+            # The product of first metric derivatives, formerly also using
+            # dm_aux here, is included in the response product above.
             dm_aux = contract('rij,sij->rs', dm_oo, dm_oo, alpha=-.5*k_factor)
             if j_factor != 0 and batch_id == 0:
                 contract('r,s->rs', _auxvec, _auxvec, j_factor, 1, dm_aux)
@@ -369,36 +395,7 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1,
                 lr_factor, sr_factor)
             ejk -= ejk_aux
 
-            j2c_ip2 = None
-            for x in range(3):
-                j2c_10v_w = j2c_10v[x] / _metric_w
-                for y in range(3):
-                    j2c_ip2 = contract('rs,ts->rt', j2c_10v_w, j2c_10v[y], out=j2c_ip2)
-                    j2c_ip2 *= dm_aux
-                    h_aux[x,:,y] += j2c_ip2
-            dm_aux = j2c_ip2 = j2c_10v_w = None
-
-            # (00|0)(1|0)(1|00) + (00|0)(1|0)(1|0)(0|00)
-            dm_aux1 = contract('xrij,sij->xrs', j3c_oo1p, dm_oo, -.5*k_factor)
-            if j_factor != 0 and batch_id == 0:
-                contract('xr,t->xrt', auxvec_ipauxp, _auxvec, j_factor, 1, out=dm_aux1)
-            tmp = contract('xrt,st->xrs', j2c_10v, _metric_v/_metric_w)
-            # perform the following operations
-            #:w10_100 = contract('xrt,ytr->xryt', tmp, dm_aux1)
-            #:h_aux -= w10_100
-            #:h_aux -= w10_100.transpose(1,0,3,2) # swap the asymetric di,dj indices
-            h_aux = contract('xrt,ytr->xryt', tmp, dm_aux1, alpha=-2, beta=1, out=h_aux)
-            dm_aux1 = j2c_10 = tmp = None
-
-            # swap the differentiation order
-            # (00|0)(1|0)(1|00) + (00|0)(1|0)(1|0)(0|00)
-            #:h_aux = h_aux + h_aux.transpose(2,3,0,1)
-            h_aux = transpose_sum(h_aux.reshape(3*naux,3*naux), inplace=True)
-            h_aux = h_aux.reshape(3,naux,3,naux).transpose(1,3,0,2)
-
-            ejk_aux = _aggregate_to_atoms(h_aux, natm, aux_atm_labels, axis=(0,1))
-            ejk += ejk_aux * .5
-            j2c_inv = j3c_oo1 = h_aux = None
+            dm_aux = j2c_10 = j3c_oo1 = None
             t1 = t0 = log.timer_debug1('contract int2c2e_ip1', *t0)
 
             word_avail -= 4 * naux**2 # j2c_10v
@@ -586,10 +583,16 @@ def _j_energy_per_atom(int3c2e_opt, dm, verbose=None):
         laux = auxmol.uniq_l_ctr[:,0].max()
         shm_size_max = shm_size[:laux+1,:lmax+1,:lmax+1].max()
 
+        # Bound serial work in each derivative-integral task.
+        pair_batch_size = np.minimum(nsp_per_block[0]*4,
+                                     np.maximum(nsp_per_block[0]//4, 16))
         bas_ij_idx, shl_pair_offsets = mol.aggregate_shl_pairs(
-            int3c2e_opt.bas_ij_cache, nsp_per_block[0]*4)
+            int3c2e_opt.bas_ij_cache, pair_batch_size)
         ao_pair_loc = get_ao_pair_loc(mol.uniq_l_ctr[:,0], int3c2e_opt.bas_ij_cache)
-        ksh_offsets_cpu = np.append(0, np.cumsum(auxmol.l_ctr_counts))
+        # Split auxbasis into small batches for load balance
+        _, aux_counts = _split_l_ctr_groups(
+            auxmol.uniq_l_ctr, auxmol.l_ctr_counts, [16]*(laux+1))
+        ksh_offsets_cpu = np.append(0, np.cumsum(aux_counts))
         ksh_offsets_gpu = cp.asarray(ksh_offsets_cpu+mol.nbas, dtype=np.int32)
 
         int3c2e_envs = int3c2e_opt.int3c2e_envs
@@ -611,7 +614,8 @@ def _j_energy_per_atom(int3c2e_opt, dm, verbose=None):
             ctypes.cast(gout_stride.data.ptr, ctypes.c_void_p),
             ctypes.cast(ao_pair_loc.data.ptr, ctypes.c_void_p),
             ctypes.c_int(0),
-            ctypes.c_int(naux))
+            ctypes.c_int(naux),
+            ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
         if err != 0:
             raise RuntimeError('ejk_int3c2e_ip2 failed')
         return ej
@@ -648,7 +652,7 @@ def _j_energy_per_atom(int3c2e_opt, dm, verbose=None):
     mem_avail = get_avail_mem(exclude_memory_pool=True)
     word_avail = mem_avail // 8
     batch_size = min(naux, int(word_avail*0.75) // (3*nao_pair*2))
-    blksize = min(naux, int(word_avail*0.15) // (nao**2*8) * 8)
+    blksize = min(batch_size, int(word_avail*0.15) // (3*nao**2*8) * 8)
     assert batch_size > 0 and blksize > 0
     log.debug1('mem_avail=%.3f MB, batch_size=%d, blksize=%d',
                mem_avail*1e-6, batch_size, blksize)
@@ -704,41 +708,18 @@ def _j_energy_per_atom(int3c2e_opt, dm, verbose=None):
     j2c_10 = int2c2e_ip1(auxmol, sort_output=False)
     j2c_10 *= -1
     j2c_10v = contract('xrs,st->xrt', j2c_10, metric_v)
-    j2c_10v_w = j2c_10v / metric_w
-    # (00|0)(1|0)(0|1)(0|00)
-    j2c_ip2 = contract('xrs,yts->rtxy', j2c_10v_w, j2c_10v)
-    j2c_ip2 *= dm_aux[:,:,None,None]
-    h_aux = j2c_ip2
-    tmp = dm_aux = None
+    dm_aux = None
 
     # d/dX = -d/dr
     auxvec_ipaux *= -1
     # (1|0)(0|00) + (1|00)
     auxvec_ipauxp = contract('xuv,v->xu', j2c_10, auxvec, alpha=-1, beta=1,
                              out=auxvec_ipaux)
-    # (00|0)(1|0)(1|00) + (00|0)(1|0)(1|0)(0|00)
-    dm_aux1 = cp.einsum('xr,t->xrt', auxvec_ipauxp, auxvec)
-    tmp = contract('xrt,st->xrs', j2c_10v_w, metric_v)
-    w10_100 = contract('xrt,ytr->rtxy', tmp, dm_aux1)
-    h_aux -= w10_100
-    h_aux -= w10_100.transpose(1,0,3,2) # swap the asymetric di,dj indices
-    dm_aux1 = j2c_10v = j2c_10v_w = w10_100 = tmp = None
-
-    # (00|1)(1|0)(0|00) + (00|1)(0|0)(1|00) +
-    # (00|0)(0|1)(1|00) + (00|0)(0|1)(1|0)(0|00)
-    # = 001p * 001p
-    dm_aux11 = cp.einsum('xr,ys->rsxy', auxvec_ipauxp, auxvec_ipauxp)
-    j2c_inv = (metric_v / metric_w).dot(metric_v.T)
-    dm_aux11 *= j2c_inv[:,:,None,None]
-    h_aux += dm_aux11
-    # swap the differentiation order
-    # (00|0)(1|0)(1|00) + (00|0)(1|0)(1|0)(0|00)
-    h_aux = h_aux + h_aux.transpose(1,0,3,2)
-
     aux_atm_labels = _bas_atom_labels(auxmol)
-    ej_aux = _aggregate_to_atoms(h_aux, natm, aux_atm_labels, axis=(0,1))
-    ej += ej_aux * .5
-    dm_aux11 = h_aux = j2c_inv = None
+    ej += _aux_metric_response(
+        metric_w, metric_v, j2c_10v, auxvec[:,None],
+        auxvec_ipauxp[:,:,None], aux_atm_labels, natm)
+    j2c_10v = None
     t0 = log.timer_debug1('contract int2c2e_ip1', *t0)
 
     # (10|0)(0|0)(0|01) + (10|0)(0|0)(0|10)
@@ -764,6 +745,53 @@ def _j_energy_per_atom(int3c2e_opt, dm, verbose=None):
     ej += ej_ao_aux.transpose(1,0,3,2)
     return ej
 
+def _aux_metric_response(metric_w, metric_v, j2c_10v, dm, j3c_deriv, atom_labels, natm):
+    '''Evaluate [(00|0)((1|0)+(0|1)) + (00|1)] * [((1|0)+(0|1))(0|00) + (1|00)].
+
+    dm contains (0|00), including the metric solve. j3c_deriv already contains
+    (1|0)(0|00) + (1|00). j2c_10v is the one-center metric derivative (1|0)
+    projected onto metric_v.
+    '''
+    naux, nw = metric_v.shape
+    dm = dm.reshape(naux, -1)
+    j3c_deriv = j3c_deriv.reshape(3, naux, -1)
+    npair = dm.shape[1]
+    aux_indices = [cp.asarray(np.where(atom_labels == ia)[0]) for ia in range(natm)]
+    naux_on_atom = max(len(idx) for idx in aux_indices)
+    mem_avail = get_avail_mem(exclude_memory_pool=True)
+
+    mem_avail -= 4*naux_on_atom*nw*8
+    blksize = min(npair, int(mem_avail*.8/((2*natm*3*naux + 3*naux_on_atom)*8)))
+    assert blksize > 0, 'Insufficient GPU memory'
+    nblocks = (npair + blksize - 1) // blksize
+    blksize = (npair + nblocks - 1) // nblocks
+
+    hess = cp.zeros((natm, natm, 3, 3))
+    rhs_buf = cp.empty((2, natm, 3, nw, blksize))
+    buf = cp.empty((3, naux_on_atom, blksize))
+    j2c_10v_buf = cp.empty((3, naux_on_atom, nw))
+
+    for p0, p1 in lib.prange(0, npair, blksize):
+        rhs = ndarray((natm, 3, nw, p1-p0), buffer=rhs_buf[0])
+        for ia, idx in enumerate(aux_indices):
+            tmp = ndarray((3, len(idx), p1-p0), buffer=buf)
+            cp.take(j3c_deriv[:,:,p0:p1], idx, axis=1, out=tmp)
+            contract('rv,xrp->xvp', metric_v[idx], tmp, out=rhs[ia])
+            cp.take(dm[:,p0:p1], idx, axis=0, out=tmp[0])
+            j2c_atom = ndarray((3, len(idx), nw), buffer=j2c_10v_buf)
+            cp.take(j2c_10v, idx, axis=1, out=j2c_atom)
+            contract('xrv,rp->xvp', j2c_atom, tmp[0], alpha=-1, beta=1, out=rhs[ia])
+
+        # Precomputing M^-1 = metric_v / metric_w @ metric_v.T can increase
+        # numerical noise for nearly linearly dependent auxiliary bases.
+        # A numerically more stable method is to contract metric_v to the rhs first,
+        # then scaling 1/metric_w. However, this contraction order can increase the
+        # formal scaling to A^2*Naux*Npair
+        weighted = ndarray(rhs.shape, buffer=rhs_buf[1])
+        cp.divide(rhs, metric_w[None,None,:,None], out=weighted)
+        contract('axrp,byrp->abxy', weighted, rhs, beta=1, out=hess)
+    return hess
+
 def _argsort_aux_by_atom(auxmol, aux_sorting=None):
     # group AO inidices by atom Id
     aux_idx = auxmol.get_ao_idx(cart=True)
@@ -777,7 +805,7 @@ def _argsort_aux_by_atom(auxmol, aux_sorting=None):
 def _factorize_j2c(auxmol, aux_sorting=None, omega=None, lr_factor=None, sr_factor=None):
     original_auxmol = auxmol.mol
     j2c = int2c2e(auxmol, omega=omega, lr_factor=lr_factor, sr_factor=sr_factor)
-    w, v = cp.linalg.eigh(j2c)
+    w, v = eigh_std(j2c)
     is_lr_coulomb = omega is not None and omega > 0
     if ((is_lr_coulomb or original_auxmol.cart) and
         w[0] < df.LINEAR_DEP_THR):
@@ -1218,15 +1246,16 @@ def _int2c2e_ip2_per_atom(mol, dm, omega=None, lr_factor=None, sr_factor=None):
     err = libvhf_rys.e_int2c2e_ip2(
         ctypes.cast(ejk.data.ptr, ctypes.c_void_p),
         ctypes.cast(dm.data.ptr, ctypes.c_void_p),
+        ctypes.byref(rys_envs),
         ctypes.c_double(omega),
         ctypes.c_double(lr_factor),
         ctypes.c_double(sr_factor),
-        ctypes.byref(rys_envs),
         ctypes.c_int(shm_size_max),
         ctypes.c_int(nbatches_shl_pair),
         ctypes.cast(shl_pair_offsets.data.ptr, ctypes.c_void_p),
         ctypes.cast(bas_ij_idx.data.ptr, ctypes.c_void_p),
-        ctypes.cast(gout_stride.data.ptr, ctypes.c_void_p))
+        ctypes.cast(gout_stride.data.ptr, ctypes.c_void_p),
+        ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
     if err != 0:
         raise RuntimeError('e_int2c2e_ip2 failed')
     ejk = ejk + ejk.transpose(1,0,3,2)
@@ -1313,11 +1342,11 @@ def _get_jk(dfobj, dms, mo_coeff, mo_occ, hermi=1, with_j=True, with_k=True, ome
                 naux, nao_pair = a.shape
                 stream = cp.cuda.get_current_stream()
                 libvhf_rys.transpose_write(
-                    ctypes.cast(stream.ptr, ctypes.c_void_p),
                     a.ctypes,
                     ctypes.cast(dfobj._cderi[device_id].data.ptr, ctypes.c_void_p),
                     ctypes.c_int(naux), ctypes.c_int(nao_pair),
-                    ctypes.c_int(0), ctypes.c_int(nao_pair))
+                    ctypes.c_int(0), ctypes.c_int(nao_pair),
+                    ctypes.cast(stream.ptr, ctypes.c_void_p))
                 stream.synchronize()
                 dfobj._cderi[device_id] = a
             multi_gpu.run(transfer_to_host, non_blocking=True)
@@ -1404,7 +1433,7 @@ def _get_jk(dfobj, dms, mo_coeff, mo_occ, hermi=1, with_j=True, with_k=True, ome
         if with_j: vj = vj.reshape(n_dm,-1)
         if with_k: vk = vk.reshape(n_dm,-1)
     else: # UHF
-        nocca, noccb = mo_occ.sum(axis=1).get()
+        nocca, noccb = (int(x) for x in mo_occ.sum(axis=1).get())
         if nocca != noccb:
             def format_uhf_output(v):
                 return cp.hstack([v[:,0,:,:nocca].reshape(n_dm,-1),

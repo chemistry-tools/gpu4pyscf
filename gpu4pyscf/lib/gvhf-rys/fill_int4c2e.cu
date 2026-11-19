@@ -18,8 +18,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <type_traits>
-#include <cuda.h>
-#include <cuda_runtime.h>
 
 #include "gint/cuda_alloc.cuh"
 #include "vhf.cuh"
@@ -86,8 +84,8 @@ void int4c2e_kernel(double *out, RysIntEnvVars envs, BoundsInfo bounds,
                     float *q_cond_ij, float *q_cond_kl,
                     int *ij_pair_loc, int *kl_pair_loc,
                     uint32_t *pool, int *head, int nf, int nao_pairs,
-                    int reserved_shm_size, double omega,
-                    double lr_factor, double sr_factor)
+                    int reserved_shm_size,
+                    double omega, double lr_factor, double sr_factor)
 {
     // sq is short for shl_quartet
     int sq_id = threadIdx.x;
@@ -364,14 +362,15 @@ static void threads_scheme(int *scheme, BoundsInfo &bounds, int shm_size, int nf
     scheme[3] = reserved_shm_size;
 }
 
-static int fill_int4c2e(double *out, int nao_pairs, double omega,
-                     double lr_factor, double sr_factor,
+extern "C" {
+int RYS_fill_int4c2e(double *out, int nao_pairs,
+                     double omega, double lr_factor, double sr_factor,
                      RysIntEnvVars *envs, int *shls_slice, int shm_size,
                      int npairs_ij, int npairs_kl,
                      uint32_t *pair_ij_mapping, uint32_t *pair_kl_mapping,
                      float *q_cond_ij, float *q_cond_kl,
                      int *ij_pair_loc, int *kl_pair_loc,
-                     float cutoff, uint32_t *pool, int *bas)
+                     float cutoff, uint32_t *pool, int *bas, cudaStream_t stream)
 {
     int ish0 = shls_slice[0];
     int jsh0 = shls_slice[2];
@@ -413,7 +412,7 @@ static int fill_int4c2e(double *out, int nao_pairs, double omega,
     cudaGetDeviceProperties(&prop, 0);
     int workers = prop.multiProcessorCount;
     int *head = (int *)(pool + workers * QUEUE_DEPTH);
-    cudaMemset(head, 0, sizeof(int));
+    cudaMemsetAsync(head, 0, sizeof(int), stream);
 
     int nf = nfi * nfj * nfk * nfl;
     int scheme[4];
@@ -429,7 +428,7 @@ static int fill_int4c2e(double *out, int nao_pairs, double omega,
         return 1;
     }
 
-    int4c2e_kernel<<<workers, threads, buflen>>>(
+    int4c2e_kernel<<<workers, threads, buflen, stream>>>(
         out, *envs, bounds, q_cond_ij, q_cond_kl, ij_pair_loc, kl_pair_loc,
         pool, head, nf, nao_pairs, reserved_shm_size, omega, lr_factor, sr_factor);
 
@@ -442,23 +441,7 @@ static int fill_int4c2e(double *out, int nao_pairs, double omega,
     return 0;
 }
 
-extern "C" {
-// Preserve the existing AO2MO entrypoint and its argument layout.
-int RYS_fill_int4c2e(double *out, int nao_pairs, double omega,
-                     RysIntEnvVars *envs, int *shls_slice, int shm_size,
-                     int npairs_ij, int npairs_kl,
-                     uint32_t *pair_ij_mapping, uint32_t *pair_kl_mapping,
-                     float *q_cond_ij, float *q_cond_kl,
-                     int *ij_pair_loc, int *kl_pair_loc,
-                     float cutoff, uint32_t *pool, int *bas)
-{
-    return fill_int4c2e(out, nao_pairs, omega, 1., 1., envs, shls_slice,
-                      shm_size, npairs_ij, npairs_kl, pair_ij_mapping,
-                      pair_kl_mapping, q_cond_ij, q_cond_kl, ij_pair_loc,
-                      kl_pair_loc, cutoff, pool, bas);
-}
-
-// The operator uses exactly the normalized range fractions of RYS_build_k.
+// Reuse the upstream range-separated integral evaluator for cached exchange.
 int RYS_fill_int4c2e_k(double *out, int nao_pairs, double omega,
                      double lr_factor, double sr_factor,
                      RysIntEnvVars *envs, int *shls_slice, int shm_size,
@@ -466,11 +449,12 @@ int RYS_fill_int4c2e_k(double *out, int nao_pairs, double omega,
                      uint32_t *pair_ij_mapping, uint32_t *pair_kl_mapping,
                      float *q_cond_ij, float *q_cond_kl,
                      int *ij_pair_loc, int *kl_pair_loc,
-                     float cutoff, uint32_t *pool, int *bas)
+                     float cutoff, uint32_t *pool, int *bas, cudaStream_t stream)
 {
-    return fill_int4c2e(out, nao_pairs, omega, lr_factor, sr_factor, envs,
-                      shls_slice, shm_size, npairs_ij, npairs_kl,
-                      pair_ij_mapping, pair_kl_mapping, q_cond_ij, q_cond_kl,
-                      ij_pair_loc, kl_pair_loc, cutoff, pool, bas);
+    return RYS_fill_int4c2e(out, nao_pairs, omega, lr_factor, sr_factor, envs,
+                           shls_slice, shm_size, npairs_ij, npairs_kl,
+                           pair_ij_mapping, pair_kl_mapping, q_cond_ij, q_cond_kl,
+                           ij_pair_loc, kl_pair_loc, cutoff, pool, bas, stream);
 }
+
 }

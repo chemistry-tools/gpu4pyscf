@@ -41,10 +41,10 @@ from gpu4pyscf.lib.cupy_helper import (
 from gpu4pyscf.lib.memcpy import copy_array
 from gpu4pyscf.df import df as mol_df
 from gpu4pyscf.pbc.df import rsdf_builder, df_jk, df_jk_real
-from gpu4pyscf.pbc.df.aft import _check_kpts, AFTDF
-from gpu4pyscf.pbc.tools.k2gamma import kpts_to_kmesh
+from gpu4pyscf.pbc.df.aft import AFTDF
+from gpu4pyscf.pbc.lib.kpts_helper import kpts_to_bvkmesh
 from gpu4pyscf.pbc.lib.kpts_helper import (
-    reset_kpts, fft_matrix, conj_images_in_bvk_cell)
+    reset_kpts, fft_matrix, conj_kpts, _normalize_kpts, _get_kmesh)
 from gpu4pyscf.__config__ import num_devices
 
 DEBUG = False
@@ -56,7 +56,7 @@ class GDF(lib.StreamObject):
     blockdim = df_cpu.GDF.blockdim
     is_gamma_point = False
 
-    _keys = df_cpu.GDF._keys.union({'is_gamma_point', 'nao', 'kmesh'})
+    _keys = df_cpu.GDF._keys.union({'is_gamma_point', 'nao', 'bvkmesh'})
 
     __getstate__, __setstate__ = lib.generate_pickle_methods(
         excludes=('_cderi_to_save', '_cderi', '_cderip', '_cderi_idx', '_rsh_df'),
@@ -138,13 +138,13 @@ class GDF(lib.StreamObject):
         kpts = self.kpts
         if self.is_gamma_point:
             assert kpts is None or is_zero(kpts)
-            self.kmesh = [1] * 3
+            self.bvkmesh = [1] * 3
         else:
-            self.kmesh = kpts_to_kmesh(cell, kpts, bound_by_supmol=not self._j_only)
+            self.bvkmesh = kpts_to_bvkmesh(cell, kpts, rcut=cell.rcut+10)
 
         t1 = (logger.process_clock(), logger.perf_counter())
         self._cderi, self._cderip, self._cderi_idx = rsdf_builder.build_cderi(
-            cell, auxcell, kpts, self.kmesh, j_only=self._j_only, omega=self._omega,
+            cell, auxcell, kpts, self.bvkmesh, j_only=self._j_only, omega=self._omega,
             linear_dep_threshold=self.linear_dep_threshold, compress=True)
         ao_pair_mapping, diag_idx = self._cderi_idx
         logger.debug1(self, 'len(cderi)=%d len(ao_pair)=%d len(diag)=%d',
@@ -178,18 +178,22 @@ class GDF(lib.StreamObject):
         cell = self.cell
         if self._cderi is None:
             self.build(j_only=self._j_only)
-        nkpts = np.prod(self.kmesh)
-        if kpts is not None:
+        nkpts = len(self.kpts)
+        if kpts is None:
+            kpts = self.kpts
+        else:
             assert len(kpts) == nkpts
         if aux_iter is None:
             naux = self.get_naoaux()
             aux_iter = lib.prange(0, naux, blksize)
         pair_address = cp.asarray(self._cderi_idx[0], dtype=np.int32)
         if unpack:
-            expLk = fft_matrix(self.kmesh)
+            kmesh, with_gamma_point = _get_kmesh(cell, kpts, self.bvkmesh)
+            assert kmesh is not None, "A complete MP mesh in cell.make_kpts ordering is required"
+            expLk = fft_matrix(kmesh, with_gamma_point)
             nao = cell.nao
-            kk_conserv = k2gamma.double_translation_indices(self.kmesh)
-            conj_mapping = cp.asarray(conj_images_in_bvk_cell(self.kmesh), dtype=np.int32)
+            kk_conserv = k2gamma.double_translation_indices(kmesh)
+            conj_mapping = cp.asarray(conj_kpts(kmesh, with_gamma_point), dtype=np.int32)
             out_buf = out
 
         cderi_buf = out
@@ -253,7 +257,7 @@ class GDF(lib.StreamObject):
         if self.is_gamma_point:
             return df_jk_real.get_jk(self, dm, hermi, with_j, with_k, exxdiv)
         else:
-            kpts, is_single_kpt = _check_kpts(kpts)
+            kpts, is_single_kpt = _normalize_kpts(kpts)
             if is_single_kpt:
                 return df_jk.get_jk(self, dm, hermi, kpts[0], kpts_band, with_j,
                                     with_k, exxdiv)

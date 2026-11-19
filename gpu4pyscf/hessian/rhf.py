@@ -231,8 +231,7 @@ def _hess_nuc_without_ecp(mol, dm0):
         ctypes.c_double(omega),
         ctypes.c_double(lr_factor),
         ctypes.c_double(sr_factor),
-        ctypes.byref(int3c2e_envs), ctypes.c_double(0.),
-        ctypes.c_double(1.), ctypes.c_double(1.),
+        ctypes.byref(int3c2e_envs),
         ctypes.c_int(shm_size_max),
         ctypes.c_int(len(shl_pair_offsets) - 1),
         ctypes.c_int(len(ksh_offsets_gpu) - 1),
@@ -242,7 +241,8 @@ def _hess_nuc_without_ecp(mol, dm0):
         ctypes.cast(gout_stride.data.ptr, ctypes.c_void_p),
         ctypes.cast(ao_pair_loc.data.ptr, ctypes.c_void_p),
         ctypes.c_int(0),
-        ctypes.c_int(natm))
+        ctypes.c_int(natm),
+        ctypes.c_void_p(cupy.cuda.get_current_stream().ptr))
     if err != 0:
         raise RuntimeError('ejk_int3c2e_ip2 failed')
     de = de + de.transpose(1,0,3,2)
@@ -285,11 +285,12 @@ def _partial_ejk_ip2(mol, dm, vhfopt=None, j_factor=1., k_factor=1.,
     diffuse_exps, diffuse_ctr_coef = extract_pgto_params(mol, 'diffuse')
 
     n_groups = len(uniq_l_ctr)
-    tasks = ((i, j, k, l)
-             for i in range(n_groups)
-             for j in range(i+1)
-             for k in range(i+1)
-             for l in range(k+1))
+    # Materialize task metadata before sharing the iterator across workers.
+    tasks = iter([(i, j, k, l)
+                  for i in range(n_groups)
+                  for j in range(i+1)
+                  for k in range(i+1)
+                  for l in range(k+1)])
 
     def proc():
         device_id = cp.cuda.device.get_device_id()
@@ -316,6 +317,7 @@ def _partial_ejk_ip2(mol, dm, vhfopt=None, j_factor=1., k_factor=1.,
         dd_pool = cp.empty((workers, DD_CACHE_MAX), dtype=np.float64)
         t1 = log.timer_debug1(f'q_cond and dm_cond on Device {device_id}', *cput0)
 
+        stream = cupy.cuda.get_current_stream()
         for i, j, k, l in tasks:
             shls_slice = l_ctr_bas_loc[[i, i+1, j, j+1, k, k+1, l, l+1]]
             llll = f'({l_symb[i]}{l_symb[j]}|{l_symb[k]}{l_symb[l]})'
@@ -353,7 +355,8 @@ def _partial_ejk_ip2(mol, dm, vhfopt=None, j_factor=1., k_factor=1.,
                     ctypes.cast(pool.data.ptr, ctypes.c_void_p),
                     ctypes.cast(dd_pool.data.ptr, ctypes.c_void_p),
                     mol._atm.ctypes, ctypes.c_int(mol.natm),
-                    mol._bas.ctypes, ctypes.c_int(mol.nbas), mol._env.ctypes)
+                    mol._bas.ctypes, ctypes.c_int(mol.nbas), mol._env.ctypes,
+                    ctypes.c_void_p(stream.ptr))
 
                 err2 = kern2(
                     ctypes.cast(ejk.data.ptr, ctypes.c_void_p),
@@ -379,7 +382,8 @@ def _partial_ejk_ip2(mol, dm, vhfopt=None, j_factor=1., k_factor=1.,
                     ctypes.cast(pool.data.ptr, ctypes.c_void_p),
                     ctypes.cast(dd_pool.data.ptr, ctypes.c_void_p),
                     mol._atm.ctypes, ctypes.c_int(mol.natm),
-                    mol._bas.ctypes, ctypes.c_int(mol.nbas), mol._env.ctypes)
+                    mol._bas.ctypes, ctypes.c_int(mol.nbas), mol._env.ctypes,
+                    ctypes.c_void_p(stream.ptr))
 
                 if err1 != 0 or err2 != 0:
                     raise RuntimeError(f'RYS_per_atom_jk_ip2 kernel for {llll} failed')
@@ -511,11 +515,12 @@ def _get_jk_ip1(mol, dm, with_j=True, with_k=True, atoms_slice=None,
         mol, bas_ij_cache, atoms_slice)
 
     n_groups = len(uniq_l_ctr)
-    tasks = ((i, j, k, l)
-             for i in range(n_groups)
-             for j in range(n_groups)
-             for k in range(n_groups)
-             for l in range(k+1))
+    # Materialize task metadata before sharing the iterator across workers.
+    tasks = iter([(i, j, k, l)
+                  for i in range(n_groups)
+                  for j in range(n_groups)
+                  for k in range(n_groups)
+                  for l in range(k+1)])
 
     def proc():
         device_id = cp.cuda.device.get_device_id()
@@ -580,7 +585,8 @@ def _get_jk_ip1(mol, dm, with_j=True, with_k=True, atoms_slice=None,
                 ctypes.c_float(log_cutoff),
                 ctypes.c_float(dm_penalty),
                 ctypes.cast(pool.data.ptr, ctypes.c_void_p),
-                mol._bas.ctypes, mol._env.ctypes)
+                mol._bas.ctypes, mol._env.ctypes,
+                ctypes.c_void_p(cupy.cuda.get_current_stream().ptr))
             if err != 0:
                 raise RuntimeError(f'RYS_build_jk kernel for {llll} failed')
             kern_counts += 1
@@ -741,8 +747,9 @@ def solve_mo1(mf, mo_energy, mo_coeff, mo_occ, h1mo,
         hs = s1mo_blk = h1mo_blk = None
 
         tol = mf.conv_tol_cpscf * (i1 - i0)
+        lindep = max(tol**2, np.finfo(mo1.real.dtype).eps)
         raw_mo1 = krylov(fvind_vo, mo1.reshape(-1,nmo*nocc),
-                         tol=tol, max_cycle=max_cycle, verbose=log)
+                         tol=tol, max_cycle=max_cycle, lindep=lindep, verbose=log)
         raw_mo1 = raw_mo1.reshape(i1-i0,3,nmo,nocc)
         raw_mo1[:,:,occidx] = mo1[:,:,occidx]
 
@@ -837,6 +844,8 @@ def kernel(hessobj, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
         for k, katm in enumerate(atmlst):
             for l, latm in enumerate(atmlst):
                 hessobj.de[k,l] += h_disp[k,l]
+    if mf.do_gcp():
+        hessobj.de += hessobj.get_gcp()
     logger.timer(hessobj, 'SCF hessian', *cput0)
 
     return hessobj.de
@@ -909,6 +918,12 @@ class HessianBase(lib.StreamObject):
     get_jk          = NotImplemented
     get_hcore       = NotImplemented
     kernel = hess = kernel
+
+    def get_gcp(self, gcp=None):
+        '''Hessian of the gCP/SRB correction. Called only when
+        base.do_gcp() is True, which requires PySCF >= 2.15.'''
+        from pyscf.hessian.gcp import get_gcp
+        return get_gcp(self, gcp)
 
     def solve_mo1(self, mo_energy, mo_coeff, mo_occ, h1mo,
                   fx=None, atmlst=None, max_memory=4000, verbose=None):

@@ -92,10 +92,14 @@ __global__ static void evaluate_density_kernel(
   KernelType
       prefactor[n_channels * n_i_cartesian_functions * n_j_cartesian_functions];
 
-  // Compile-time warp count; `warpSize` is a device-runtime constant
-  // (not constexpr), so we use the literal here. Centralizing the
-  // value will make the future HIP/wavefront port a single-point edit.
+  // Compile-time warp size; `warpSize` is a device-runtime constant (not
+  // constexpr), so use the WARP_SIZE macro (32 by default, 64 on wave64 builds
+  // via -DWARP_SIZE=64) for the static reduced_density_values sizing / n_warps.
+#if defined(WARP_SIZE)
+  constexpr int WARP_SIZE_CT = WARP_SIZE;
+#else
   constexpr int WARP_SIZE_CT = 32;
+#endif
   constexpr int n_warps = n_threads / WARP_SIZE_CT;  /*L2*/
   __shared__ KernelType reduced_density_values[n_channels * n_warps * n_threads];
 
@@ -348,7 +352,7 @@ __global__ static void evaluate_density_kernel(
             // built-in). Stride starts at warpSize/2 and halves.
 #pragma unroll
             for (int _o = warpSize / 2; _o > 0; _o >>= 1)
-              _wv += __shfl_down_sync(0xffffffffu, _wv, _o);
+              _wv += __shfl_down_sync(~0, _wv, _o);
             // Warp leader test + warp-index extraction using warpSize.
             if ((thread_id % warpSize) == 0) {  /*L2: warp-private store, no atomic*/
               reduced_density_values[(i_channel * n_warps + (thread_id / warpSize)) *
@@ -405,7 +409,7 @@ __global__ static void evaluate_density_kernel(
 
 #define density_kernel_macro(li, lj)                                           \
   evaluate_density_kernel<KernelType, n_channels, li, lj, is_non_orthogonal>   \
-      <<<block_grid, block_size>>>(                                            \
+      <<<block_grid, block_size, 0, stream>>>(                                 \
           density, density_matrices, non_trivial_pairs, i_shells, j_shells,    \
           n_j_shells, shell_to_ao_indices, n_i_functions, n_j_functions,       \
           sorted_pairs_per_local_grid, accumulated_n_pairs_per_local_grid,     \
@@ -430,7 +434,7 @@ int evaluate_density_driver(
     const int *image_indices, const double *vectors_to_neighboring_images,
     const int n_images, const int *image_pair_difference_index,
     const int n_difference_images, const int *mesh, const int *atm,
-    const int *bas, const double *env) {
+    const int *bas, const double *env, cudaStream_t stream) {
   dim3 block_size(BLOCK_DIM_XYZ, BLOCK_DIM_XYZ, BLOCK_DIM_XYZ);
   int mesh_a = mesh[0];
   int mesh_b = mesh[1];
@@ -826,7 +830,7 @@ __global__ static void evaluate_xc_kernel(
 
 #define xc_kernel_macro(li, lj)                                                \
   evaluate_xc_kernel<KernelType, n_channels, li, lj, is_non_orthogonal>        \
-      <<<block_grid, block_size>>>(                                            \
+      <<<block_grid, block_size, 0, stream>>>(                                 \
           fock, xc_weights, non_trivial_pairs, i_shells, j_shells, n_j_shells, \
           shell_to_ao_indices, n_i_functions, n_j_functions,                   \
           sorted_pairs_per_local_grid, accumulated_n_pairs_per_local_grid,     \
@@ -851,7 +855,7 @@ int evaluate_xc_driver(
     const int *image_indices, const double *vectors_to_neighboring_images,
     const int n_images, const int *image_pair_difference_index,
     const int n_difference_images, const int *mesh, const int *atm,
-    const int *bas, const double *env) {
+    const int *bas, const double *env, cudaStream_t stream) {
   dim3 block_size(BLOCK_DIM_XYZ, BLOCK_DIM_XYZ, BLOCK_DIM_XYZ);
   int mesh_a = mesh[0];
   int mesh_b = mesh[1];
@@ -1299,7 +1303,7 @@ __global__ static void evaluate_density_tau_kernel(
 
 #define density_tau_kernel_macro(li, lj)                                       \
   evaluate_density_tau_kernel<KernelType, n_channels, li, lj,                  \
-                              is_non_orthogonal><<<block_grid, block_size>>>(  \
+                              is_non_orthogonal><<<block_grid, block_size, 0, stream>>>(\
       density, density_matrices, non_trivial_pairs, i_shells, j_shells,        \
       n_j_shells, shell_to_ao_indices, n_i_functions, n_j_functions,           \
       sorted_pairs_per_local_grid, accumulated_n_pairs_per_local_grid,         \
@@ -1324,7 +1328,7 @@ int evaluate_density_tau_driver(
     const int *image_indices, const double *vectors_to_neighboring_images,
     const int n_images, const int *image_pair_difference_index,
     const int n_difference_images, const int *mesh, const int *atm,
-    const int *bas, const double *env) {
+    const int *bas, const double *env, cudaStream_t stream) {
   dim3 block_size(BLOCK_DIM_XYZ, BLOCK_DIM_XYZ, BLOCK_DIM_XYZ);
   int mesh_a = mesh[0];
   int mesh_b = mesh[1];
@@ -1761,7 +1765,7 @@ __global__ static void evaluate_xc_with_tau_kernel(
 
 #define xc_with_tau_kernel_macro(li, lj)                                       \
   evaluate_xc_with_tau_kernel<KernelType, n_channels, li, lj,                  \
-                              is_non_orthogonal><<<block_grid, block_size>>>(  \
+                              is_non_orthogonal><<<block_grid, block_size, 0, stream>>>(\
       fock, xc_weights, non_trivial_pairs, i_shells, j_shells, n_j_shells,     \
       shell_to_ao_indices, n_i_functions, n_j_functions,                       \
       sorted_pairs_per_local_grid, accumulated_n_pairs_per_local_grid,         \
@@ -1786,7 +1790,7 @@ int evaluate_xc_with_tau_driver(
     const int *image_indices, const double *vectors_to_neighboring_images,
     const int n_images, const int *image_pair_difference_index,
     const int n_difference_images, const int *mesh, const int *atm,
-    const int *bas, const double *env) {
+    const int *bas, const double *env, cudaStream_t stream) {
   dim3 block_size(BLOCK_DIM_XYZ, BLOCK_DIM_XYZ, BLOCK_DIM_XYZ);
   int mesh_a = mesh[0];
   int mesh_b = mesh[1];

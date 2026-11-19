@@ -239,6 +239,8 @@ class RHF(hf.RHF):
         '''Constructus the lower-triangular part of the Veff matrix.'''
         log = logger.new_logger(mol, self.verbose)
         cput0 = log.init_timer()
+        if dm_or_wfn is None:
+            dm_or_wfn = self.make_wfn(self.mo_coeff, self.mo_occ)
 
         omega = mol.omega
         if omega in self._opt_gpu:
@@ -304,7 +306,7 @@ class RHF(hf.RHF):
         return self.make_wfn(mo_coeff, mo_occ).make_rdm1()
 
     def get_fock(self, h1e=None, s1e=None, vhf=None, dm_or_wfn=None, cycle=-1, diis=None,
-                 diis_start_cycle=None, level_shift_factor=None, damp_factor=None):
+                 diis_start_cycle=None, level_shift_factor=None, damp_factor=None, fock_last=None):
         '''Return Fock matrix in square storage'''
         if h1e is None: h1e = self.get_hcore()
         if vhf is None: vhf = self.get_veff(self.mol, dm_or_wfn)

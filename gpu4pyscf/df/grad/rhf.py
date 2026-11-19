@@ -18,6 +18,7 @@ import cupy as cp
 from cupyx.scipy.linalg import solve_triangular
 from pyscf import lib
 from gpu4pyscf.lib import logger
+from gpu4pyscf.lib.utils import splits_by_blocksize
 from gpu4pyscf.lib.cupy_helper import (
     contract, asarray, ndarray, cholesky, eigh, transpose_sum, get_avail_mem)
 from gpu4pyscf.grad import rhf as rhf_grad
@@ -29,20 +30,20 @@ from gpu4pyscf.df import df
 from gpu4pyscf.df._response_products import _SparseAuxTransform, _symmetric_aux_gram
 from gpu4pyscf.df._sparse_products import _SparseAOPlan
 from gpu4pyscf.df.df_jk import factorize_dm, _DFHF
-from gpu4pyscf.gto.mole import SortedMole
+from gpu4pyscf.gto.mole import SortedMole, _split_l_ctr_groups
 from gpu4pyscf.scf.jk import _check_rsh_factors
 
 __all__ = ['Gradients']
 
-def _gen_metric_solver(int2c, decompose_j2c='CD', lindep=df.LINEAR_DEP_THR, *, _rhs_projector=None):
+def _gen_metric_solver(int2c, decompose_j2c='CD', lindep=df.LINEAR_DEP_THR):
     ''' generate a solver to solve Ax = b, RHS must be in (n,....) '''
     if decompose_j2c.upper() == 'CD':
         try:
             j2c = cholesky(int2c)
-            def j2c_solver(b):
+            def j2c_solver(b, overwrite=False):
                 b_ = b.reshape(j2c.shape[0], -1)
-                y = solve_triangular(j2c, b_, lower=True, overwrite_b=False)
-                x = solve_triangular(j2c.conj().T, y, lower=False, overwrite_b=False)
+                y = solve_triangular(j2c, b_, lower=True, overwrite_b=overwrite)
+                x = solve_triangular(j2c.conj().T, y, lower=False, overwrite_b=overwrite)
                 return cp.asarray(x.reshape(b.shape), order='A')
             return j2c_solver
         except RuntimeError:
@@ -52,11 +53,12 @@ def _gen_metric_solver(int2c, decompose_j2c='CD', lindep=df.LINEAR_DEP_THR, *, _
     mask = w > lindep
     inv_w = 1 / w[mask]
     v1 = v[:,mask]
-    def j2c_solver(b): # noqa: F811
-        x = (v1.conj().T @ b.reshape(int2c.shape[0],-1) if _rhs_projector is None
-             else _rhs_projector(v1, b))
-        x = x * inv_w[:,None]
-        x = v1 @ x
+    def j2c_solver(b, overwrite=False): # noqa: F811
+        b_2d = b.reshape(int2c.shape[0],-1)
+        x = v1.conj().T @ b_2d
+        x *= inv_w[:,None]
+        out = b_2d if overwrite else None
+        x = cp.matmul(v1, x, out=out)
         return x.reshape(b.shape)
     return j2c_solver
 
@@ -101,9 +103,10 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1, hermi=0,
     eval_j3c, aux_sorting, _, aux_offsets = int3c2e_opt.int3c2e_evaluator(
         aux_batch_size=batch_size, reorder_aux=True, cart=True,
         omega=omega, lr_factor=lr_factor, sr_factor=sr_factor)
+    batch_size = min(batch_size, int((aux_offsets[1:]-aux_offsets[:-1]).max()))
     aux_batches = len(aux_offsets) - 1
 
-    blksize = max(1, min(naux, int(mem_avail*.4/(nao*nao*2*8))//8*8))
+    blksize = max(1, min(batch_size, int(mem_avail*.4/(nao*nao*2*8))//8*8))
     log.debug1('%.3f GB free memory. nao_pair=%d naux=%d batch_size=%d blksize=%d',
                mem_free*1e-9, nao_pair, naux, batch_size, blksize)
 
@@ -135,13 +138,30 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1, hermi=0,
     aux_transform = _SparseAuxTransform.create(auxmol, aux_sorting, aux_coeff)
 
     j2c = int2c2e(auxmol, omega=omega, lr_factor=lr_factor, sr_factor=sr_factor)
-    decompose = 'CD' if mol.omega <= 0 and not auxmol.mol.cart else 'ED'
-    projector = aux_transform.project_rhs if aux_transform is not None else None
-    solution = _gen_metric_solver(j2c, decompose, _rhs_projector=projector)(aux_coeff.T)
-    metric = aux_coeff.dot(solution) if aux_transform is None else aux_transform.apply(solution)
-    j2c = aux_coeff = solution = aux_transform = projector = None
-    dm_oo = cp.einsum('uv,vij->uij', metric, j3c_oo)
-    metric = j3c_oo = None
+    if mol.omega <= 0 and not auxmol.mol.cart:
+        metric_solve = _gen_metric_solver(j2c, 'CD')
+    else:
+        metric_solve = _gen_metric_solver(j2c, 'ED')
+    j2c = None
+
+    dm_oo = j3c_oo
+    j3c_oo = j3c_oo.reshape(naux, nocc**2)
+    pair_blksize = min(nocc**2, int(mem_avail*.4/(naux*4*8)))
+    assert pair_blksize > 0
+    buf = cp.empty((aux_coeff.shape[1], pair_blksize), order='F')
+    for p0, p1 in lib.prange(0, nocc**2, pair_blksize):
+        tmp = buf[:,:p1-p0]
+        panel = j3c_oo[:,p0:p1]
+        if aux_transform is None:
+            contract('uv,up->vp', aux_coeff, panel, out=tmp)
+        else:
+            aux_transform.apply(panel, out=tmp, transpose=True)
+        tmp = metric_solve(tmp, overwrite=True)
+        if aux_transform is None:
+            contract('uv,vp->up', aux_coeff, tmp, out=panel)
+        else:
+            aux_transform.apply(tmp, out=panel)
+    metric_solve = j3c_oo = aux_coeff = aux_transform = buf = tmp = panel = None
     if j_factor != 0:
         auxvec = dm_oo.trace(axis1=1, axis2=2)
 
@@ -153,10 +173,10 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1, hermi=0,
     laux = auxmol.uniq_l_ctr[:,0].max()
     shm_size_max = shm_size[:laux+1,:lmax+1,:lmax+1].max()
 
-    # The derivative kernel assigns up to 16 triplet lanes to each orbital
-    # pair. One pair tile per block avoids long serial shell-pair loops.
+    pair_batch_size = np.minimum(nsp_per_block[0]*4,
+                                 np.maximum(nsp_per_block[0]//4, 16))
     bas_ij_idx, shl_pair_offsets = mol.aggregate_shl_pairs(
-        int3c2e_opt.bas_ij_cache, nsp_per_block[0]//16)
+        int3c2e_opt.bas_ij_cache, pair_batch_size)
     ao_pair_loc = get_ao_pair_loc(mol.uniq_l_ctr[:,0], int3c2e_opt.bas_ij_cache)
     aux_loc = auxmol.ao_loc
 
@@ -180,11 +200,12 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1, hermi=0,
     sparse_back = sparse_plan.prepare(dm_factor_r[None]) if sparse_plan is not None else None
     buf = cp.empty((nao_pair*batch_size))
     buf1 = cp.empty((blksize, nao, nao)) if sparse_back is None else None
-    buf2 = cp.empty((blksize, nao, nocc if sparse_back is not None else nao))
+    buf2 = cp.empty((blksize, nao, nocc if hermi == 1 else nao))
     ejk = cp.zeros((mol.natm, 3))
     ejk_aux = cp.zeros((mol.natm, 3))
-    for kbatch in range(aux_batches):
-        naux_in_batch = aux_offsets[kbatch+1] - aux_offsets[kbatch]
+    aux_splits = splits_by_blocksize(aux_offsets, batch_size)
+    for kbatch, kend in zip(aux_splits[:-1], aux_splits[1:]):
+        naux_in_batch = aux_offsets[kend] - aux_offsets[kbatch]
         aux_ao_offset = aux_loc[ksh_offsets_cpu[kbatch]]
         compressed = ndarray((nao_pair, naux_in_batch), buffer=buf)
         for k0, k1 in lib.prange(0, naux_in_batch, blksize):
@@ -225,7 +246,7 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1, hermi=0,
             ctypes.byref(int3c2e_envs),
             ctypes.c_int(shm_size_max),
             ctypes.c_int(len(shl_pair_offsets) - 1),
-            ctypes.c_int(1),
+            ctypes.c_int(kend-kbatch),
             ctypes.cast(shl_pair_offsets.data.ptr, ctypes.c_void_p),
             ctypes.cast(bas_ij_idx.data.ptr, ctypes.c_void_p),
             ctypes.cast(ksh_offsets_gpu[kbatch:].data.ptr, ctypes.c_void_p),
@@ -233,7 +254,8 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1, hermi=0,
             ctypes.cast(ao_pair_loc.data.ptr, ctypes.c_void_p),
             ctypes.c_int(aux_ao_offset),
             ctypes.c_int(nao), ctypes.c_int(nao_pair),
-            ctypes.c_int(naux_in_batch), ctypes.c_int(mol.natm))
+            ctypes.c_int(naux_in_batch), ctypes.c_int(mol.natm),
+            ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
         if err != 0:
             raise RuntimeError('int3c2e_ejk_ip1 failed')
     buf = buf1 = buf2 = compressed = dm_tensor = dm_tensor1 = tmp = None
@@ -303,7 +325,10 @@ def _j_energy_per_atom(int3c2e_opt, dm, hermi=0, auxbasis_response=True, verbose
     shm_size_max = shm_size[:laux+1,:lmax+1,:lmax+1].max()
     bas_ij_idx, shl_pair_offsets = mol.aggregate_shl_pairs(
         int3c2e_opt.bas_ij_cache, nsp_per_block[0]*16)
-    ksh_offsets_cpu = np.append(0, np.cumsum(auxmol.l_ctr_counts))
+    # Split auxbasis into small batches for load balance
+    _, aux_counts = _split_l_ctr_groups(
+        auxmol.uniq_l_ctr, auxmol.l_ctr_counts, [16]*(laux+1))
+    ksh_offsets_cpu = np.append(0, np.cumsum(aux_counts))
     ksh_offsets_gpu = cp.asarray(ksh_offsets_cpu+mol.nbas, dtype=np.int32)
 
     int3c2e_envs = int3c2e_opt.int3c2e_envs
@@ -334,7 +359,8 @@ def _j_energy_per_atom(int3c2e_opt, dm, hermi=0, auxbasis_response=True, verbose
         lib.c_null_ptr(),
         ctypes.c_int(0),
         ctypes.c_int(0), ctypes.c_int(0),
-        ctypes.c_int(naux), ctypes.c_int(mol.natm))
+        ctypes.c_int(naux), ctypes.c_int(mol.natm),
+        ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
     if err != 0:
         raise RuntimeError('int3c2e_ejk_ip1 failed')
     ej *= 2

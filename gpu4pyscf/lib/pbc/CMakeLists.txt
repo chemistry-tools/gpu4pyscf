@@ -1,7 +1,6 @@
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --ptxas-options=-v")# -maxrregcount=128")
 
 add_library(pbc SHARED
-  pbc_driver.cu
   ft_ao.cu ft_ao_ip1.cu contract_ft_ao.cu
   fill_int3c2e.cu contract_int3c2e.cu ejk_int3c2e_ip1.cu
   fill_int2c2e.cu fill_int2c2e_ip1.cu e_int2c2e_ip1.cu
@@ -21,5 +20,6 @@ add_library(pbc SHARED
 set_target_properties(pbc PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}
   CUDA_SEPARABLE_COMPILATION ON)
+gpu4pyscf_configure_gpu_target(pbc)
 
 target_link_libraries(pbc OpenMP::OpenMP_C)

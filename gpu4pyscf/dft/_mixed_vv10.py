@@ -115,8 +115,8 @@ class _VV10:
         def ptr(a):
             return ctypes.cast(a.data.ptr, ctypes.c_void_p)
 
-        err = numint.libgdft.VXC_vv10nlc_fock_eval_omega_derivative(
-            ctypes.cast(stream.ptr, ctypes.c_void_p),
+        stream_arg = ctypes.c_void_p(stream.ptr)
+        args = (
             ptr(omega),
             ptr(dor),
             ptr(dog),
@@ -125,6 +125,12 @@ class _VV10:
             ctypes.c_double(nlc_pars[1]),
             ctypes.c_int(n),
         )
+        # The installed 1.8.1 benchmark adapter still uses the previous ABI.
+        if getattr(numint, '_VV10_STREAM_LAST', False):
+            args = (*args, stream_arg)
+        else:
+            args = (stream_arg, *args)
+        err = numint.libgdft.VXC_vv10nlc_fock_eval_omega_derivative(*args)
         if err:
             raise RuntimeError('CUDA error in VV10 omega derivative')
         kp = nlc_pars[0] * 1.5 * np.pi * (9 * np.pi) ** (-1 / 6)

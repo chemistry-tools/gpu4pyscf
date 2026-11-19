@@ -57,33 +57,76 @@ There shouldn't be cupy or cutensor compilation during pip install process. If y
 <repo_path>/gpu4pyscf/lib/cutensor.py:<line_number>: UserWarning: using cupy as the tensor contraction engine.
 ```
 
+Building for AMD GPUs (ROCm)
+--------
+gpu4pyscf also runs on AMD GPUs through ROCm/HIP. It is built from source with
+the standard `pip`/`setup.py` path (`USE_HIP=1` selects the HIP backend). The HIP
+kernels are compiled for each GPU's native wavefront automatically — 32-wide on
+RDNA (Radeon) and 64-wide on CDNA (Instinct) — so the same source produces a
+correct binary for one GPU, or a single "fat" binary for many.
+
+Prerequisites: a working [ROCm](https://rocm.docs.amd.com) install (with
+`hipconfig`/`amdclang++` on `PATH`, or `ROCM_PATH` set) and a ROCm build of
+[CuPy](https://docs.cupy.dev/en/stable/install.html#using-cupy-on-amd-gpu-experimental).
+
+Build and install:
+```sh
+git clone https://github.com/pyscf/gpu4pyscf.git
+cd gpu4pyscf
+USE_HIP=1 pip install .        # autodetect this machine's GPU
+# add -e for an editable/development install
+```
+
+Use `GPU_TARGET` to choose what hardware to build for (an explicit
+`GPU_ARCHITECTURES="gfx...;..."` list overrides it):
+
+| `GPU_TARGET`             | Builds for                                                    |
+|--------------------------|---------------------------------------------------------------|
+| `native` (default)       | the GPU(s) installed in this machine (auto-detected)          |
+| `gfx942`, `gfx1100;...`  | one specific GPU, or an explicit `;`-separated list           |
+| `cdna`                   | AMD Instinct datacenter GPUs (MI100/MI200/MI300/MI350, wave64)|
+| `rdna`                   | AMD Radeon RDNA2+ GPUs and APUs (RX 6000/7000/9000, wave32)   |
+| `all`                    | all of the above, in a single binary (CDNA + RDNA)            |
+
+```sh
+USE_HIP=1 GPU_TARGET=all  pip install .          # one binary for all AMD GPUs
+USE_HIP=1 GPU_TARGET=cdna pip wheel . -w dist/    # redistributable wheel
+```
+
+When working against an editable install, recompile the libraries in place with
+`USE_HIP=1 python setup.py build_py` (it accepts the same `GPU_TARGET`).
+
+> [!NOTE]
+> AMD has no portable-IR fallback (unlike CUDA's PTX), so device code is emitted
+> per architecture: each one adds ~40 MB. A single-GPU build is ~40 MB; an `all`
+> binary is a few hundred MB. Build one family (`rdna`/`cdna`) or a specific
+> `GPU_TARGET` to keep it small.
+
+> [!NOTE]
+> cuTENSOR and the CUDA build of libXC are not available on ROCm. Tensor
+> contractions fall back to `cupy.einsum`, and exchange-correlation functionals
+> are evaluated with PySCF's libXC on the CPU. These fallbacks are automatic but
+> can reduce performance.
+
+When combining gpu4pyscf with PyTorch (for example the Skala functional), import
+gpu4pyscf before torch. If torch is imported first, CuPy may be unable to compile
+GPU kernels; gpu4pyscf then raises an `ImportError` explaining how to fix it.
+
+The [HIP build CI](.github/workflows/hip_build.yml) compiles and links the native
+libraries on GitHub-hosted CPU runners using `USE_HIP=1 GPU_TARGET=all` in a
+pinned ROCm development container. This compiles all supported CDNA and RDNA
+targets in a single build and requires no AMD GPU or CuPy installation.
+
 Features
 --------
-- Density fitting scheme and direct SCF scheme;
-- SCF, analytical gradient, and analytical Hessian calculations for Hartree-Fock and DFT;
-- LDA, GGA, mGGA, hybrid, and range-separated functionals via [libXC](https://gitlab.com/libxc/libxc/-/tree/master/);
-- Spin-conserved and spin-flip TDA and TDDFT for excitated states;
-- Geometry optimization and transition state search via [geomeTRIC](https://geometric.readthedocs.io/en/latest/);
-- Atomic Simulation Environment ([ASE](https://gitlab.com/ase/ase)) interface;
-- [Verified mixed-precision molecular DFT](docs/mixed_precision.md), with float64 SCF checks and derivatives;
-- [Opt-in native direct-integral regrouping](docs/direct_scf.md) for qualified range-separated DFT;
-- Dispersion corrections via [DFTD3](https://github.com/dftd3/simple-dftd3) and [DFTD4](https://github.com/dftd4/dftd4);
-- Analytical gradient and analytical Hessian for nonlocal functional correction (vv10);
-- GPU accelerated ECP;
-- PCM models, their analytical gradients, and analytical Hessian matrix;
-- SMD solvent model;
-- Unrestricted Hartree-Fock and unrestricted DFT, gradient, and Hessian;
-- CHELPG, ESP, and RESP atomic charge;
 
-The following features are still in the experimental stage
-- MP2/DF-MP2 and CCSD;
-- Polarizability, IR, and NMR shielding;
-- Raman spectrum;
-- QM/MM with PBC;
-- Multi-GPU for both direct SCF and density fitting;
-- SCF and DFT with periodic boundary condition;
-- Non-adiabatic coupling for TDDFT;
-- Energy decomposition analysis;
+GPU4PySCF supports molecular and periodic Hartree-Fock and DFT, analytical
+derivatives, excited states, solvent models, properties, geometry optimization,
+and non-adiabatic dynamics.
+
+See [FEATURES](FEATURES) for the detailed list of supported methods and
+experimental capabilities. The fork also provides [verified mixed-precision molecular DFT](docs/mixed_precision.md)
+and [opt-in direct-integral regrouping](docs/direct_scf.md) on supported CUDA devices.
 
 Limitations
 --------

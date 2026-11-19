@@ -23,6 +23,7 @@ from pyscf import lib
 from pyscf.gto import ATOM_OF, ANG_OF, NPRIM_OF, NCTR_OF, PTR_EXP, PTR_COEFF, PTR_COORD
 from pyscf.pbc.df.df_jk import _format_kpts_band
 from pyscf.pbc.lib.kpts_helper import is_zero
+from pyscf.pbc.gto import pseudo
 from gpu4pyscf.lib import logger
 from gpu4pyscf.lib import utils
 from gpu4pyscf.lib.cupy_helper import (
@@ -47,8 +48,14 @@ try:
     libmgrid.MG_init_constant.restype = ctypes.c_int
     libmgrid.ovlp_mask_estimation.restype = ctypes.c_int
     libmgrid.filter_supmol_bas.restype = ctypes.c_int
+    libmgrid.MG_warp_size.restype = ctypes.c_int
+    # Effective wavefront width of the running GPU (32 on RDNA/NVIDIA, 64 on
+    # GCN/CDNA), queried from the compiled library so the `pool` scratch sized below
+    # matches the per-arch device WARP_SIZE stride in a single multi-arch build.
+    WARP_SIZE = libmgrid.MG_warp_size() if libmgrid is not None else 32
 except OSError:
     libmgrid = None
+    WARP_SIZE = 32
 
 PRIMBAS_ANG = 0
 PRIMBAS_EXP = 1
@@ -57,7 +64,6 @@ PRIMBAS_COORD = 3
 LMAX = 4
 SHM_SIZE = shm_size - 1024
 del shm_size
-WARP_SIZE = 32
 
 DEBUG = False
 
@@ -80,6 +86,7 @@ def get_j_kpts(ni, dm_kpts, hermi=1, kpts=None, kpts_band=None):
         or list of vj if the input dm_kpts is a list of DMs
     '''
     assert kpts is None or is_zero(kpts)
+    input_kpts = kpts
     kpts = np.zeros((1, 3))
 
     cell = ni.cell
@@ -92,7 +99,8 @@ def get_j_kpts(ni, dm_kpts, hermi=1, kpts=None, kpts_band=None):
 
     kpts_band, input_band = _format_kpts_band(kpts_band, kpts), kpts_band
     vj_kpts = _get_j_pass2(ni, vG, hermi, kpts_band)
-    return _format_jks(vj_kpts, dm_kpts, input_band, kpts)
+    return _format_jks(vj_kpts, dm_kpts,
+                       kpts_band if input_band is not None else None, input_kpts)
 
 def _eval_rhoG(ni, dm_kpts, hermi=1, kpts=None, xctype='LDA'):
     cell = ni.cell
@@ -157,7 +165,8 @@ def _eval_rhoG(ni, dm_kpts, hermi=1, kpts=None, xctype='LDA'):
                     ctypes.c_uint32(len(task.shl_pair_idx)),
                     ctypes.cast(task.shl_pair_idx.data.ptr, ctypes.c_void_p),
                     ctypes.cast(pool.data.ptr, ctypes.c_void_p),
-                    ctypes.c_int(workers))
+                    ctypes.c_int(workers),
+                    ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
                 if err != 0:
                     raise RuntimeError(f'MG_eval_rho_orth kernel for l={task.l} failed')
 
@@ -231,7 +240,8 @@ def _eval_tauG(ni, dm_kpts, hermi=1, kpts=None):
                     ctypes.c_uint32(len(task.shl_pair_idx)),
                     ctypes.cast(task.shl_pair_idx.data.ptr, ctypes.c_void_p),
                     ctypes.cast(pool.data.ptr, ctypes.c_void_p),
-                    ctypes.c_int(workers))
+                    ctypes.c_int(workers),
+                    ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
                 if err != 0:
                     raise RuntimeError(f'MG_eval_tau_orth kernel for l={task.l} failed')
 
@@ -305,7 +315,8 @@ def _get_j_pass2(ni, vG, hermi=1, kpts=None, verbose=None):
                     ctypes.c_uint32(len(task.shl_pair_idx)),
                     ctypes.cast(task.shl_pair_idx.data.ptr, ctypes.c_void_p),
                     ctypes.cast(pool.data.ptr, ctypes.c_void_p),
-                    ctypes.c_int(workers))
+                    ctypes.c_int(workers),
+                    ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
                 if err != 0:
                     raise RuntimeError(f'MG_eval_mat_lda_orth kernel for l={task.l} failed')
 
@@ -382,7 +393,8 @@ def _get_gga_pass2(ni, vG, hermi=1, kpts=None, verbose=None):
                     ctypes.c_uint32(len(task.shl_pair_idx)),
                     ctypes.cast(task.shl_pair_idx.data.ptr, ctypes.c_void_p),
                     ctypes.cast(pool.data.ptr, ctypes.c_void_p),
-                    ctypes.c_int(workers))
+                    ctypes.c_int(workers),
+                    ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
                 if err != 0:
                     raise RuntimeError(f'MG_eval_mat_gga_orth kernel for l={task.l} failed')
 
@@ -457,7 +469,8 @@ def _get_tau_pass2(ni, vG, hermi=1, kpts=None, verbose=None):
                     ctypes.c_uint32(len(task.shl_pair_idx)),
                     ctypes.cast(task.shl_pair_idx.data.ptr, ctypes.c_void_p),
                     ctypes.cast(pool.data.ptr, ctypes.c_void_p),
-                    ctypes.c_int(workers))
+                    ctypes.c_int(workers),
+                    ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
                 if err != 0:
                     raise RuntimeError(f'MG_eval_mat_tau_orth kernel for l={task.l} failed')
 
@@ -495,6 +508,7 @@ def nr_rks(ni, cell, grids, xc_code, dm_kpts, relativity=0, hermi=1,
             or list of veff if the input dm_kpts is a list of DMs
     '''
     assert kpts is None or is_zero(kpts)
+    input_kpts = kpts
     kpts = np.zeros((1, 3))
 
     cell = ni.cell
@@ -557,7 +571,8 @@ def nr_rks(ni, cell, grids, xc_code, dm_kpts, relativity=0, hermi=1,
         veff = _get_j_pass2(ni, wv_freq[None,0], hermi, kpts_band, verbose=log)
         if xctype == 'MGGA':
             veff += _get_tau_pass2(ni, wv_freq[None,4], hermi, kpts_band, verbose=log)
-    veff = _format_jks(veff, dm_kpts, input_band, kpts)
+    veff = _format_jks(veff, dm_kpts,
+                       kpts_band if input_band is not None else None, input_kpts)
 
     shape = list(dm_kpts.shape)
     if len(shape) == 3 and shape[0] != kpts_band.shape[0]:
@@ -591,6 +606,7 @@ def nr_uks(ni, cell, grids, xc_code, dm_kpts, relativity=0, hermi=1,
             or list of veff if the input dm_kpts is a list of DMs
     '''
     assert kpts is None or is_zero(kpts)
+    input_kpts = kpts
     kpts = np.zeros((1, 3))
 
     cell = ni.cell
@@ -656,7 +672,8 @@ def nr_uks(ni, cell, grids, xc_code, dm_kpts, relativity=0, hermi=1,
         veff = _get_j_pass2(ni, wv_freq[:,0], hermi, kpts_band, verbose=log)
         if xctype == 'MGGA':
             veff += _get_tau_pass2(ni, wv_freq[:,4], hermi, kpts_band, verbose=log)
-    veff = _format_jks(veff, dm_kpts, input_band, kpts)
+    veff = _format_jks(veff, dm_kpts,
+                       kpts_band if input_band is not None else None, input_kpts)
 
     shape = list(dm_kpts.shape) # [spin,nkpts,nao,nao]
     if len(shape) == 4 and shape[1] != kpts_band.shape[1]:
@@ -685,7 +702,9 @@ def get_rho(ni, dm, kpts=None):
 
 def eval_nucG(cell, mesh):
     '''Nuclear attraction potential on Gv'''
-    assert cell.dimension == 3
+    assert cell.dimension in (2, 3)
+    if cell.dimension == 2:
+        assert cell.low_dim_ft_type != 'inf_vacuum'
     Gv, (basex, basey, basez) = get_Gv_weights(cell, mesh)[:2]
     b = cell.reciprocal_vectors()
     coords = cell.atom_coords()
@@ -700,9 +719,13 @@ def eval_nucG(cell, mesh):
     return nucG
 
 def get_nuc(ni, kpts=None):
+    """Get the periodic nuc-el AO matrix, with G=0 removed.
+
+    kpts follows the PySCF kpts convention; see
+    gpu4pyscf.pbc.lib.kpts_helper._normalize_kpts.
+    """
     assert kpts is None or is_zero(kpts)
-    if kpts is None or kpts.ndim == 1:
-        is_single_kpt = True
+    is_single_kpt = kpts is None or kpts.ndim == 1
     kpts = np.zeros((1, 3))
     cell = ni.cell
     mesh = ni.mesh
@@ -726,6 +749,19 @@ _kernel_registery = {}
 def eval_vpplocG(cell, mesh, out=None):
     '''PRB, 58, 3641 Eq (5)
     '''
+    if cell.dimension == 2:
+        assert cell.low_dim_ft_type != 'inf_vacuum'
+        # Use the same truncated GTH kernel, including its finite G=0 term,
+        # as FFTDF. The 3D alpha correction below must not be added again.
+        Gv = cell.get_Gv(mesh)
+        vloc = cp.asarray(pseudo.get_vlocG(cell, Gv))
+        Gv = cp.asarray(Gv)
+        coords = cp.asarray(cell.atom_coords())
+        vlocG = ndarray(np.prod(mesh), dtype=np.complex128, buffer=out)
+        vlocG.fill(0)
+        for ia in range(cell.natm):
+            vlocG -= cp.exp(-1j * Gv.dot(coords[ia])) * vloc[ia]
+        return vlocG
     assert cell.dimension == 3
     Gv_bases = _get_Gv_bases(mesh, cell.reciprocal_vectors())
     coords = cp.asarray(cell.atom_coords())
@@ -840,11 +876,13 @@ void ''' + fn_name + '''(
 
 def get_pp(ni, kpts=None):
     '''Get the periodic pseudopotential nuc-el AO matrix, with G=0 removed.
+
+    kpts follows the PySCF kpts convention; see
+    gpu4pyscf.pbc.lib.kpts_helper._normalize_kpts.
     '''
-    from gpu4pyscf.pbc.gto.pseudo.pp_int import get_pp_nl_gpu
+    from gpu4pyscf.pbc.gto.pseudo.pp_int import get_pp_nl
     assert kpts is None or is_zero(kpts)
-    if kpts is None or kpts.ndim == 1:
-        is_single_kpt = True
+    is_single_kpt = kpts is None or kpts.ndim == 1
     kpts = np.zeros((1, 3))
 
     cell = ni.cell
@@ -857,7 +895,7 @@ def get_pp(ni, kpts=None):
     vpp = _get_j_pass2(ni, vpplocG[None,:], kpts=kpts)[0]
     t1 = log.timer_debug1('vpploc', *t0)
 
-    vppnl = get_pp_nl_gpu(cell, kpts)
+    vppnl = get_pp_nl(cell, kpts)
     for k, kpt in enumerate(kpts):
         if is_zero(kpt):
             vpp[k] += cp.asarray(vppnl[k].real)
@@ -1003,7 +1041,8 @@ def to_primitive_bas(cell):
             ctypes.cast(prim_bas_gpu.data.ptr, ctypes.c_void_p),
             ctypes.c_int(nbas_p),
             ctypes.cast(prim_env_gpu.data.ptr, ctypes.c_void_p),
-            ctypes.c_float(log_cutoff))
+            ctypes.c_float(log_cutoff),
+            ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
         if err != 0:
             raise RuntimeError('filter_supmol_bas kernel failed')
 
@@ -1142,8 +1181,9 @@ def _ovlp_mask_estimation(cell, cell0_nprims, supmol_bas, supmol_env,
             ctypes.cast(ls.data.ptr, ctypes.c_void_p),
             ctypes.c_int(cell0_nprims),
             ctypes.c_int(supmol_nbas),
-            ctypes.c_int(l_inc), ctypes.c_int(hermi),
-            ctypes.c_float(log_cutoff))
+            ctypes.c_int(hermi), ctypes.c_int(l_inc),
+            ctypes.c_float(log_cutoff),
+            ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
         if err != 0:
             raise RuntimeError('ovlp_mask_estimation kernel failed')
         ovlp_mask = ovlp_mask.astype(dtype=bool, copy=False)
@@ -1289,7 +1329,7 @@ def create_tasks(cell, prim_bas, supmol_bas, supmol_env, ao_loc_in_cell0,
     return tasks
 
 def init_constant(cell):
-    err = libmgrid.MG_init_constant(ctypes.c_int(SHM_SIZE))
+    err = libmgrid.MG_init_constant(ctypes.c_int(SHM_SIZE), ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
     if err != 0:
         raise RuntimeError('CUDA kernel initialization')
 
@@ -1419,4 +1459,12 @@ class MultiGridNumInt(MultiGridNumIntBase):
     device = utils.device
 
     def to_cpu(self):
-        raise RuntimeError('Not available')
+        if not cp.cuda.runtime.is_hip:
+            raise RuntimeError('Not available')
+        # No HIP libXC: on AMD the XC-on-CPU fallback (gpu4pyscf/dft/numint.py)
+        # calls to_cpu().eval_xc_eff(...) each SCF cycle. There is no CPU<->GPU
+        # bridge for the multigrid grid machinery, so return a lightweight CPU
+        # numint sufficient for that functional evaluation. Removable once a
+        # HIP libXC keeps XC on the GPU.
+        from pyscf.pbc.dft import numint as numint_cpu
+        return numint_cpu.NumInt()

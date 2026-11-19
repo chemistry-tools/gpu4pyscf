@@ -228,7 +228,9 @@ def get_Tpq(mol, auxmol, lower_inv_eri2c, C_p, C_q,
         aux_batch_size=batch_size, cart=True,
         omega=omega, lr_factor=lr_factor, sr_factor=sr_factor)
     blksize = min(int(word_avail * 0.25) // nao**2, batch_size)
-    batch_size = min(blksize, int((aux_offsets[1:]-aux_offsets[:-1]).max()))
+    # The evaluator fills a complete auxiliary tile before orbital contractions.
+    batch_size = int((aux_offsets[1:]-aux_offsets[:-1]).max())
+    blksize = min(blksize, batch_size)
 
     buf = cp.empty((batch_size, nao_pair))
     j3c_full = cp.zeros((nao, nao, blksize))
@@ -279,7 +281,7 @@ def get_Tpq(mol, auxmol, lower_inv_eri2c, C_p, C_q,
         return Tia, Tij, Tab
    
 
-def get_eri2c_inv_lower(auxmol, omega=0, alpha=None, beta=None):
+def get_eri2c_inv_lower(auxmol, omega=0, alpha=None, beta=None, dtype=cp.float32):
 
     eri2c = int3c2e_bdiv.int2c2e(auxmol)
 
@@ -306,7 +308,7 @@ def get_eri2c_inv_lower(auxmol, omega=0, alpha=None, beta=None):
         '''
         lower_inv_eri2c = math_helper.matrix_power(eri2c,-0.5,epsilon=LINEAR_EPSILON)
 
-    lower_inv_eri2c = cp.asarray(lower_inv_eri2c, dtype=cp.float32, order='C')
+    lower_inv_eri2c = cp.asarray(lower_inv_eri2c, dtype=dtype, order='C')
     return lower_inv_eri2c
 
 
@@ -458,7 +460,7 @@ def gen_ijab_MVP(T_ij, T_ab):
             # vir_range = vir_end - vir_start
 
             # Extract the corresponding chunk of T_ab
-            T_ab_chunk = T_ab[:, vir_start:vir_end, :]  # Shape: (nauxao, vir_range, n_vir)
+            T_ab_chunk = cp.asarray(T_ab[:, vir_start:vir_end, :])  # Shape: (nauxao, vir_range, n_vir)
 
             # Compute T_ab_V for the current chunk
             T_ab_chunk_V = contract("Pab,mjb->Pamj", T_ab_chunk, V)
@@ -523,7 +525,7 @@ def gen_ibja_MVP(T_ia):
             V_chunk = V[:, occ_start:occ_end, :]  # Shape: (n_state, occ_range, n_vir)
 
             # Extract the corresponding chunk of T_ia
-            T_ia_chunk = T_ia[:, occ_start:occ_end, :]  # Shape: (nauxao, occ_range, n_vir)
+            T_ia_chunk = cp.asarray(T_ia[:, occ_start:occ_end, :])  # Shape: (nauxao, occ_range, n_vir)
 
             # Compute T_ib_V for the current chunk
             T_ib_V_chunk = contract("Pib,mjb->Pimj", T_ia_chunk, V_chunk)
@@ -887,6 +889,7 @@ class RisBase(lib.StreamObject):
         return get_ab(self, mf, J_fit, K_fit, theta, singlet=True)
     
     def build(self):
+        self.dtype = cp.dtype(cp.float32 if self.single else cp.float64)
         log = self.log
         log.info(f'nstates: {self.nstates}')
         log.info(f'N atoms:{self._scf.mol.natm}')
@@ -1047,7 +1050,7 @@ class RisBase(lib.StreamObject):
         byte_T_ia_J = self.auxmol_J.nao_nr() * self.n_occ * self.n_vir * self.dtype.itemsize
         log.info(f'T_ia_J will take {byte_T_ia_J / (1024 ** 2):.0f} MB memory') 
 
-        self.lower_inv_eri2c_J = get_eri2c_inv_lower(self.auxmol_J, omega=0)
+        self.lower_inv_eri2c_J = get_eri2c_inv_lower(self.auxmol_J, omega=0, dtype=self.dtype)
 
         if self.a_x != 0:
             
@@ -1062,7 +1065,8 @@ class RisBase(lib.StreamObject):
             if self._JK_share_aux:
                 self.lower_inv_eri2c_K = self.lower_inv_eri2c_J
             else:
-                self.lower_inv_eri2c_K = get_eri2c_inv_lower(auxmol_K, omega=self.omega, alpha=self.alpha, beta=self.beta)
+                self.lower_inv_eri2c_K = get_eri2c_inv_lower(auxmol_K, omega=self.omega,
+                                                          alpha=self.alpha, beta=self.beta, dtype=self.dtype)
              
         self.log = log
 
@@ -1618,12 +1622,11 @@ class StaticPolarizability(RisBase):
         TDA_MVP, hdiag = self.gen_vind()
         transition_dipole = self.transition_dipole()
 
-        _, solver = _krylov_tools.krylov_solver(matrix_vector_product=TDA_MVP,hdiag=hdiag, problem_type='linear',
+        self.converged, X = _krylov_tools.krylov_solver(matrix_vector_product=TDA_MVP,hdiag=hdiag, problem_type='linear',
                                         rhs=-transition_dipole, conv_tol=self.conv_tol, max_iter=self.max_iter, 
                                         gram_schmidt=self.gram_schmidt, single=self.single, verbose=log)
-        X = solver.run()
         # actually X here means X+Y
-        alpha = cp.dot(X, transition_dipole.T)*4
+        alpha = -cp.dot(X, transition_dipole.T)*4
 
         self.xy = X
         self.alpha = alpha

@@ -127,6 +127,7 @@ def get_jk(mol, dm, hermi=0, vhfopt=None, with_j=True, with_k=True,
 
     if omega == 0:
         vj, vk = vhfopt.get_jk(dms, hermi, log)
+        assert lr_factor == 1
     else:
         if with_k:
             vk = vhfopt.get_k(dms, hermi, log, omega, lr_factor, sr_factor)
@@ -238,19 +239,16 @@ def apply_coeff_C_mat_CT(spherical_matrix, mol, sorted_mol, uniq_l_ctr,
     '''
     libgint = load_library('libgint')
     spherical_matrix = cp.asarray(spherical_matrix, order='C')
-    spherical_matrix_ndim = spherical_matrix.ndim
-    if spherical_matrix_ndim == 2:
-        spherical_matrix = spherical_matrix[None]
+    batch_shape = spherical_matrix.shape[:-2]
     n_spherical = mol.nao
-    assert spherical_matrix.shape[1] == n_spherical
-    assert spherical_matrix.shape[2] == n_spherical
+    assert spherical_matrix.shape[-2:] == (n_spherical, n_spherical)
+    spherical_matrix = spherical_matrix.reshape(-1, n_spherical, n_spherical)
     n_cartesian = sorted_mol.nao
 
     output_complex = False
     if spherical_matrix.dtype == np.complex128:
-        spherical_matrix = spherical_matrix.view(np.float64)
-        spherical_matrix = spherical_matrix.reshape(-1,n_spherical,n_spherical,2)
-        spherical_matrix = spherical_matrix.transpose(3,0,1,2).reshape(-1,n_spherical,n_spherical)
+        # Native kernels require contiguous real planes, not strided dtype views.
+        spherical_matrix = cp.concatenate((spherical_matrix.real, spherical_matrix.imag))
         output_complex = True
     else:
         assert spherical_matrix.dtype == np.float64
@@ -268,7 +266,6 @@ def apply_coeff_C_mat_CT(spherical_matrix, mol, sorted_mol, uniq_l_ctr,
     out = cp.zeros((counts, n_cartesian, n_cartesian), order = "C")
     for i_dm in range(counts):
         libgint.cart2sph_C_mat_CT_with_padding(
-            ctypes.cast(stream.ptr, ctypes.c_void_p),
             ctypes.cast(out[i_dm].data.ptr, ctypes.c_void_p),
             ctypes.cast(spherical_matrix[i_dm].data.ptr, ctypes.c_void_p),
             ctypes.c_int(n_cartesian),
@@ -279,6 +276,7 @@ def apply_coeff_C_mat_CT(spherical_matrix, mol, sorted_mol, uniq_l_ctr,
             l_ctr_pad_counts.ctypes.data_as(ctypes.c_void_p),
             ctypes.cast(ao_idx.data.ptr, ctypes.c_void_p),
             ctypes.c_bool(mol.cart),
+            ctypes.cast(stream.ptr, ctypes.c_void_p),
         )
 
     if output_complex:
@@ -286,9 +284,7 @@ def apply_coeff_C_mat_CT(spherical_matrix, mol, sorted_mol, uniq_l_ctr,
         out = outR.astype(np.complex128)
         out.imag = outI
 
-    if spherical_matrix_ndim == 2:
-        out = out[0]
-    return out
+    return out.reshape(batch_shape + (n_cartesian, n_cartesian))
 
 def apply_coeff_CT_mat_C(cartesian_matrix, mol, sorted_mol, uniq_l_ctr,
                          l_ctr_offsets, ao_idx, l_ctr_paddings=None):
@@ -298,22 +294,21 @@ def apply_coeff_CT_mat_C(cartesian_matrix, mol, sorted_mol, uniq_l_ctr,
     '''
     libgint = load_library('libgint')
     cartesian_matrix = cp.asarray(cartesian_matrix, order='C')
-    cartesian_matrix_ndim = cartesian_matrix.ndim
-    if cartesian_matrix_ndim == 2:
-        cartesian_matrix = cartesian_matrix[None]
+    batch_shape = cartesian_matrix.shape[:-2]
     n_cartesian = sorted_mol.nao
-    assert cartesian_matrix.shape[1] == n_cartesian
-    assert cartesian_matrix.shape[2] == n_cartesian
+    assert cartesian_matrix.shape[-2:] == (n_cartesian, n_cartesian)
+    cartesian_matrix = cartesian_matrix.reshape(-1, n_cartesian, n_cartesian)
     n_spherical = mol.nao
 
     output_complex = False
     if cartesian_matrix.dtype == np.complex128:
-        cartesian_matrix = cartesian_matrix.view(np.float64)
-        cartesian_matrix = cartesian_matrix.reshape(-1,n_cartesian,n_cartesian,2)
-        cartesian_matrix = cartesian_matrix.transpose(3,0,1,2).reshape(-1,n_cartesian,n_cartesian)
+        cartesian_matrix = cp.concatenate((cartesian_matrix.real, cartesian_matrix.imag))
         output_complex = True
     else:
         assert cartesian_matrix.dtype == np.float64
+        if not mol.cart:
+            # The native cart2sph transform overwrites its input as scratch.
+            cartesian_matrix = cartesian_matrix.copy()
     counts = cartesian_matrix.shape[0]
 
     l_ctr_count = np.asarray(l_ctr_offsets[1:] - l_ctr_offsets[:-1], dtype = np.int32)
@@ -328,7 +323,6 @@ def apply_coeff_CT_mat_C(cartesian_matrix, mol, sorted_mol, uniq_l_ctr,
     out = cp.empty((counts, n_spherical, n_spherical), order = "C")
     for i_dm in range(counts):
         libgint.cart2sph_CT_mat_C_with_padding(
-            ctypes.cast(stream.ptr, ctypes.c_void_p),
             ctypes.cast(cartesian_matrix[i_dm].data.ptr, ctypes.c_void_p),
             ctypes.cast(out[i_dm].data.ptr, ctypes.c_void_p),
             ctypes.c_int(n_cartesian),
@@ -339,6 +333,7 @@ def apply_coeff_CT_mat_C(cartesian_matrix, mol, sorted_mol, uniq_l_ctr,
             l_ctr_pad_counts.ctypes.data_as(ctypes.c_void_p),
             ctypes.cast(ao_idx.data.ptr, ctypes.c_void_p),
             ctypes.c_bool(mol.cart),
+            ctypes.cast(stream.ptr, ctypes.c_void_p),
         )
 
     if output_complex:
@@ -346,9 +341,7 @@ def apply_coeff_CT_mat_C(cartesian_matrix, mol, sorted_mol, uniq_l_ctr,
         out = outR.astype(np.complex128)
         out.imag = outI
 
-    if cartesian_matrix_ndim == 2:
-        out = out[0]
-    return out
+    return out.reshape(batch_shape + (n_spherical, n_spherical))
 
 def apply_coeff_C_mat(right_matrix, mol, sorted_mol, uniq_l_ctr,
                       l_ctr_offsets, ao_idx, l_ctr_paddings=None):
@@ -358,18 +351,15 @@ def apply_coeff_C_mat(right_matrix, mol, sorted_mol, uniq_l_ctr,
     '''
     libgint = load_library('libgint')
     right_matrix = cp.asarray(right_matrix, order='C')
-    ndim = right_matrix.ndim
-    if ndim == 2:
-        right_matrix = right_matrix[None]
-    nao, n_second = right_matrix.shape[1:]
+    batch_shape = right_matrix.shape[:-2]
+    nao, n_second = right_matrix.shape[-2:]
     assert nao == mol.nao
+    right_matrix = right_matrix.reshape(-1, nao, n_second)
     n_cartesian = sorted_mol.nao
 
     output_complex = False
     if right_matrix.dtype == np.complex128:
-        right_matrix = right_matrix.view(np.float64)
-        right_matrix = right_matrix.reshape(-1,nao,n_second,2)
-        right_matrix = right_matrix.transpose(3,0,1,2).reshape(-1,nao,n_second)
+        right_matrix = cp.concatenate((right_matrix.real, right_matrix.imag))
         output_complex = True
     else:
         assert right_matrix.dtype == np.float64
@@ -387,7 +377,6 @@ def apply_coeff_C_mat(right_matrix, mol, sorted_mol, uniq_l_ctr,
     out = cp.zeros((counts, n_cartesian, n_second), order = "C")
     for i in range(counts):
         libgint.cart2sph_C_mat_with_padding(
-            ctypes.cast(stream.ptr, ctypes.c_void_p),
             ctypes.cast(out[i].data.ptr, ctypes.c_void_p),
             ctypes.cast(right_matrix[i].data.ptr, ctypes.c_void_p),
             ctypes.c_int(n_second),
@@ -397,6 +386,7 @@ def apply_coeff_C_mat(right_matrix, mol, sorted_mol, uniq_l_ctr,
             l_ctr_pad_counts.ctypes.data_as(ctypes.c_void_p),
             ctypes.cast(ao_idx.data.ptr, ctypes.c_void_p),
             ctypes.c_bool(mol.cart),
+            ctypes.cast(stream.ptr, ctypes.c_void_p),
         )
 
     if output_complex:
@@ -404,9 +394,7 @@ def apply_coeff_C_mat(right_matrix, mol, sorted_mol, uniq_l_ctr,
         out = outR.astype(np.complex128)
         out.imag = outI
 
-    if ndim == 2:
-        out = out[0]
-    return out
+    return out.reshape(batch_shape + (n_cartesian, n_second))
 
 class _VHFOpt:
     def __init__(self, mol, direct_scf_tol=1e-13, tile=TILE, *,
@@ -531,11 +519,12 @@ class _VHFOpt:
 
         diffuse_exps, diffuse_ctr_coef = extract_pgto_params(mol, 'diffuse')
 
-        tasks = ((i,j,k,l)
-                 for i in range(n_groups)
-                 for j in range(i+1)
-                 for k in range(i+1)
-                 for l in range(k+1))
+        # Share a list iterator: concurrent next() calls can re-enter a generator.
+        tasks = iter([(i,j,k,l)
+                      for i in range(n_groups)
+                      for j in range(i+1)
+                      for k in range(i+1)
+                      for l in range(k+1)])
 
         def proc(dms, dm_cond):
             device_id = cp.cuda.device.get_device_id()
@@ -600,7 +589,8 @@ class _VHFOpt:
                     ctypes.c_float(log_cutoff),
                     ctypes.c_float(dm_penalty),
                     ctypes.cast(pool.data.ptr, ctypes.c_void_p),
-                    mol._bas.ctypes, mol._env.ctypes)
+                    mol._bas.ctypes, mol._env.ctypes,
+                    ctypes.c_void_p(stream.ptr))
                 if err != 0:
                     raise RuntimeError(f'RYS_build_jk kernel for {llll} failed')
                 kern_counts += 1
@@ -654,7 +644,7 @@ class _VHFOpt:
                                      shls_excludes=shls_excludes)
             vj1 = asarray(vs_h[0])
             vk1 = asarray(vs_h[1])
-            if hermi:
+            if hermi == 1:
                 vk1 = hermi_triu(vk1)
             vj += hermi_triu(vj1)
             vk += vk1
@@ -683,10 +673,13 @@ class _VHFOpt:
         if isinstance(dms, cp.ndarray):
             dms = dms.get()
         pair_loc = _make_j_engine_pair_locs(mol)
-        dm_xyz = np.empty(pair_loc[-1])
-        libvhf_rys.transform_cart_to_xyz(
-            dm_xyz.ctypes, dms.ctypes, ao_loc.ctypes, pair_loc.ctypes,
-            mol._bas.ctypes, ctypes.c_int(mol.nbas), mol._env.ctypes)
+        nao_pairs = pair_loc[-1]
+        dms = np.ascontiguousarray(dms)
+        dm_xyz = np.empty((n_dm, nao_pairs))
+        for i in range(n_dm):
+            libvhf_rys.transform_cart_to_xyz(
+                dm_xyz[i].ctypes, dms[i].ctypes, ao_loc.ctypes, pair_loc.ctypes,
+                mol._bas.ctypes, ctypes.c_int(mol.nbas), mol._env.ctypes)
 
         diffuse_exps, diffuse_ctr_coef = extract_pgto_params(mol, 'diffuse')
 
@@ -720,7 +713,7 @@ class _VHFOpt:
             bas_pair_cache = {k: [cp.asarray(x) for x in v]
                               for k, v in self.bas_pair_cache.items()}
 
-            err = libvhf_rys.RYS_init_rysj_constant()
+            err = libvhf_rys.RYS_init_rysj_constant(ctypes.c_void_p(stream.ptr))
             if err != 0:
                 raise RuntimeError('CUDA kernel initialization')
 
@@ -761,7 +754,9 @@ class _VHFOpt:
                     ctypes.c_float(log_cutoff),
                     ctypes.c_float(dm_penalty),
                     ctypes.cast(pool.data.ptr, ctypes.c_void_p),
-                    mol._bas.ctypes, mol._env.ctypes)
+                    mol._bas.ctypes, mol._env.ctypes,
+                    ctypes.c_int(nao_pairs),
+                    ctypes.c_void_p(stream.ptr))
                 if err != 0:
                     raise RuntimeError(f'RYS_build_j kernel for {llll} failed')
                 kern_counts += 1
@@ -783,9 +778,10 @@ class _VHFOpt:
         vj_xyz = multi_gpu.array_reduce([x[0] for x in results], inplace=True)
         vj_xyz = vj_xyz.get()
         vj = np.empty_like(dms)
-        libvhf_rys.transform_xyz_to_cart(
-            vj.ctypes, vj_xyz.ctypes, ao_loc.ctypes, pair_loc.ctypes,
-            mol._bas.ctypes, ctypes.c_int(mol.nbas), mol._env.ctypes)
+        for i in range(n_dm):
+            libvhf_rys.transform_xyz_to_cart(
+                vj[i].ctypes, vj_xyz[i].ctypes, ao_loc.ctypes, pair_loc.ctypes,
+                mol._bas.ctypes, ctypes.c_int(mol.nbas), mol._env.ctypes)
         vj = transpose_sum(asarray(vj))
         vj *= 2.
 
@@ -832,11 +828,12 @@ class _VHFOpt:
 
         omega, lr_factor, sr_factor = _check_rsh_factors(self.mol, omega, lr_factor, sr_factor)
 
-        tasks = ((i,j,k,l)
-                 for i in range(n_groups)
-                 for j in range(i+1)
-                 for k in range(i+1)
-                 for l in range(k+1))
+        # Share a list iterator: concurrent next() calls can re-enter a generator.
+        tasks = iter([(i,j,k,l)
+                      for i in range(n_groups)
+                      for j in range(i+1)
+                      for k in range(i+1)
+                      for l in range(k+1)])
 
         def proc(dms, dm_cond):
             device_id = cp.cuda.device.get_device_id()
@@ -908,7 +905,8 @@ class _VHFOpt:
                     ctypes.c_float(log_cutoff),
                     ctypes.c_float(dm_penalty),
                     ctypes.cast(pool.data.ptr, ctypes.c_void_p),
-                    mol._bas.ctypes)
+                    mol._bas.ctypes,
+                    ctypes.c_void_p(stream.ptr))
                 if err != 0:
                     raise RuntimeError(f'RYS_build_jk kernel for {llll} failed')
                 kern_counts += 1
@@ -951,11 +949,15 @@ class _VHFOpt:
             else:
                 scripts.append('jk->s1il')
             shls_excludes = [0, h_shls[0]] * 4
-            vs_h = _vhf.direct_mapdm('int2e_cart', 's8', scripts,
-                                     dms, 1, mol._atm, mol._bas, mol._env,
-                                     shls_excludes=shls_excludes)
+            assert (lr_factor == sr_factor == 1 or
+                    (lr_factor, sr_factor) == (0, 1) or
+                    (lr_factor, sr_factor) == (1, 0))
+            with mol.with_range_coulomb(omega):
+                vs_h = _vhf.direct_mapdm('int2e_cart', 's8', scripts,
+                                         dms, 1, mol._atm, mol._bas, mol._env,
+                                         shls_excludes=shls_excludes)
             vk1 = asarray(vs_h[0])
-            if hermi:
+            if hermi == 1:
                 vk1 = hermi_triu(vk1)
             vk += vk1
         return vk
@@ -1070,6 +1072,7 @@ def _cache_q_cond_and_non0pairs(mol, rys_envs, precision=1e-14, tile=4, tril=Tru
     bas_ij_cache = {} # The effective shell pair = ish*nbas+jsh
     shl_pair_offsets = [] # the bas_ij_idx offset for each blockIdx.x
     sp0 = sp1 = 0
+    stream = cp.cuda.get_current_stream()
     for i, j in pair_keys:
         li = uniq_l[i]
         lj = uniq_l[j]
@@ -1085,7 +1088,8 @@ def _cache_q_cond_and_non0pairs(mol, rys_envs, precision=1e-14, tile=4, tril=Tru
             ctypes.cast(ish.data.ptr, ctypes.c_void_p),
             ctypes.cast(jsh.data.ptr, ctypes.c_void_p),
             ctypes.c_int(nish), ctypes.c_int(njsh),
-            ctypes.c_int(nbas), ctypes.c_int(tile))
+            ctypes.c_int(nbas), ctypes.c_int(tile),
+            ctypes.c_void_p(stream.ptr))
         pair_ij = pair_ij[ovlp_mask[pair_ij]]
         bas_ij_cache[i,j] = cp.asarray(pair_ij, dtype=np.uint32)
         nshl_pair = len(pair_ij)
@@ -1117,7 +1121,8 @@ def _cache_q_cond_and_non0pairs(mol, rys_envs, precision=1e-14, tile=4, tril=Tru
         ctypes.cast(gout_stride.data.ptr, ctypes.c_void_p),
         ctypes.c_double(omega),
         ctypes.c_double(lr_factor),
-        ctypes.c_double(sr_factor))
+        ctypes.c_double(sr_factor),
+        ctypes.c_void_p(stream.ptr))
     if err != 0:
         raise RuntimeError('int2e_qcond_estimator kernel failed')
 
@@ -1134,7 +1139,8 @@ def _cache_q_cond_and_non0pairs(mol, rys_envs, precision=1e-14, tile=4, tril=Tru
             ctypes.cast(diffuse_exps.data.ptr, ctypes.c_void_p),
             ctypes.cast(diffuse_ctr_coef.data.ptr, ctypes.c_void_p),
             ctypes.c_int(len(bas_ij_idx)),
-            ctypes.c_double(omega))
+            ctypes.c_double(omega),
+            ctypes.c_void_p(stream.ptr))
         if err != 0:
             raise RuntimeError('fill_s_estimator kernel failed')
 

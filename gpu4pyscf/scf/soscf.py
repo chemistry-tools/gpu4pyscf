@@ -28,10 +28,12 @@ from pyscf.soscf import ciah
 from pyscf.soscf.newton_ah import _CIAH_SOSCF as _SOSCF_cpu
 from gpu4pyscf.lib import logger
 from gpu4pyscf.scf import hf, rohf, uhf, _response_functions
-from gpu4pyscf.lib.cupy_helper import transpose_sum, contract
+from gpu4pyscf.lib.cupy_helper import contract
+from gpu4pyscf.df.df_jk import _make_factorized_dm
 from gpu4pyscf.lib import utils
 
-def gen_g_hop_rhf(mf, mo_coeff, mo_occ, fock_ao=None, h1e=None):
+def gen_g_hop_rhf(mf, mo_coeff, mo_occ, fock_ao=None, h1e=None, with_nlc=False):
+    '''Orbital gradient and Hessian action; NLC is optional for SOSCF.'''
     assert mo_coeff.dtype == np.float64
     occidx = cp.nonzero(mo_occ==2)[0]
     viridx = cp.nonzero(mo_occ==0)[0]
@@ -42,7 +44,7 @@ def gen_g_hop_rhf(mf, mo_coeff, mo_occ, fock_ao=None, h1e=None):
 
     if fock_ao is None:
         dm0 = mf.make_rdm1(mo_coeff, mo_occ)
-        fock_ao = mf.get_fock(h1e, dm=dm0)
+        fock_ao = mf.get_fock(h1e, None, None, dm0)
     fock = mo_coeff.conj().T.dot(fock_ao).dot(mo_coeff)
     foo = fock[occidx[:,None],occidx]
     fvv = fock[viridx[:,None],viridx]
@@ -51,7 +53,7 @@ def gen_g_hop_rhf(mf, mo_coeff, mo_occ, fock_ao=None, h1e=None):
     h_diag = (fvv.diagonal().real[:,None] - foo.diagonal().real) * 2
 
     vind = mf.gen_response(mo_coeff, mo_occ, singlet=None, hermi=1,
-                           with_nlc=False)
+                           with_nlc=with_nlc)
 
     def h_op(x):
         x = x.reshape(nvir,nocc)
@@ -59,8 +61,7 @@ def gen_g_hop_rhf(mf, mo_coeff, mo_occ, fock_ao=None, h1e=None):
         x2-= contract('ps,rp->rs', foo, x)
 
         # *2 for double occupancy
-        dm1 = orbv.dot(x*2).dot(orbo.conj().T)
-        dm1 = transpose_sum(dm1)
+        dm1 = _make_factorized_dm(orbv.dot(x*2), orbo.conj())
         v1 = vind(dm1)
         x2 += orbv.conj().T.dot(v1).dot(orbo)
         return x2.ravel() * 2
@@ -70,7 +71,7 @@ def gen_g_hop_rhf(mf, mo_coeff, mo_occ, fock_ao=None, h1e=None):
 def gen_g_hop_rohf(mf, mo_coeff, mo_occ, fock_ao=None, h1e=None):
     if getattr(fock_ao, 'focka', None) is None:
         dm0 = mf.make_rdm1(mo_coeff, mo_occ)
-        fock_ao = mf.get_fock(h1e, dm=dm0)
+        fock_ao = mf.get_fock(h1e, None, None, dm0)
     fock_ao = fock_ao.focka, fock_ao.fockb
     mo_occa = occidxa = mo_occ > 0
     mo_occb = occidxb = mo_occ ==2
@@ -103,7 +104,8 @@ def gen_g_hop_rohf(mf, mo_coeff, mo_occ, fock_ao=None, h1e=None):
 
     return g, h_op, h_diag
 
-def gen_g_hop_uhf(mf, mo_coeff, mo_occ, fock_ao=None, h1e=None):
+def gen_g_hop_uhf(mf, mo_coeff, mo_occ, fock_ao=None, h1e=None, with_nlc=False):
+    '''Orbital gradient and Hessian action; NLC is optional for SOSCF.'''
     assert mo_coeff[0].dtype == np.float64
     occidxa = cp.nonzero(mo_occ[0] >  0)[0]
     occidxb = cp.nonzero(mo_occ[1] >  0)[0]
@@ -120,7 +122,7 @@ def gen_g_hop_uhf(mf, mo_coeff, mo_occ, fock_ao=None, h1e=None):
 
     if fock_ao is None:
         dm0 = mf.make_rdm1(mo_coeff, mo_occ)
-        fock_ao = mf.get_fock(h1e, dm=dm0)
+        fock_ao = mf.get_fock(h1e, None, None, dm0)
     focka = mo_coeff[0].conj().T.dot(fock_ao[0]).dot(mo_coeff[0])
     fockb = mo_coeff[1].conj().T.dot(fock_ao[1]).dot(mo_coeff[1])
     fooa = focka[occidxa[:,None],occidxa]
@@ -134,7 +136,13 @@ def gen_g_hop_uhf(mf, mo_coeff, mo_occ, fock_ao=None, h1e=None):
     h_diagb = fvvb.diagonal().real[:,None] - foob.diagonal().real
     h_diag = cp.hstack((h_diaga.reshape(-1), h_diagb.reshape(-1)))
 
-    vind = mf.gen_response(mo_coeff, mo_occ, hermi=1, with_nlc=False)
+    vind = mf.gen_response(mo_coeff, mo_occ, hermi=1, with_nlc=with_nlc)
+    # Pad the two spin factors to retain their tags in a single UHF density.
+    nao = mo_coeff[0].shape[0]
+    nocc = max(nocca, noccb)
+    orbo = cp.zeros((2, nao, nocc), dtype=mo_coeff[0].dtype)
+    orbo[0, :, :nocca] = orboa.conj()
+    orbo[1, :, :noccb] = orbob.conj()
 
     def h_op(x):
         x1a = x[:nvira*nocca].reshape(nvira,nocca)
@@ -144,10 +152,10 @@ def gen_g_hop_uhf(mf, mo_coeff, mo_occ, fock_ao=None, h1e=None):
         x2b = contract('pr,rq->pq', fvvb, x1b)
         x2b-= contract('sq,ps->pq', foob, x1b)
 
-        d1a = orbva.dot(x1a).dot(orboa.conj().T)
-        d1b = orbvb.dot(x1b).dot(orbob.conj().T)
-        dm1 = cp.array([transpose_sum(d1a),
-                        transpose_sum(d1b)])
+        dm_factor = cp.zeros_like(orbo)
+        dm_factor[0, :, :nocca] = orbva.dot(x1a)
+        dm_factor[1, :, :noccb] = orbvb.dot(x1b)
+        dm1 = _make_factorized_dm(dm_factor, orbo)
         v1 = vind(dm1)
         x2a += orbva.conj().T.dot(v1[0]).dot(orboa)
         x2b += orbvb.conj().T.dot(v1[1]).dot(orbob)
@@ -192,7 +200,12 @@ def _rotate_orb_cc(mf, h1e, s1e, conv_tol_grad=None, verbose=None):
             x0_guess = dxi
         g_orb = g_kf
         norm_gorb = norm_gkf
+
         problem_size = g_orb.size
+        if cp.iscomplexobj(g_orb):
+            # With real Davidson coefficients, N complex rotations span up to 2N
+            # real directions. Using N would stop at an incomplete subspace.
+            problem_size *= 2
 
         ah_conv_tol = min(norm_gorb**2, mf.ah_conv_tol)
         # increase the AH accuracy when approach convergence
@@ -319,31 +332,39 @@ def _davidson_cc(h_op, g_op, precond, x0, tol=1e-10, xs=[], ax=[],
     nx = len(xs)
 
     problem_size = x0.size
+    if cp.iscomplexobj(x0):
+        # With real Davidson coefficients, N complex rotations span up to 2N
+        # real directions. Using N would stop at an incomplete subspace.
+        problem_size *= 2
+
     max_cycle = min(max_cycle, problem_size)
-    heff = np.zeros((max_cycle+nx+1,max_cycle+nx+1), dtype=x0.dtype)
-    ovlp = np.eye(max_cycle+nx+1, dtype=x0.dtype)
+    # Note, the subspace H must be real even for Hessian of complex orbitals.
+    # See Eq (9) in https://doi.org/10.1063/1.5036594, disucssions in
+    # https://github.com/pyscf/pyscf/issues/2856 and its fix in PR #2857.
+    heff = np.zeros((max_cycle+nx+1,max_cycle+nx+1))
+    ovlp = np.eye(max_cycle+nx+1)
     if nx == 0:
         xs.append(x0)
         ax.append(h_op(x0))
     else:
         for i in range(1, nx+1):
             for j in range(1, i+1):
-                heff[i,j] = xs[i-1].conj().dot(ax[j-1])
-                ovlp[i,j] = xs[i-1].conj().dot(xs[j-1])
-            heff[1:i,i] = heff[i,1:i].conj()
-            ovlp[1:i,i] = ovlp[i,1:i].conj()
+                heff[i,j] = xs[i-1].conj().dot(ax[j-1]).real
+                ovlp[i,j] = xs[i-1].conj().dot(xs[j-1]).real
+            heff[1:i,i] = heff[i,1:i]
+            ovlp[1:i,i] = ovlp[i,1:i]
 
     w_t = 0
     for istep in range(max_cycle):
         g = g_op()
         nx = len(xs)
         for i in range(nx):
-            heff[i+1,0] = xs[i].conj().dot(g)
-            heff[nx,i+1] = xs[nx-1].conj().dot(ax[i])
-            ovlp[nx,i+1] = xs[nx-1].conj().dot(xs[i])
-        heff[0,:nx+1] = heff[:nx+1,0].conj()
-        heff[1:nx,nx] = heff[nx,1:nx].conj()
-        ovlp[1:nx,nx] = ovlp[nx,1:nx].conj()
+            heff[i+1,0] = xs[i].conj().dot(g).real
+            heff[nx,i+1] = xs[nx-1].conj().dot(ax[i]).real
+            ovlp[nx,i+1] = xs[nx-1].conj().dot(xs[i]).real
+        heff[0,:nx+1] = heff[:nx+1,0]
+        heff[1:nx,nx] = heff[nx,1:nx]
+        ovlp[1:nx,nx] = ovlp[nx,1:nx]
         nvec = nx + 1
         #s0 = scipy.linalg.eigh(ovlp[:nvec,:nvec])[0][0]
         #if s0 < lindep:
@@ -692,10 +713,9 @@ class _SecondOrderUHF(_CIAH_SOSCF):
 
     def kernel(self, mo_coeff=None, mo_occ=None, dm0=None):
         if isinstance(mo_coeff, cp.ndarray) and mo_coeff.ndim == 2:
-            mo_coeff = (mo_coeff, mo_coeff)
+            mo_coeff = cp.stack((mo_coeff, mo_coeff))
         if isinstance(mo_occ, cp.ndarray) and mo_occ.ndim == 1:
-            mo_occ = (cp.asarray(mo_occ >0, dtype=np.float64),
-                      cp.asarray(mo_occ==2, dtype=np.float64))
+            mo_occ = cp.asarray((mo_occ > 0, mo_occ == 2), dtype=np.float64)
         return _CIAH_SOSCF.kernel(self, mo_coeff, mo_occ, dm0)
 
 class _SecondOrderRHF(_CIAH_SOSCF):

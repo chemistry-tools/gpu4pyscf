@@ -25,7 +25,6 @@
 #include "utils.cuh"
 
 #define TILE            4
-#define WARP_SIZE       32
 #define THREADS         64
 
 template <int LI, int LJ, int SLICE_SIZE_I, int SLICE_SIZE_J, bool is_non_orthogonal>
@@ -281,7 +280,7 @@ for (int tile_id = tile_id0; tile_id < min(tile_id0+tiles_per_block, ntiles); ti
 extern "C" {
 #define eval_mgga_mat_kernel_case(li, lj, slice_i, slice_j, non_orth) \
     case (li * LMAX1 + lj): \
-        eval_mgga_mat_kernel<li,lj,slice_i,slice_j,non_orth><<<block_grid, THREADS>>>( \
+        eval_mgga_mat_kernel<li,lj,slice_i,slice_j,non_orth><<<block_grid, THREADS, 0, stream>>>(\
             out, vxc, vtau, *envs, supmol_img_coords, shl_pair_offsets, dressed_bas_ij_idx, \
             grid_tile_index, n_contributing_tiles, tiles_per_block, \
             a_dot_b, a_dot_c, b_dot_c, da_squared, db_squared, dc_squared, \
@@ -293,7 +292,7 @@ int evaluate_mgga_mat(double *out, double *vxc, double *vtau, PBCIntEnvVars *env
                      int i_angular, int j_angular, int tiles_per_block,
                      int *shl_pair_offsets, int64_t *dressed_bas_ij_idx,
                      int *grid_tile_index, int n_contributing_tiles, int *mesh,
-                     double negligible)
+                     double negligible, cudaStream_t stream)
 {
     int mesh_a = mesh[0];
     int mesh_b = mesh[1];

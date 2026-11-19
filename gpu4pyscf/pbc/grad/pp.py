@@ -20,10 +20,10 @@ from pyscf.pbc.lib.kpts_helper import gamma_point
 from pyscf.pbc.tools.k2gamma import translation_vectors_for_kmesh
 from gpu4pyscf.lib.cupy_helper import contract, asarray
 from gpu4pyscf.gto.mole import SortedGTO
-from gpu4pyscf.pbc.gto.pseudo.pp_int import _int_vnl_gpu, _sorted_fake_cell_vnl
+from gpu4pyscf.pbc.gto.pseudo.pp_int import _int_vnl, _sorted_fake_cell_vnl
 from gpu4pyscf.pbc.gto import int1e
 from gpu4pyscf.pbc.gto.int1e import libpbc
-from gpu4pyscf.pbc.tools import k2gamma
+from gpu4pyscf.pbc.lib.kpts_helper import kpts_to_bvkmesh
 
 def vppnl_nuc_grad(cell, dm, kpts=None):
     '''Nuclear gradients of the non-local part of the GTH pseudo potential,
@@ -58,7 +58,7 @@ def ppnl_derivatives(cell, dm, kpts=None):
         return grad_sigma
 
     sorted_cell = SortedGTO.from_cell(cell, decontract=True)
-    ppnl_half = _int_vnl_gpu(sorted_cell, fakecell, hl_blocks, kpts)
+    ppnl_half = _int_vnl(sorted_cell, fakecell, hl_blocks, kpts)
 
     derivative_kernels = (
         ('PBCovlp_cross_derivatives', (0, 1)),
@@ -66,8 +66,8 @@ def ppnl_derivatives(cell, dm, kpts=None):
         ('PBCint1e_r4_origi_derivatives', (4, 1)),
     )
 
-    bvk_kmesh = k2gamma.kpts_to_kmesh(cell, kpts)
-    bvkmesh_Ls = translation_vectors_for_kmesh(cell, bvk_kmesh, True)
+    bvkmesh = kpts_to_bvkmesh(cell, kpts, bound_by_supmol=True)
+    bvkmesh_Ls = translation_vectors_for_kmesh(cell, bvkmesh, True)
     expLk = cp.exp(-1j*asarray(bvkmesh_Ls).dot(asarray(kpts).T))
     dtype = np.float64 if is_gamma_point else np.complex128
 
@@ -92,7 +92,7 @@ def ppnl_derivatives(cell, dm, kpts=None):
 
         pcell = fakecell.copy(deep=False)
         pcell._bas = fakecell._bas[i0:i1]
-        opt = int1e.CrossInt1e(pcell, sorted_cell, bvk_kmesh)
+        opt = int1e.CrossInt1e(pcell, sorted_cell, bvkmesh)
         for rn in range(hl_dim):
             kern, deriv = derivative_kernels[rn]
             as_dm = weights[rn].reshape(-1, n_hl*nd, nao)
@@ -130,7 +130,8 @@ def _derivatives_intor(cross_int1e, dm, kern, deriv):
         ctypes.cast(cross_int1e.bas_ij_idx.data.ptr, ctypes.c_void_p),
         ctypes.cast(gout_stride_lookup.data.ptr, ctypes.c_void_p),
         ctypes.c_int(cross_int1e.cell1.nao),
-        ctypes.c_int(cross_int1e.cell2.nao))
+        ctypes.c_int(cross_int1e.cell2.nao),
+        ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
     if err != 0:
         raise RuntimeError(f'{kern} failed')
 

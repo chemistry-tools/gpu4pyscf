@@ -33,6 +33,8 @@ def _precision_context(mf):
     from gpu4pyscf.dft._mixed_vv10 import _AdaptiveVV10
     from gpu4pyscf.dft._native_grid_cache import _native_grid_reuse
 
+    if cupy.cuda.runtime.is_hip:
+        raise ValueError('Mixed precision currently requires NVIDIA CUDA')
     if numint.num_devices != 1 or cupy.cuda.runtime.getDeviceCount() != 1:
         raise ValueError('Mixed precision currently requires a single visible GPU')
     ni = mf._numint

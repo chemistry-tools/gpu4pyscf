@@ -1,4 +1,4 @@
-# Copyright 2021-2024 The PySCF Developers. All Rights Reserved.
+# Copyright 2026 The PySCF Developers. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,14 +12,5 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
-import ctypes
-from cupy.cuda import device
-from cupy_backends.cuda.libs import cublas #NOQA
-
-libcublas = ctypes.CDLL('libcublas.so')
-
-# This needs to be moved into functions, and lazy evaluate
-_handle = device.get_cublas_handle() #NOQA
-
-# NOTE: add modified culbas function here
+from . import gw_ac
+from . import rpa

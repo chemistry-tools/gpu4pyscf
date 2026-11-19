@@ -18,10 +18,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <cmath>
-#include <cuda.h>
-#include <cuda_runtime.h>
-#include "gvhf-rys/vhf.cuh"
 #include "constant_objects.cuh"
+#include "gvhf-rys/vhf.cuh"
 #include "cartesian.cuh"
 #include "utils.cuh"
 
@@ -124,6 +122,9 @@ void grid_ranges_kernel(float2 *grid_frac_ranges, float *pair_ke,
     float y_cut = estimate_rcut(li, lj, radius, aij, ypi, ypj, log_factor);
     float z_cut = estimate_rcut(li, lj, radius, aij, zpi, zpj, log_factor);
 
+    // Use one common radius for all reciprocal directions in skewed cells.
+    radius = max(x_cut, max(y_cut, z_cut));
+
     float b00 = c_reciprocal_lattice_vectors[0];
     float b01 = c_reciprocal_lattice_vectors[1];
     float b02 = c_reciprocal_lattice_vectors[2];
@@ -142,9 +143,11 @@ void grid_ranges_kernel(float2 *grid_frac_ranges, float *pair_ke,
     float bnorm_1 = sqrtf(distance_squared(b10, b11, b12));
     float bnorm_2 = sqrtf(distance_squared(b20, b21, b22));
 
-    float xcut_frac = x_cut * bnorm_0;
-    float ycut_frac = y_cut * bnorm_1;
-    float zcut_frac = z_cut * bnorm_2;
+    // Project the same cutoff sphere onto each reciprocal direction. A
+    // Cartesian-axis cutoff is not a radius for an oblique reciprocal slab.
+    float xcut_frac = radius * bnorm_0;
+    float ycut_frac = radius * bnorm_1;
+    float zcut_frac = radius * bnorm_2;
 
     float2 *xfrac_range = grid_frac_ranges;
     float2 *yfrac_range = grid_frac_ranges + npairs;
@@ -160,7 +163,7 @@ void grid_ranges_kernel(float2 *grid_frac_ranges, float *pair_ke,
     // When cutoff radius is 0, the contribution of this orbital pair is small.
     // By setting its pair_ke to 0, this orbital pair will be discarded when
     // filtering orbitals in _partition_ke_for_fft function.
-    if (x_cut < 1e-3 || y_cut < 1e-3 || z_cut < 1e-3) {
+    if (radius < 1e-3f) {
         pair_ke[pair_id] = -1.f;
     } else {
         float ke_two_centers = max(ish_ke, jsh_ke);
@@ -246,24 +249,24 @@ void grid_range_to_tiles_kernel(int *grid_tile_idx, int64_t *dressed_bas_ij,
     int tile_size_y = min(TILE, mesh_y);
     int tile_size_z = min(TILE, mesh_z);
 
-    int img_x_lower = floor(xfrac_lower);
-    int img_y_lower = floor(yfrac_lower);
-    int img_z_lower = floor(zfrac_lower);
-    int img_x_upper = floor(xfrac_upper);
-    int img_y_upper = floor(yfrac_upper);
-    int img_z_upper = floor(zfrac_upper);
+    int img_x_lower = floorf(xfrac_lower);
+    int img_y_lower = floorf(yfrac_lower);
+    int img_z_lower = floorf(zfrac_lower);
+    int img_x_upper = floorf(xfrac_upper);
+    int img_y_upper = floorf(yfrac_upper);
+    int img_z_upper = floorf(zfrac_upper);
     img_x_lower = max(img_x_lower, -nimgs_x);
     img_y_lower = max(img_y_lower, -nimgs_y);
     img_z_lower = max(img_z_lower, -nimgs_z);
     img_x_upper = min(img_x_upper,  nimgs_x);
     img_y_upper = min(img_y_upper,  nimgs_y);
     img_z_upper = min(img_z_upper,  nimgs_z);
-    int rem_x_lower = floor(max(xfrac_lower - img_x_lower, 0.f) * mesh_x / tile_size_x);
-    int rem_y_lower = floor(max(yfrac_lower - img_y_lower, 0.f) * mesh_y / tile_size_y);
-    int rem_z_lower = floor(max(zfrac_lower - img_z_lower, 0.f) * mesh_z / tile_size_z);
-    int rem_x_upper = ceil (min(xfrac_upper - img_x_upper, 1.f) * mesh_x / tile_size_x);
-    int rem_y_upper = ceil (min(yfrac_upper - img_y_upper, 1.f) * mesh_y / tile_size_y);
-    int rem_z_upper = ceil (min(zfrac_upper - img_z_upper, 1.f) * mesh_z / tile_size_z);
+    int rem_x_lower = floorf(max(xfrac_lower - img_x_lower, 0.f) * mesh_x / tile_size_x);
+    int rem_y_lower = floorf(max(yfrac_lower - img_y_lower, 0.f) * mesh_y / tile_size_y);
+    int rem_z_lower = floorf(max(zfrac_lower - img_z_lower, 0.f) * mesh_z / tile_size_z);
+    int rem_x_upper = ceilf(min(xfrac_upper - img_x_upper, 1.f) * mesh_x / tile_size_x);
+    int rem_y_upper = ceilf(min(yfrac_upper - img_y_upper, 1.f) * mesh_y / tile_size_y);
+    int rem_z_upper = ceilf(min(zfrac_upper - img_z_upper, 1.f) * mesh_z / tile_size_z);
     int count_x = rem_x_upper - rem_x_lower + (img_x_upper - img_x_lower) * tiles_x;
     int count_y = rem_y_upper - rem_y_lower + (img_y_upper - img_y_lower) * tiles_y;
     int count_z = rem_z_upper - rem_z_lower + (img_z_upper - img_z_lower) * tiles_z;
@@ -357,8 +360,9 @@ void ovlp_mask_estimation_kernel(int8_t *ovlp_mask, PBCIntEnvVars envs,
     float rr_raw = log_fac / theta;
     float Ecut_raw = log_fac * (2*aij);
     float Ecut_2a = Ecut_raw / (2*aij*aij);
-    float dri_fac = .5f * logf(.5f*li/aij + fi*fi*rr_raw + Ecut_2a);
-    float drj_fac = .5f * logf(.5f*lj/aij + fj*fj*rr_raw + Ecut_2a);
+    // dri = |Rp-Ri| ~ fj*|Rij|, dj = |Rp-Rj| = fi*|Rij|
+    float dri_fac = .5f * logf(.5f*li/aij + fj*fj*rr_raw + Ecut_2a);
+    float drj_fac = .5f * logf(.5f*lj/aij + fi*fi*rr_raw + Ecut_2a);
     // An approximate penalty for the polynomial part of the gaussian product
     log_fac += li * dri_fac + lj * drj_fac;
     float rr_cutoff = log_fac / theta;
@@ -413,8 +417,9 @@ void estimate_aft_Ecut_kernel(float *Ecut, int64_t *bas_ij_idx, PBCIntEnvVars en
     float rr_raw = log_fac / theta;
     float Ecut_raw = log_fac * (2*aij);
     float Ecut_2a = Ecut_raw / (2*aij*aij);
-    float dri_fac = .5f * logf(.5f*li/aij + fi*fi*rr_raw + Ecut_2a);
-    float drj_fac = .5f * logf(.5f*lj/aij + fj*fj*rr_raw + Ecut_2a);
+    // dri = |Rp-Ri| ~ fj*|Rij|, dj = |Rp-Rj| = fi*|Rij|
+    float dri_fac = .5f * logf(.5f*li/aij + fj*fj*rr_raw + Ecut_2a);
+    float drj_fac = .5f * logf(.5f*lj/aij + fi*fi*rr_raw + Ecut_2a);
     // An approximate penalty for the polynomial part of the gaussian product
     log_fac += li * dri_fac + lj * drj_fac;
 
@@ -492,8 +497,9 @@ void supmol_non_trivial_pairs_kernel(int64_t *supmol_bas_ij, int64_t *bas_ij_idx
     float log_fac = log_cicj + 1.717f - 1.5f * logf(aij) - log_cutoff;
     log_fac = max(log_fac, 1e-9f);
     float rr_raw = log_fac / theta;
-    float dri_fac = .5f * logf(.5f*li/aij + fi*fi*rr_raw);
-    float drj_fac = .5f * logf(.5f*lj/aij + fj*fj*rr_raw);
+    // dri = |Rp-Ri| ~ fj*|Rij|, dj = |Rp-Rj| = fi*|Rij|
+    float dri_fac = .5f * logf(.5f*li/aij + fj*fj*rr_raw);
+    float drj_fac = .5f * logf(.5f*lj/aij + fi*fi*rr_raw);
     // An approximate penalty for the polynomial part of the gaussian product
     log_fac += li * dri_fac + lj * drj_fac;
     log_fac = max(log_fac, 0.f);
@@ -538,10 +544,10 @@ int gaussian_prod_grid_ranges(float2 *grid_frac_ranges, float *pair_ke,
                               PBCIntEnvVars *envs,
                               int64_t *bas_ij_idx, int npairs,
                               int li_inc, int lj_inc, float log_threshold,
-                              float undressed_threshold)
+                              float undressed_threshold, cudaStream_t stream)
 {
     int batches = (npairs + THREADS-1) / THREADS;
-    grid_ranges_kernel<<<batches, THREADS>>>(
+    grid_ranges_kernel<<<batches, THREADS, 0, stream>>>(
         grid_frac_ranges, pair_ke, Ecut_by_shell, primary_atoms, *envs, bas_ij_idx,
         li_inc, lj_inc, npairs, log_threshold, undressed_threshold);
     cudaError_t err = cudaGetLastError();
@@ -554,9 +560,9 @@ int gaussian_prod_grid_ranges(float2 *grid_frac_ranges, float *pair_ke,
 
 int grid_range_to_tiles(int *grid_tile_idx, int64_t *dressed_bas_ij,
                         int64_t *bas_ij_idx, float2 *grid_frac_ranges,
-                        int *nimgs, int *mesh, int npairs, int nbas, int *head)
+                        int *nimgs, int *mesh, int npairs, int nbas, int *head, cudaStream_t stream)
 {
-    cudaMemset(head, 0, sizeof(int));
+    cudaMemsetAsync(head, 0, sizeof(int), stream);
     int nimgs_x = nimgs[0];
     int nimgs_y = nimgs[1];
     int nimgs_z = nimgs[2];
@@ -564,7 +570,7 @@ int grid_range_to_tiles(int *grid_tile_idx, int64_t *dressed_bas_ij,
     int mesh_y = mesh[1];
     int mesh_z = mesh[2];
     int batches = (npairs + THREADS-1) / THREADS;
-    grid_range_to_tiles_kernel<<<batches, THREADS>>>(
+    grid_range_to_tiles_kernel<<<batches, THREADS, 0, stream>>>(
         grid_tile_idx, dressed_bas_ij, bas_ij_idx, grid_frac_ranges,
         nimgs_x, nimgs_y, nimgs_z, mesh_x, mesh_y, mesh_z, npairs, nbas, head);
     cudaError_t err = cudaGetLastError();
@@ -576,10 +582,10 @@ int grid_range_to_tiles(int *grid_tile_idx, int64_t *dressed_bas_ij,
 }
 
 int atom_grid_ranges(float2 *atom_frac_ranges, float2 *grid_frac_ranges,
-                     int *shl_pair_offsets, int npairs, int nsegs)
+                     int *shl_pair_offsets, int npairs, int nsegs, cudaStream_t stream)
 {
     int blocks = (nsegs + 255) / 256;
-    atom_grid_ranges_kernel<<<blocks, 256>>>(
+    atom_grid_ranges_kernel<<<blocks, 256, 0, stream>>>(
         atom_frac_ranges, grid_frac_ranges, shl_pair_offsets, npairs, nsegs);
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -591,13 +597,13 @@ int atom_grid_ranges(float2 *atom_frac_ranges, float2 *grid_frac_ranges,
 }
 
 int bvk_ovlp_mask_estimation(int8_t *ovlp_mask, PBCIntEnvVars *envs,
-                             double *img_coords, int nimgs, float log_cutoff)
+                             double *img_coords, int nimgs, float log_cutoff, cudaStream_t stream)
 {
     int nbas = envs->nbas;
     int bvk_nbas = nbas * envs->bvk_ncells;
     dim3 threads(16, 16);
     dim3 blocks((bvk_nbas + 15) / 16, (nbas + 15) / 16);
-    ovlp_mask_estimation_kernel<<<blocks, threads>>>(
+    ovlp_mask_estimation_kernel<<<blocks, threads, 0, stream>>>(
             ovlp_mask, *envs, img_coords, nimgs, log_cutoff);
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -608,11 +614,11 @@ int bvk_ovlp_mask_estimation(int8_t *ovlp_mask, PBCIntEnvVars *envs,
 }
 int supmol_non_trivial_pairs(int64_t *supmol_bas_ij, int64_t *bas_ij_idx,
                              PBCIntEnvVars *envs, int npairs, float log_cutoff,
-                             int is_mgga, int *head)
+                             int is_mgga, int *head, cudaStream_t stream)
 {
-    cudaMemset(head, 0, sizeof(int));
+    cudaMemsetAsync(head, 0, sizeof(int), stream);
     int blocks = (npairs + THREADS-1)/THREADS;
-    supmol_non_trivial_pairs_kernel<<<blocks, THREADS>>>(
+    supmol_non_trivial_pairs_kernel<<<blocks, THREADS, 0, stream>>>(
             supmol_bas_ij, bas_ij_idx, *envs, npairs, log_cutoff, is_mgga, head);
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -624,10 +630,10 @@ int supmol_non_trivial_pairs(int64_t *supmol_bas_ij, int64_t *bas_ij_idx,
 
 int estimate_aft_Ecut(float *Ecut, int64_t *bas_ij_idx, PBCIntEnvVars *envs,
                       double *img_coords, int nimgs, int npairs,
-                      float log_cutoff, float Ecut_max, int is_mgga)
+                      float log_cutoff, float Ecut_max, int is_mgga, cudaStream_t stream)
 {
     int blocks = (npairs + THREADS-1)/THREADS;
-    estimate_aft_Ecut_kernel<<<blocks, THREADS>>>(
+    estimate_aft_Ecut_kernel<<<blocks, THREADS, 0, stream>>>(
         Ecut, bas_ij_idx, *envs, img_coords, nimgs, npairs, log_cutoff,
         Ecut_max, is_mgga);
     cudaError_t err = cudaGetLastError();

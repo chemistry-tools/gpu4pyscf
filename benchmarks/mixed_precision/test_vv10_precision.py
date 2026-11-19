@@ -14,9 +14,10 @@ pytestmark = pytest.mark.skipif(os.environ.get('DFT_GPU_TEST') != '1', reason='o
 def test_vv10_only_with_supplied_organic_density(case):
     import cupy as cp
     from ase.build import molecule
+    from pyscf import gto
+
     from gpu4pyscf import dft
     from gpu4pyscf.dft import mixed_precision, numint
-    from pyscf import gto
 
     atoms = molecule(case)
     mol = gto.M(atom=list(zip(atoms.get_chemical_symbols(), atoms.positions)),

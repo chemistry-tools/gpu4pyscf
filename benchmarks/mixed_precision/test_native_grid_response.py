@@ -45,7 +45,7 @@ def _two_pass_reference():
     tree = ast.parse(path.read_text())
     node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'get_exc_full_response')
     namespace = rks.__dict__.copy()
-    exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), 'exec'), namespace)
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), 'exec'), namespace)  # noqa: S102
     original = rks.get_exc_full_response
     rks.get_exc_full_response = namespace['get_exc_full_response']
     try:

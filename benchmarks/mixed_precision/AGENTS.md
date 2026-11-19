@@ -106,8 +106,8 @@ libraries, complete compiler prerequisites and the RTX 3080 build flags.
   and ASE verification/reuse. Whole-call performance requires separate measurements.
 - `gpu4pyscf/df/_response_products.py`, `test_response_products.py`: native float64
   auxiliary-response products. Sorted Cartesian scaled-permutation coefficients
-  use the existing sparse basis transform around the unchanged metric solver;
-  its generic right-hand sides retain the original projection. Symmetric real
+  use a sparse basis transform on either side of the upstream blocked metric solve.
+  General coefficients use upstream dense products. Symmetric real
   auxiliary Gram updates use SYRK directly on supported native/pitched layouts,
   without packing the occupied-pair tensor. Guards preserve general density,
   layout, complex, nonfinite and other-device fallbacks. Complete-force checks

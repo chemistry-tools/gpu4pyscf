@@ -26,7 +26,7 @@ def _reference_df(path, *, unrestricted=False):
     tree = ast.parse(path.read_text())
     node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_jk_energy_per_atom')
     namespace = rhf.__dict__.copy()
-    exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), 'exec'), namespace)
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), 'exec'), namespace)  # noqa: S102
     original = rhf._jk_energy_per_atom
     rhf._jk_energy_per_atom = namespace['_jk_energy_per_atom']
     try:

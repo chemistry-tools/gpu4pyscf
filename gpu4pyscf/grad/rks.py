@@ -351,11 +351,11 @@ def _make_dR_dao_w(ao, wv, out=None):
     aow = ndarray([3,nao,ngrids], buffer=out)
     stream = cupy.cuda.get_current_stream()
     err = libgdft.GDFT_make_dR_dao_w(
-        ctypes.cast(stream.ptr, ctypes.c_void_p),
         ctypes.cast(aow.data.ptr, ctypes.c_void_p),
         ctypes.cast(ao.data.ptr, ctypes.c_void_p),
         ctypes.cast(wv.data.ptr, ctypes.c_void_p),
-        ctypes.c_int(ngrids), ctypes.c_int(nao))
+        ctypes.c_int(ngrids), ctypes.c_int(nao),
+        ctypes.cast(stream.ptr, ctypes.c_void_p))
     if err != 0:
         raise RuntimeError('CUDA Error')
     return aow
@@ -645,7 +645,6 @@ def get_nlc_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=
     domega_dgamma_i = cupy.empty(ngrids)
     stream = cupy.cuda.get_current_stream()
     err = libgdft.VXC_vv10nlc_fock_eval_omega_derivative(
-        ctypes.cast(stream.ptr, ctypes.c_void_p),
         ctypes.cast(omega_i.data.ptr, ctypes.c_void_p),
         ctypes.cast(domega_drho_i.data.ptr, ctypes.c_void_p),
         ctypes.cast(domega_dgamma_i.data.ptr, ctypes.c_void_p),
@@ -653,6 +652,7 @@ def get_nlc_exc_full_response(ni, mol, grids, xc_code, dms, relativity=0, hermi=
         ctypes.cast(gamma_i.data.ptr, ctypes.c_void_p),
         ctypes.c_double(C_in_omega),
         ctypes.c_int(ngrids),
+        ctypes.cast(stream.ptr, ctypes.c_void_p),
     )
     if err != 0:
         raise RuntimeError('CUDA Error in vv10 gradient (grid response) kernel')

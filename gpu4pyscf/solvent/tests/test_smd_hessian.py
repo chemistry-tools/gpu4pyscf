@@ -17,6 +17,7 @@ import numpy
 import pyscf
 import pytest
 from pyscf import gto
+from pyscf.solvent import smd as cpu_smd
 from pyscf.lib.parameters import BOHR
 from gpu4pyscf import scf, dft, lib
 from gpu4pyscf.solvent.hessian import smd as smd_hess
@@ -225,7 +226,9 @@ H -0.646 -0.464 -0.804
 
     #@unittest.skipIf(Version(pyscf.__version__) <= Version('2.11.0'),
     #                 'bug for SMD.radii_table in pyscf')
-    def test_to_gpu_to_cpu(self):
+    @unittest.skipIf(cpu_smd.libsolvent is None,
+                     'CPU SMD reference requires PySCF built with ENABLE_SMD=ON')
+    def test_to_gpu_to_cpu_high_cost(self):
         mf = dft.RKS(mol, xc='b3lyp').SMD()
         mf.conv_tol = 1e-12
         mf.conv_tol_cpscf = 1e-7
@@ -260,7 +263,7 @@ H -0.646 -0.464 -0.804
                     C        0.000000    0.000000   -0.542500
                     H        0.000000    0.935307   -1.082500
                     H        0.000000   -0.935307   -1.082500''')
-        mf = mol.RHF().SMD()
+        mf = scf.RHF(mol).SMD('')
         # [n, n25, alpha, beta, gamma, epsilon, phi, psi]
         mf.with_solvent.solvent_descriptors = [1.3843, 1.3766, 0.0, 0.45, 35.06, 13.45, 0.0, 0.0]
         dat = get_cds_hess(mf.with_solvent)
@@ -269,14 +272,14 @@ H -0.646 -0.464 -0.804
                     C        0.000000    0.000000   -0.543500
                     H        0.000000    0.935307   -1.082500
                     H        0.000000   -0.935307   -1.082500''')
-        mf = mol.RHF().SMD()
+        mf = scf.RHF(mol).SMD('')
         mf.with_solvent.solvent_descriptors = [1.3843, 1.3766, 0.0, 0.45, 35.06, 13.45, 0.0, 0.0]
         g1 = get_cds_grad(mf.with_solvent)
         mol.set_geom_('''
                     C        0.000000    0.000000   -0.541500
                     H        0.000000    0.935307   -1.082500
                     H        0.000000   -0.935307   -1.082500''')
-        mf = mol.RHF().SMD()
+        mf = scf.RHF(mol).SMD('')
         mf.with_solvent.solvent_descriptors = [1.3843, 1.3766, 0.0, 0.45, 35.06, 13.45, 0.0, 0.0]
         g2 = get_cds_grad(mf.with_solvent)
         assert abs(dat[0,:,2] - ((g2 - g1) / 2e-3 * BOHR)).max() < 1e-5

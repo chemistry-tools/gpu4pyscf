@@ -16,13 +16,16 @@
 import ctypes
 import contextlib
 import cupy
+from gpu4pyscf.lib.cusolver import eigh_std
 import numpy as np
 import cupy as cp
 from cupyx.scipy.linalg import solve_triangular
 from pyscf import lib
+from pyscf.ao2mo.incore import iden_coeffs
 from pyscf.df import addons, incore
 from gpu4pyscf.lib.cupy_helper import (
-    cholesky, get_avail_mem, fill_symmetric, asarray, empty_mapped, ndarray)
+    cholesky, contract, get_avail_mem, fill_symmetric, asarray, empty_mapped,
+    ndarray)
 from gpu4pyscf.lib import logger
 from gpu4pyscf.lib import utils
 from gpu4pyscf.lib import multi_gpu
@@ -74,7 +77,7 @@ class DF(lib.StreamObject):
         self._sparse_ao_cache = None
 
     __getstate__, __setstate__ = lib.generate_pickle_methods(
-        excludes=('intopt', '_cderi', '_sparse_ao_cache'))
+        excludes=('intopt', 'j_engine', '_cderi', '_sparse_ao_cache'))
 
     @property
     def auxbasis(self):
@@ -83,6 +86,7 @@ class DF(lib.StreamObject):
     def auxbasis(self, x):
         if self._auxbasis != x:
             self.reset()
+            self.auxmol = None
             self._auxbasis = x
 
     to_gpu = utils.to_gpu
@@ -173,7 +177,10 @@ class DF(lib.StreamObject):
 
         with self.range_coulomb(omega, lr_factor, sr_factor) as dfobj:
             if getattr(dfobj, '_rsh_parameters', None):
-                assert dfobj._rsh_parameters == (omega, lr_factor, sr_factor)
+                if omega is None or omega == 0:
+                    assert dfobj._rsh_parameters == (None, lr_factor, sr_factor) or dfobj._rsh_parameters == (0, lr_factor, sr_factor)
+                else:
+                    assert dfobj._rsh_parameters == (omega, lr_factor, sr_factor)
             if with_j and (omega is not None and omega != 0):
                 raise RuntimeError(
                     'Cannot compute J matrix with a range-separated Coulomb operator. '
@@ -258,6 +265,13 @@ class DF(lib.StreamObject):
             io_stream = cp.cuda.stream.Stream(non_blocking=True)
             io_event = cp.cuda.Event()
 
+            # Issue #1031: buf_prefetch may reuse memory from CuPy's pool.
+            # When buf_prefetch.set() is launched on the non-blocking io_stream,
+            # this memory may still be in use by the main stream (comput_stream).
+            # io_stream must not access buf_prefetch until the main stream
+            # finishes accessing the reused memory pool.
+            compute_event.record(comput_stream)
+            io_stream.wait_event(compute_event)
             buf_prefetch.set(cderi_sparse[:blksize], stream=io_stream)
             io_event.record(io_stream)
 
@@ -280,6 +294,62 @@ class DF(lib.StreamObject):
                     out = fill_symmetric(cderi_blk.T, pair_idx, nao, 0, p1-p0,
                                          out=work[:,:,:p1-p0])
                     yield out.transpose(2,0,1), cderi_blk
+
+    def ao2mo(self, mo_coeffs, compact=True):
+        '''Transform density-fitting integrals to MO integrals on GPU.'''
+        if isinstance(mo_coeffs, (np.ndarray, cupy.ndarray)):
+            if mo_coeffs.ndim != 2:
+                raise ValueError('mo_coeffs must be a 2D array or four 2D arrays')
+            mo_coeffs = (mo_coeffs,) * 4
+        elif len(mo_coeffs) != 4:
+            raise ValueError('mo_coeffs must contain four coefficient matrices')
+        else:
+            mo_coeffs = tuple(mo_coeffs)
+
+        if any(mo.ndim != 2 or mo.shape[0] != self.mol.nao
+               for mo in mo_coeffs):
+            raise ValueError('MO coefficients must have shape (mol.nao, nmo)')
+        if any(cupy.iscomplexobj(mo) for mo in mo_coeffs):
+            raise NotImplementedError('GPU DF AO2MO does not support complex orbitals')
+
+        ij_compact = compact and iden_coeffs(mo_coeffs[0], mo_coeffs[1])
+        kl_compact = compact and iden_coeffs(mo_coeffs[2], mo_coeffs[3])
+        same_pairs = (iden_coeffs(mo_coeffs[0], mo_coeffs[2]) and
+                      iden_coeffs(mo_coeffs[1], mo_coeffs[3]))
+
+        if self._cderi is None:
+            self.build()
+        # CuPy cannot copy non-contiguous array between devices.
+        mo_coeffs = [cupy.asarray(mo, dtype=cupy.float64, order='C')
+                     for mo in mo_coeffs]
+        ni, nj, nk, nl = [mo.shape[1] for mo in mo_coeffs]
+        nij = ni * (ni + 1) // 2 if ij_compact else ni * nj
+        nkl = nk * (nk + 1) // 2 if kl_compact else nk * nl
+
+        def transform():
+            coeffs = [asarray(mo) for mo in mo_coeffs]
+            eri = cupy.zeros((nij, nkl))
+
+            def transform_pair(cderi, left, right, compact):
+                buf = contract('Luv,up->Lpv', cderi, left)
+                out = contract('Lpv,vq->Lpq', buf, right)
+                if compact:
+                    idx = cp.tril_indices(left.shape[1])
+                    return out[:, idx[0], idx[1]]
+                return out.reshape(len(cderi), -1)
+
+            for cderi, _ in self.loop(unpack=True):
+                lij = transform_pair(
+                    cderi, coeffs[0], coeffs[1], ij_compact)
+                lkl = lij if same_pairs else transform_pair(
+                    cderi, coeffs[2], coeffs[3], kl_compact)
+                contract('Li,Lj->ij', lij, lkl, beta=1, out=eri)
+            return eri
+
+        eri = multi_gpu.run(transform, non_blocking=True)
+        return multi_gpu.array_reduce(eri, inplace=True)
+
+    get_mo_eri = ao2mo
 
     def reset(self, mol=None):
         '''Reset mol and clean up relevant attributes for scanner mode'''
@@ -338,7 +408,6 @@ class DF(lib.StreamObject):
                 auxmol.omega = auxmol_omega
 
     get_ao_eri = get_eri = NotImplemented
-    get_mo_eri = ao2mo = NotImplemented
 
 def cholesky_eri_gpu(intopt, mol, auxmol, cd_low,
                      omega=None, sr_only=False, use_gpu_memory=True):
@@ -428,6 +497,7 @@ def _cderi_task(intopt, cd_low, task_list, _cderi, aux_blksize,
     npairs = [len(intopt.ao_pairs_row[cp_ij]) for cp_ij in range(len(intopt.log_qs))]
     pairs_loc = np.append(0, np.cumsum(npairs))
     with cupy.cuda.Device(device_id):
+        stream = cupy.cuda.get_current_stream()
         assert isinstance(mol.verbose, int)
         log = logger.new_logger(mol, mol.verbose)
         t1 = log.init_timer()
@@ -458,7 +528,8 @@ def _cderi_task(intopt, cd_low, task_list, _cderi, aux_blksize,
                     for cp_kl_id, _ in enumerate(intopt.aux_log_qs):
                         k0 = aux_ao_loc[cp_kl_id]
                         k1 = aux_ao_loc[cp_kl_id+1]
-                        int3c2e.get_int3c2e_slice(intopt, cp_ij_id, cp_kl_id, out=ints_slices[k0:k1], omega=omega)
+                        # Preserve the Coulomb block until the LR subtraction.
+                        int3c2e.get_int3c2e_slice(intopt, cp_ij_id, cp_kl_id, out=ints_slices_lr[k0:k1], omega=omega)
                     ints_slices -= ints_slices_lr
             else:
                 # Initialization is required due to cutensor operations later
@@ -499,9 +570,9 @@ def _cderi_task(intopt, cd_low, task_list, _cderi, aux_blksize,
             if isinstance(_cderi[0], np.ndarray):
                 for slice_id, (p0,p1) in enumerate(lib.prange(0, naux, aux_blksize)):
                     tmp = cupy.array(cderi_block[p0:p1], order='C', copy=True)
-                    cupy.cuda.get_current_stream().synchronize()
+                    stream.synchronize()
                     copy_array(tmp, _cderi[slice_id][:p1-p0,ij0:ij1])
-                    cupy.cuda.get_current_stream().synchronize()
+                    stream.synchronize()
             elif num_devices > 1:
                 # Multi-GPU case, copy data to other Devices
                 for dev_id, (p0,p1) in enumerate(lib.prange(0, naux, aux_blksize)):
@@ -630,11 +701,11 @@ def _cholesky_eri(intopt, *, omega=None, lr_factor=None, sr_factor=None,
                             continue
                         writer.finish()
                     err = libvhf_rys.transpose_write(
-                        ctypes.cast(cp.cuda.get_current_stream().ptr, ctypes.c_void_p),
                         cderi_cpu.ctypes,
                         ctypes.cast(cderi_gpu.data.ptr, ctypes.c_void_p),
                         ctypes.c_int(naux), ctypes.c_int(cderi_npairs),
-                        ctypes.c_int(p0), ctypes.c_int(p1))
+                        ctypes.c_int(p0), ctypes.c_int(p1),
+                        ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
                     if err != 0:
                         raise RuntimeError('transpose_write cderi_cpu failed')
             finally:
@@ -694,7 +765,7 @@ def _decompose_j2c(auxmol, aux_sorting=None,
             cd_low, aux_coef.T, lower=True, overwrite_b=True).T
         tag = 'cd'
     except RuntimeError:
-        w, v = cp.linalg.eigh(j2c)
+        w, v = eigh_std(j2c)
         idx = cp.where(w > LINEAR_DEP_THR)[0]
         logger.debug1(auxmol, 'discard %d small eigenvectors for auxiliary dimension',
                       w.size - len(idx))

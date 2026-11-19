@@ -27,6 +27,7 @@ from gpu4pyscf.scf import ghf as mol_ghf
 from gpu4pyscf.scf import hf as mol_hf
 from gpu4pyscf.pbc.scf import hf as pbchf
 from gpu4pyscf.pbc.df import GDF
+from gpu4pyscf.pbc.gto.pseudo.pp_int import get_pp_soc
 
 
 def _block_diag(a, b=None):
@@ -60,16 +61,18 @@ def _df_jk(mf, dm, hermi, kpts, kpts_band, with_j, with_k, omega):
             vk = vk.reshape(dm.shape)
         return vj, vk
 
-    if not cp.iscomplexobj(dm):
+    # FFTDF needs the full Hermitian density for J: taking the real part of
+    # rho from dm.imag separately loses its contribution at nonzero k-points.
+    if not isinstance(mf.with_df, GDF):
         return build(dm, hermi)
 
-    vjR, vkR = build(cp.asarray(dm.real))
-    vjI, vkI = build(cp.asarray(dm.imag))
-    vj = vk = None
-    if with_j:
-        vj = vjR + vjI * 1j
-    if with_k:
-        vk = vkR + vkI * 1j
+    vj, vk = build(cp.asarray(dm.real, order='C'), hermi)
+    if cp.iscomplexobj(dm):
+        vjI, vkI = build(cp.asarray(dm.imag, order='C'))
+        if with_j:
+            vj = vj + vjI * 1j
+        if with_k:
+            vk = vk + vkI * 1j
     return vj, vk
 
 def _get_jk(mf, dm, hermi, kpts, kpts_band, with_j, with_k, omega=None):
@@ -171,10 +174,8 @@ class GHF(pbchf.SCF):
     get_bands = ghf_cpu.GHF.get_bands
     density_fit = pbchf.RHF.density_fit
     energy_elec = mol_hf.energy_elec
-    get_init_guess = pbchf.SCF.get_init_guess
     init_guess_by_huckel = return_cupy_array(ghf_cpu.GHF.init_guess_by_huckel)
     init_guess_by_mod_huckel = return_cupy_array(ghf_cpu.GHF.init_guess_by_mod_huckel)
-    init_guess_by_chkfile = return_cupy_array(ghf_cpu.GHF.init_guess_by_chkfile)
     stability = gen_response = nuc_grad_method = Gradients = NotImplemented
     newton = canonicalize = NotImplemented
     smearing = NotImplemented
@@ -190,6 +191,11 @@ class GHF(pbchf.SCF):
         if cell is None: cell = self.cell
         if kpt is None: kpt = self.kpt
         h = _block_diag(pbchf.SCF.get_hcore(self, cell, kpt))
+        if self.with_soc and cell._pseudo:
+            vl_soc = get_pp_soc(cell, kpt)
+            s = .5 * cp.asarray(lib.PauliMatrices)
+            vl_soc = cp.einsum('sxy,kspq->kxpyq', 1j * s, vl_soc)
+            h = h + vl_soc.reshape(h.shape)
         if self.with_soc and cell.has_ecp_soc():
             raise NotImplementedError('ECP in PBC SCF')
         return h
@@ -215,11 +221,27 @@ class GHF(pbchf.SCF):
             vhf = tag_array(vhf, ecoul=ecoul)
         return vhf
 
+    def get_init_guess(self, cell=None, key='minao', s1e=None):
+        assert isinstance(key, str)
+        assert key.startswith(('minao', 'atom', '1e', 'hcore', 'chk'))
+        return mol_ghf.GHF.get_init_guess(self, cell, key)
+
+    def init_guess_by_chkfile(self, chkfile=None, project=None):
+        """Read periodic spinor orbitals at this object's single k-point."""
+        # The molecular reader expects inertia_moment and molecular overlaps.
+        # Reuse the periodic reader, retaining both complex spin components.
+        from gpu4pyscf.pbc.scf.kghf import KGHF
+        kpts = np.reshape(self.kpt, (1, 3))
+        dm = KGHF.init_guess_by_chkfile(self, chkfile, project, kpts)[0]
+        return pbchf.normalize_dm_(self, dm)
+
     def init_guess_by_minao(self, mol=None):
-        return mol_ghf._from_rhf_init_dm(mol_hf.SCF.init_guess_by_minao(self, mol))
+        dm = mol_ghf._from_rhf_init_dm(mol_hf.SCF.init_guess_by_minao(self, mol))
+        return pbchf.normalize_dm_(self, dm)
 
     def init_guess_by_atom(self, mol=None):
-        return mol_ghf._from_rhf_init_dm(mol_hf.SCF.init_guess_by_atom(self, mol))
+        dm = mol_ghf._from_rhf_init_dm(mol_hf.SCF.init_guess_by_atom(self, mol))
+        return pbchf.normalize_dm_(self, dm)
 
     def init_guess_by_1e(self, mol=None):
         if mol is None: mol = self.mol

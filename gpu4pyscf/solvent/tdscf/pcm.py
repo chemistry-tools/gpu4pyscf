@@ -31,10 +31,10 @@ def make_tdscf_object(tda_method, equilibrium_solvation=False):
     with_solvent.equilibrium_solvation = equilibrium_solvation
     if not equilibrium_solvation:
         # The vertical excitation is a fast process, applying non-equilibrium
-        # solvation with optical dielectric constant eps=1.78
+        # solvation with the solvent's optical dielectric constant
         # TODO: reset() can be skipped. Most intermeidates can be reused.
         with_solvent.reset()
-        with_solvent.eps = 1.78
+        with_solvent.eps = with_solvent.get_eps_optical()
         with_solvent.build()
     name = (tda_method._scf.with_solvent.__class__.__name__
             + tda_method.__class__.__name__)
@@ -118,13 +118,13 @@ class WithSolventTDSCF:
             # Solvent with optical dielectric constant, for evaluating the
             # response of the fast solvent part
             with_solvent = self.with_solvent
-            logger.info(mol, 'TDDFT non-equilibrium solvation with eps=%g', with_solvent.eps)
+            logger.info(mol, 'TDDFT non-equilibrium solvation with eps=%g', with_solvent.get_eps())
         else:
             # Solvent with zero-frequency dielectric constant. The ground state
             # solvent is utilized to ensure the same eps are used in the
             # gradients of excited state.
             with_solvent = self._scf.with_solvent
-            logger.info(mol, 'TDDFT equilibrium solvation with eps=%g', with_solvent.eps)
+            logger.info(mol, 'TDDFT equilibrium solvation with eps=%g', with_solvent.get_eps())
 
         # vind computes the response in gas-phase
         vind = self._scf.undo_solvent().gen_response(
@@ -167,7 +167,6 @@ class WithSolventTDSCFGradient:
         cls = self.__class__
         name_mixin = self.base.with_solvent.__class__.__name__
         obj = lib.view(self, lib.drop_class(cls, WithSolventTDSCFGradient, name_mixin))
-        del obj.with_solvent
         return obj
 
     def solvent_response(self, dm):
@@ -185,22 +184,29 @@ class WithSolventTDSCFGradient:
         if dm.ndim == 3:
             dm = dm[0] + dm[1]
         dmP = 0.5 * (self._dmz1doo + self._dmz1doo.T)
-        dmxpy = self._dmxpy + self._dmxpy.T
         pcmobj = self.base.with_solvent
         de += pcmobj.grad(dm)
 
         q_sym_dm = pcmobj._get_qsym(dm, with_nuc = True)[0]
         qE_sym_dmP = pcmobj._get_qsym(dmP)[0]
-        qE_sym_dmxpy = pcmobj._get_qsym(dmxpy)[0]
         de += grad_qv(pcmobj, dm, q_sym = qE_sym_dmP)
         de += grad_nuc(pcmobj, dm, q_sym = qE_sym_dmP.get())
         de += grad_qv(pcmobj, dmP, q_sym = q_sym_dm)
         v_grids_l = pcmobj._get_vgrids(dmP, with_nuc = False)[0]
         de += grad_solver(pcmobj, dm, v_grids_l = v_grids_l) * 2.0
-        de += grad_qv(pcmobj, dmxpy, q_sym = qE_sym_dmxpy) * 2.0
-        v_grids = pcmobj._get_vgrids(dmxpy, with_nuc = False)[0]
-        q = pcmobj._get_qsym(dmxpy, with_nuc = False)[1]
-        de += grad_solver(pcmobj, dmxpy, v_grids=v_grids, v_grids_l=v_grids, q=q) * 2.0
+
+        # The LR-PCM term of the excitation energy. A restricted triplet has
+        # none: the alpha and beta parts of its transition density cancel, so
+        # it carries no charge for the cavity to respond to (see
+        # WithSolventTDSCF.gen_response).
+        is_uhf = isinstance(self.base._scf, scf.uhf.UHF)
+        if is_uhf or singlet is None or singlet:
+            dmxpy = self._dmxpy + self._dmxpy.T
+            qE_sym_dmxpy = pcmobj._get_qsym(dmxpy)[0]
+            de += grad_qv(pcmobj, dmxpy, q_sym = qE_sym_dmxpy) * 2.0
+            v_grids = pcmobj._get_vgrids(dmxpy, with_nuc = False)[0]
+            q = pcmobj._get_qsym(dmxpy, with_nuc = False)[1]
+            de += grad_solver(pcmobj, dmxpy, v_grids=v_grids, v_grids_l=v_grids, q=q) * 2.0
         
         return de
 
@@ -215,7 +221,6 @@ class WithSolventTDSCFNacMethod:
         cls = self.__class__
         name_mixin = self.base.with_solvent.__class__.__name__
         obj = lib.view(self, lib.drop_class(cls, WithSolventTDSCFNacMethod, name_mixin))
-        del obj.with_solvent
         return obj
 
     def solvent_response(self, dm):

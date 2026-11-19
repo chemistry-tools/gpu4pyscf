@@ -166,7 +166,8 @@ def get_nacv_ge(td_nac, x_yI, EI, singlet=True, atmlst=None, verbose=logger.INFO
 
     dh1e_td = int3c2e.get_dh1e(mol, dmz1doo)  # 1/r like terms
     if len(mol._ecpbas) > 0:
-        dh1e_td += rhf_grad.get_dh1e_ecp(mol, dmz1doo)  # 1/r like terms
+        ecp_atoms = np.unique(mol._ecpbas[:, gto.ATOM_OF])
+        dh1e_td[ecp_atoms] += rhf_grad.get_dh1e_ecp(mol, dmz1doo)  # 1/r like terms
 
     if mol._pseudo:
         raise NotImplementedError("Pseudopotential gradient not supported for molecular system yet")
@@ -196,6 +197,11 @@ def get_nacv_ge(td_nac, x_yI, EI, singlet=True, atmlst=None, verbose=logger.INFO
         time_list = [time_list[i] - time_list[i-1] for i in range(1, len(time_list))]
         for i, t in enumerate(time_list):
             logger.note(td_nac, f"Time for step {i}: {t[2]*1e-3:.6f}s")
+    # Integral contractions above retain all atoms; select output rows once.
+    if atmlst is not None:
+        atmlst = list(atmlst)
+        de = de[atmlst]
+        de_etf = de_etf[atmlst]
     return de, de/EI, de_etf, de_etf/EI
 
 def _contract_h1e_dm_asymmetric(mol, h1e, dm):
@@ -428,7 +434,8 @@ def get_nacv_ee(td_nac, x_yI, x_yJ, EI, EJ, singlet=True, atmlst=None, verbose=l
 
     dh1e_td = int3c2e.get_dh1e(mol, dmz1doo)  # 1/r like terms
     if len(mol._ecpbas) > 0:
-        dh1e_td += rhf_grad.get_dh1e_ecp(mol, dmz1doo)  # 1/r like terms
+        ecp_atoms = np.unique(mol._ecpbas[:, gto.ATOM_OF])
+        dh1e_td[ecp_atoms] += rhf_grad.get_dh1e_ecp(mol, dmz1doo)  # 1/r like terms
 
     if mol._pseudo:
         raise NotImplementedError("Pseudopotential gradient not supported for molecular system yet")
@@ -483,6 +490,7 @@ def get_nacv_ee(td_nac, x_yI, x_yJ, EI, EJ, singlet=True, atmlst=None, verbose=l
         for i, t in enumerate(time_list):
             logger.note(td_nac, f"Time for step {i}: {t*1e-3:.6f}s")
         
+    assert atmlst is None or len(atmlst) == mol.natm
     return de, de/(EJ - EI), de_etf, de_etf/(EJ - EI)
 
 
@@ -838,6 +846,6 @@ class NAC_Scanner(lib.GradScanner):
     @property
     def converged(self):
         td_scanner = self.base
-        return all((td_scanner._scf.converged,
-                    td_scanner.converged[self.states[0]],
-                    td_scanner.converged[self.states[1]]))
+        return bool(td_scanner._scf.converged and
+                    all(td_scanner.converged[state - 1]
+                        for state in self.states if state > 0))

@@ -161,7 +161,7 @@ def _direct_ovvv_vvvv(mycc, t1, t2):
     bas_pair_cache = {k: [cp.asarray(x) for x in v]
                       for k, v in vhfopt.bas_pair_cache.items()}
 
-    mo = mol.apply_C_dot(mycc.mo_coeff)
+    mo = mol.apply_C_dot(mycc.mo_coeff[:,mycc.get_frozen_mask()])
     orbo = cupy.asarray(mo[:,:nocc])
     orbv = cupy.asarray(mo[:,nocc:])
     t1po = orbv.dot(cupy.asarray(t1).T)
@@ -182,9 +182,11 @@ def _direct_ovvv_vvvv(mycc, t1, t2):
     T = cupy.cuda.cublas.CUBLAS_OP_T
     one = np.ones(1)
     one_ptr = one.ctypes.data
-    x2_ptr = np.int64(x2.data.ptr)
-    Ht2ao_ptr = np.int64(Ht2ao.data.ptr)
+    x2_ptr = x2.data.ptr
+    Ht2ao_ptr = Ht2ao.data.ptr
     def contract_vvvv_(eri, i0, i1, j0, j1):
+        # Python ints: the pointer offsets below must not wrap in int64.
+        i0, i1, j0, j1 = int(i0), int(i1), int(j0), int(j1)
         ic = i1 - i0
         jc = j1 - j0
         eri = eri.reshape(-1,jc*nao)
@@ -247,8 +249,10 @@ def _direct_ovvv_vvvv(mycc, t1, t2):
             if npairs_kl == 0:
                 return eri
             nao_kl_pairs = npairs_kl * nf[k] * nf[l]
-            eri_tmp = cp.empty((nao_pairs, nao_kl_pairs))
+            # Screened quartets are not written by RYS_fill_int4c2e.
+            eri_tmp = cp.zeros((nao_pairs, nao_kl_pairs))
             ij0 = ij1 = 0
+            stream = cp.cuda.get_current_stream()
             for ij_id, (i, j) in enumerate(bas_pair_cache):
                 shls_slice = l_ctr_bas_loc[[i, i+1, j, j+1, k, k+1, l, l+1]]
                 pair_ij_mapping, q_cond_ij, s_cond_ij = bas_pair_cache[i,j]
@@ -260,6 +264,7 @@ def _direct_ovvv_vvvv(mycc, t1, t2):
                     ctypes.cast(eri_tmp[ij0:ij1].data.ptr, ctypes.c_void_p),
                     ctypes.c_int(nao_kl_pairs),
                     ctypes.c_double(0.),
+                    ctypes.c_double(1.), ctypes.c_double(0.),
                     ctypes.byref(rys_envs), (ctypes.c_int*8)(*shls_slice),
                     ctypes.c_int(int4c2e.shm_size),
                     ctypes.c_int(npairs_ij), ctypes.c_int(npairs_kl),
@@ -271,7 +276,8 @@ def _direct_ovvv_vvvv(mycc, t1, t2):
                     ctypes.cast(pair_loc[kl_id].data.ptr, ctypes.c_void_p),
                     ctypes.c_float(log_cutoff),
                     ctypes.cast(pool.data.ptr, ctypes.c_void_p),
-                    mol._bas.ctypes)
+                    mol._bas.ctypes,
+                    ctypes.c_void_p(stream.ptr))
                 if err != 0:
                     llll = f'({l_symb[i]}{l_symb[j]}|{l_symb[k]}{l_symb[l]})'
                     raise RuntimeError(f'fill_int4c2e kernel for {llll} failed')
@@ -493,14 +499,10 @@ class CCSDBase(lib.StreamObject):
     density_fit          = NotImplemented
     nuc_grad_method      = NotImplemented
 
-    # to_cpu can be reused only when __init__ still takes mf
     def to_cpu(self):
+        from gpu4pyscf.lib.utils import to_cpu
         mf = self._scf.to_cpu()
-        from importlib import import_module
-        mod = import_module(self.__module__.replace('gpu4pyscf', 'pyscf'))
-        cls = getattr(mod, self.__class__.__name__)
-        obj = cls(mf)
-        return obj
+        return to_cpu(self, out=ccsd.CCSD(mf))
 
 CCSDBase.ccsd = ccsd.CCSDBase.ccsd
 

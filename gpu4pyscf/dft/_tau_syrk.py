@@ -55,7 +55,8 @@ def _eligible(bra, ket, weights, out, *, minimum=None):
     # Small blocks are faster with the original three products. Distinct fields
     # require the general bilinear product, even when their values happen to agree.
     if (
-        bra is not ket
+        cp.cuda.runtime.is_hip
+        or bra is not ket
         or not isinstance(bra, cp.ndarray)
         or bra.dtype != cp.float64
         or bra.ndim != 3

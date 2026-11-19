@@ -17,6 +17,7 @@ import numpy
 import pyscf
 import pytest
 from pyscf import gto
+from pyscf.solvent import smd as cpu_smd
 from gpu4pyscf import scf, dft
 from gpu4pyscf.solvent.grad import smd as smd_grad
 from gpu4pyscf.solvent import smd
@@ -246,10 +247,12 @@ H -0.646 -0.464 -0.804
         _check_grad(atom, solvent='water')
         _check_grad(atom, solvent='toluene')
 
+    @unittest.skipIf(cpu_smd.libsolvent is None,
+                     'CPU SMD reference requires PySCF built with ENABLE_SMD=ON')
     def test_to_gpu(self):
         mf = mol.RKS(xc='b3lyp').SMD()
+        mf.with_solvent.solvent = 'water'
         if Version(pyscf.__version__) <= Version('2.11.0'):
-            mf.with_solvent.solvent = 'water'
             mf.with_solvent.sasa_ng = 302
         mf.conv_tol = 1e-12
         mf.kernel()
@@ -267,8 +270,8 @@ H -0.646 -0.464 -0.804
         assert numpy.linalg.norm(g_cpu - g_gpu) < 1e-6
 
         mf = mol.RKS(xc='b3lyp').density_fit().SMD()
+        mf.with_solvent.solvent = 'water'
         if Version(pyscf.__version__) <= Version('2.11.0'):
-            mf.with_solvent.solvent = 'water'
             mf.with_solvent.sasa_ng = 302
         mf.conv_tol = 1e-12
         mf.kernel()
@@ -280,6 +283,7 @@ H -0.646 -0.464 -0.804
         gradobj = gradobj.to_cpu()
         g_cpu = gradobj.kernel()
         assert numpy.linalg.norm(g_cpu - g_gpu) < 1e-6
+
 
 if __name__ == "__main__":
     print("Full Tests for Gradient of SMD")

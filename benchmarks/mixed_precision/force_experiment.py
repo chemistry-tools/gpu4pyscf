@@ -29,7 +29,7 @@ def density_response_patch(root, *, vv10_fused=False):
     reduction = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
                      and node.name == '_reduce_to_atom')
     namespace = rks.__dict__.copy()
-    exec(compile(ast.Module(body=[helper, reduction], type_ignores=[]), str(path), 'exec'), namespace)
+    exec(compile(ast.Module(body=[helper, reduction], type_ignores=[]), str(path), 'exec'), namespace)  # noqa: S102
     original = {name: getattr(rks, name) for name in ('get_exc_full_response', 'get_nlc_exc_full_response')}
     for name, function in original.items():
         source = inspect.getsource(function)
@@ -87,7 +87,7 @@ def density_response_patch(root, *, vv10_fused=False):
                 if source[begin:end].count('libgdft.VXC_vv10nlc_grad_eval_E_grid_response_offdiagonal(') != 1:
                     raise RuntimeError('Missing reviewed native VV10 grid-response call')
                 source = source[:begin] + source[end:]
-        exec(compile(source, str(path) + ':installed-release-contraction-adapter', 'exec'), namespace)
+        exec(compile(source, str(path) + ':installed-release-contraction-adapter', 'exec'), namespace)  # noqa: S102
     try:
         for name in original:
             setattr(rks, name, namespace[name])

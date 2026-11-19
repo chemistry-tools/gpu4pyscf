@@ -19,13 +19,14 @@ __all__ = [
 import ctypes
 import numpy as np
 import cupy as cp
+from gpu4pyscf.lib.cusolver import eigh_std
 import scipy.linalg
 from pyscf import lib
 from pyscf.gto import mole
 from pyscf.data import nist
 from pyscf.x2c import x2c as x2c_cpu
 from gpu4pyscf.lib.cupy_helper import block_diag, asarray, hermi_triu
-from gpu4pyscf.lib.cusolver import eigh
+from gpu4pyscf.lib.cusolver import eigh, LinAlgError as CuSolverError
 from gpu4pyscf.lib import logger
 from gpu4pyscf.scf import hf, ghf
 from gpu4pyscf.gto.mole import SortedGTO, PBCIntEnvVars
@@ -196,19 +197,19 @@ class SpinOrbitalX2CHelper(X2CHelperBase):
         xmol = self.get_xmol(mol)
         pc_mat = self._picture_change(xmol, even_operator, odd_operator)
         nao = pc_mat.shape[-1] // 2
+        components = pc_mat.shape[:-2]
         if pc_mat.dtype == np.complex128:
-            pc_mat = pc_mat.view(np.float64).reshape(2,nao,2,nao,2).transpose(0,2,4,1,3)
+            pc_mat = pc_mat.view(np.float64).reshape(-1,2,nao,2,nao,2).transpose(0,1,3,5,2,4)
             pc_mat = _recontract_matrix(xmol, pc_mat.reshape(-1,nao,nao))
             n2c = pc_mat.shape[-1]
-            pc_mat = pc_mat.reshape(2,2,2,n2c,n2c).transpose(0,3,1,4,2)
-            pc_mat = pc_mat.reshape(2*n2c, 2*n2c*2).view(np.complex128)
+            pc_mat = pc_mat.reshape(-1,2,2,2,n2c,n2c).transpose(0,1,4,2,5,3)
+            pc_mat = pc_mat.reshape(-1,2*n2c,2*n2c*2).view(np.complex128)
         else:
-            pc_mat = pc_mat.reshape(2,nao,2,nao).transpose(0,2,1,3)
+            pc_mat = pc_mat.reshape(-1,2,nao,2,nao).transpose(0,1,3,2,4)
             pc_mat = _recontract_matrix(xmol, pc_mat.reshape(-1,nao,nao))
             n2c = pc_mat.shape[-1]
-            pc_mat = pc_mat.reshape(2,2,n2c,n2c).transpose(0,2,1,3)
-            pc_mat = pc_mat.reshape(2*n2c, 2*n2c)
-        return pc_mat
+            pc_mat = pc_mat.reshape(-1,2,2,n2c,n2c).transpose(0,1,3,2,4)
+        return pc_mat.reshape(*components, 2*n2c, 2*n2c)
 
     def get_xmat(self, mol=None):
         from gpu4pyscf.pbc.gto import int1e
@@ -230,7 +231,7 @@ class SpinOrbitalX2CHelper(X2CHelperBase):
             v = contract_int3c2e_auxvec(xmol, nucmol, -Z, sort_output=sort_ao)
             with lib.temporary_env(xmol, cart=xmol.mol.cart):
                 w = asarray(_sigma_dot(xmol.intor('int1e_spnucsp')))
-            if not mol.cart:
+            if not xmol.mol.cart:
                 s, t, v = _orbital_pair_cart2sph(xmol, (s, t, v))
             t = _block_diag(t)
             v = _block_diag(v)
@@ -327,19 +328,20 @@ class X2C1E_GSCF(_X2C_SCF):
 
         with mol.with_common_orig((0,0,0)):
             if picture_change:
-                xmol = self.with_x2c.get_xmol()[0]
-                nao = xmol.nao
-                r = xmol.intor_symmetric('int1e_r')
+                xmol = self.with_x2c.get_xmol()
+                with lib.temporary_env(xmol, cart=mol.cart):
+                    nao = xmol.nao
+                    r = xmol.intor_symmetric('int1e_r')
+                    prp = xmol.intor_symmetric('int1e_sprsp').reshape(3,4,nao,nao)
                 r = np.stack([_block_diag(x) for x in r])
                 c1 = 0.5/lib.param.LIGHT_SPEED
-                prp = xmol.intor_symmetric('int1e_sprsp').reshape(3,4,nao,nao)
                 prp = np.stack([_sigma_dot(x*c1**2) for x in prp])
                 ao_dip = self.with_x2c.picture_change((r, prp))
             else:
                 r = mol.intor_symmetric('int1e_r')
                 ao_dip = np.array([_block_diag(x) for x in r])
 
-        el_dip = np.einsum('xij,ji->x', ao_dip, dm).real
+        el_dip = np.einsum('xij,ji->x', cp.asnumpy(ao_dip), dm).real
         mol_dip = nucl_dip - el_dip
 
         if unit.upper() == 'DEBYE':
@@ -368,14 +370,14 @@ class X2C1E_GSCF(_X2C_SCF):
 
 
 def _sqrt(a, tol=1e-14):
-    e, v = cp.linalg.eigh(a)
+    e, v = eigh_std(a)
     idx = cp.where(e > tol)[0]
     v = v[:,idx]
     e = e[idx]
     return (v*cp.sqrt(e)).dot(v.conj().T)
 
 def _invsqrt(a, tol=1e-14):
-    e, v = cp.linalg.eigh(a)
+    e, v = eigh_std(a)
     idx = cp.where(e > tol)[0]
     v = v[:,idx]
     e = e[idx]
@@ -399,7 +401,7 @@ def _get_r(s, snesc):
     # R^dag \tilde{S} R = S
     # R = S^{-1/2} [S^{-1/2}\tilde{S}S^{-1/2}]^{-1/2} S^{1/2}
     # Eq.(193) or (223) in 10.1080/00268971003781571
-    w, v = cp.linalg.eigh(s)
+    w, v = eigh_std(s)
     idx = cp.where(w > 1e-14)[0]
     v = v[:,idx]
     w_sqrt = cp.sqrt(w[idx])
@@ -407,7 +409,7 @@ def _get_r(s, snesc):
 
     snesc = v.conj().T.dot(snesc).dot(v)
     r_mid = w_invsqrt[:,None] * snesc * w_invsqrt
-    w1, v1 = cp.linalg.eigh(r_mid)
+    w1, v1 = eigh_std(r_mid)
     idx1 = cp.where(w1 > 1e-14)[0]
     v1 = v1[:,idx1]
     r_mid = (v1/cp.sqrt(w1[idx1])).dot(v1.conj().T)
@@ -433,12 +435,12 @@ def _x2c1e_xmatrix(t, v, w, s, c):
         cl = a[:nao,nao:]
         cs = a[nao:,nao:]
         x = cp.linalg.solve(cl.T, cs.T).T  # B = XA
-    except cp.linalg.LinAlgError:
-        d, t = cp.linalg.eigh(m)
+    except (cp.linalg.LinAlgError, CuSolverError):
+        d, t = eigh_std(m)
         idx = cp.where(d > LINEAR_DEP_THRESHOLD)[0]
         t = t[:,idx] / cp.sqrt(d[idx])
         tht = t.conj().T.dot(h).dot(t)
-        e, a = cp.linalg.eigh(tht)
+        e, a = eigh_std(tht)
         a = cp.dot(t, a)
         idx = cp.where(e > -c**2)[0]
         cl = a[:nao,idx]
@@ -466,19 +468,19 @@ def _x2c1e_get_hcore(t, v, w, s, c):
         cl = a[:nao,nao:]
         # cs = a[nao:,nao:]
         e = e[nao:]
-    except cp.linalg.LinAlgError:
-        d, t = cp.linalg.eigh(m)
+    except (cp.linalg.LinAlgError, CuSolverError):
+        d, t = eigh_std(m)
         idx = cp.where(d > LINEAR_DEP_THRESHOLD)[0]
         t = t[:,idx] / cp.sqrt(d[idx])
         tht = t.conj().T.dot(h).dot(t)
-        e, a = cp.linalg.eigh(tht)
+        e, a = eigh_std(tht)
         a = cp.dot(t, a)
         idx = cp.where(e > -c**2)[0]
         cl = a[:nao,idx]
         # cs = a[nao:,idx]
         e = e[idx]
 
-    w, u = cp.linalg.eigh(cl.conj().T.dot(s).dot(cl))
+    w, u = eigh_std(cl.conj().T.dot(s).dot(cl))
     idx = cp.where(w > 1e-14)[0]
     u = u[:,idx]
     # Adopt (2) here because X is not appeared in Eq (2).
@@ -548,7 +550,7 @@ def _atomic_1e_x(xmol):
     for i in range(xmol.natm):
         symb = mol.atom_symbol(i)
         idx = asarray(np.where(ao_labels == i)[0])
-        idx = np.append(idx, idx+nao)
+        idx = cp.append(idx, idx+nao)
         x[idx[:,None],idx] = x_conf[symb]
     return x
 
@@ -597,7 +599,8 @@ def _orbital_pair_cart2sph(mol, arrays, hermi=1, bas_ij_idx=None):
         ctypes.cast(sph_pair_loc.data.ptr, ctypes.c_void_p),
         ctypes.cast(cart_pair_loc.data.ptr, ctypes.c_void_p),
         ctypes.c_int(len(bas_ij_idx)),
-        ctypes.c_int(naux), ctypes.c_int(nao), ctypes.c_int(compressed))
+        ctypes.c_int(naux), ctypes.c_int(nao), ctypes.c_int(compressed),
+        ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
     if err != 0:
         raise RuntimeError('int3c2e_cart2sph kernel failed')
     if is_complex:
@@ -631,6 +634,7 @@ def _recontract_matrix(mol, mat):
     recontraction_idx = cp.asarray(mol.recontraction_idx)
     nao = mol.mol.nao
     tmp = cp.zeros((counts, nao, ncol))
+    stream = cp.cuda.get_current_stream()
     err = libvhf_rys.bra_from_sorted(
         ctypes.cast(tmp.data.ptr, ctypes.c_void_p),
         ctypes.cast(mat.data.ptr, ctypes.c_void_p),
@@ -641,7 +645,8 @@ def _recontract_matrix(mol, mat):
         ctypes.cast(p_ao_loc.data.ptr, ctypes.c_void_p),
         ctypes.c_int(len(recontract_bas)), ctypes.c_int(mol.nbas),
         ctypes.c_int(ncol), ctypes.c_int(counts),
-        ctypes.c_int(cart))
+        ctypes.c_int(cart),
+        ctypes.c_void_p(stream.ptr))
     assert err == 0
 
     out = cp.zeros((counts, nao, nao))
@@ -655,7 +660,8 @@ def _recontract_matrix(mol, mat):
         ctypes.cast(p_ao_loc.data.ptr, ctypes.c_void_p),
         ctypes.c_int(len(recontract_bas)), ctypes.c_int(mol.nbas),
         ctypes.c_int(nao*counts),
-        ctypes.c_int(cart))
+        ctypes.c_int(cart),
+        ctypes.c_void_p(stream.ptr))
     assert err == 0
 
     if mat_ndim == 2:

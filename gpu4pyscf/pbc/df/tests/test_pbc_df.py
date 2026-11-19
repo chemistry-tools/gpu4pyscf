@@ -13,12 +13,17 @@
 # limitations under the License.
 
 import unittest
+from unittest import mock
 import tempfile
 import numpy as np
+import cupy as cp
 from pyscf import lib
 from pyscf.pbc import gto as pgto
 from pyscf.pbc.df import df as df_cpu
 from gpu4pyscf.pbc.df.df import GDF
+from gpu4pyscf.pbc.df import aft, fft
+from gpu4pyscf.pbc.gto import int1e
+from gpu4pyscf.pbc.scf import hf, khf
 
 def setUpModule():
     global cell
@@ -37,6 +42,21 @@ def tearDownModule():
 
 
 class KnownValues(unittest.TestCase):
+    def test_jk_preserves_density_shape(self):
+        cell = pgto.M(atom='He .2 .3 .4', a=np.eye(3)*5, unit='Bohr',
+                        basis=[[0, [1., 1.]], [0, [.4, 1.]]], pseudo='gth-pade',
+                        mesh=[15]*3, precision=1e-8, verbose=0)
+        obj = GDF(cell)
+        dm = cp.eye(cell.nao)
+        spin_dm = cp.stack([dm*.6, dm*.4])
+        for density in (dm, dm[None], spin_dm, spin_dm[:, None]):
+            vj, vk = obj.get_jk(density)
+            assert vj.shape == vk.shape == density.shape
+            assert vj.dtype == vk.dtype == np.float64
+            refj, refk = obj.get_jk(density, kpts=np.zeros((1, 3)))
+            assert abs(vj - refj).max() < 1e-10
+            assert abs(vk - refk).max() < 1e-10
+
     def test_get_pp(self):
         kpt = cell.make_kpts([9,6,5])[107]
         ref = df_cpu.GDF(cell, kpt).get_pp(kpts=kpt)
@@ -278,6 +298,88 @@ class KnownValues(unittest.TestCase):
         kref = mydf0.get_jk(dm, hermi=1, kpts=kpts, with_j=False)[1]
         vk = mydf.get_jk(dm, hermi=1, kpts=kpts, with_j=False)[1]
         assert abs(vk.get() - kref).max() < 1e-8
+
+    def test_jk_off_gamma(self):
+        cell = pgto.M(
+            atom='He .2 .3 .4; He 1.2 1.5 1.8', unit='Bohr',
+            a=np.diag([5., 5.5, 6.]),
+            basis=[[0, [1., 1.]], [1, [.6, 1.]]],
+            precision=1e-10, verbose=0)
+        kpts = cell.make_kpts([2, 3, 1], with_gamma_point=False)
+        auxbasis = {'He': [[0, [1.1, 1.]], [1, [.7, 1.]]]}
+        rng = np.random.default_rng(12)
+        coeff = rng.random((len(kpts), cell.nao, cell.nao))
+        coeff = coeff + 1j*rng.random(coeff.shape)
+        dm = coeff @ coeff.conj().transpose(0, 2, 1)
+        reference = df_cpu.GDF(cell, kpts)
+        reference.auxbasis = auxbasis
+        jref, kref = reference.get_jk(dm, kpts=kpts, exxdiv='ewald')
+        mydf = GDF(cell, kpts)
+        mydf.auxbasis = auxbasis
+
+        # Exercise the J-only cache before exchange rebuilds all transfer blocks.
+        vj, _ = mydf.get_jk(dm, kpts=kpts, with_k=False)
+        np.testing.assert_allclose(vj.get(), jref, atol=1e-8, rtol=0)
+        np.testing.assert_array_equal(mydf.bvkmesh, [4, 3, 1])
+        vj, vk = mydf.get_jk(dm, kpts=kpts, exxdiv='ewald')
+        np.testing.assert_allclose(vj.get(), jref, atol=1e-8, rtol=0)
+        np.testing.assert_allclose(vk.get(), kref, atol=1e-8, rtol=0)
+
+    def test_range_separated_j_only_then_k(self):
+        cell = pgto.M(atom='He 0 0 0', basis='sto3g', a=np.eye(3)*4)
+        kpts = cell.make_kpts([2, 1, 1])
+        dm = np.ones((2, 1, 1))
+        omega = -0.3
+        mydf = GDF(cell, kpts)
+
+        # A J-only cache lacks the off-diagonal k-point pairs needed for K.
+        vj, _ = mydf.get_jk(dm, kpts=kpts, omega=omega, with_k=False)
+        _, vk = mydf.get_jk(dm, kpts=kpts, omega=omega, with_j=False)
+        jref, kref = mydf.reset(cell).get_jk(dm, kpts=kpts, omega=omega)
+        assert abs(vj-jref).max().get() < 1e-12
+        assert abs(vk-kref).max().get() < 1e-12
+
+@mock.patch.object(hf, 'ALLOWED_FFT_MESH_SIZE', 0)
+class HcoreWithDFBackend(unittest.TestCase):
+    def test_scf_hcore_df_backend(self):
+        cell = pgto.M(atom='He .2 .3 .4; He 1.7 1.1 .8', a=np.eye(3)*5,
+                      unit='Bohr', basis=[[0, [.8, 1.]], [1, [.6, 1.]]],
+                      pseudo='gth-pade', mesh=[15]*3, precision=1e-9, verbose=0)
+        kpts = None
+        for backend in (aft.AFTDF, fft.FFTDF, GDF):
+            with self.subTest(backend=backend.__name__):
+                mf = hf.RHF(cell)
+                mf.with_df = backend(cell, kpts=kpts)
+                expected = mf.with_df.get_pp(kpts) + int1e.int1e_kin(cell, kpts)
+                result = mf.get_hcore()
+                assert result.ndim == 2
+                assert result.shape == expected.shape
+                assert result.dtype == expected.dtype
+                assert abs(result - expected).max() < 1e-11
+
+        kpts = np.zeros((1, 3))
+        for backend in (aft.AFTDF, fft.FFTDF, GDF):
+            with self.subTest(backend=backend.__name__, nkpts=len(kpts)):
+                mf = khf.KRHF(cell, kpts=kpts)
+                mf.with_df = backend(cell, kpts=kpts)
+                expected = mf.with_df.get_pp(kpts) + int1e.int1e_kin(cell, kpts)
+                result = mf.get_hcore()
+                assert result.ndim == 3
+                assert result.shape == expected.shape
+                assert result.dtype == expected.dtype
+                assert abs(result - expected).max() < 1e-11
+
+        kpts = cell.make_kpts([3, 1, 1])
+        for backend in (aft.AFTDF, fft.FFTDF, GDF):
+            with self.subTest(backend=backend.__name__, nkpts=len(kpts)):
+                mf = khf.KRHF(cell, kpts=kpts)
+                mf.with_df = backend(cell, kpts=kpts)
+                expected = mf.with_df.get_pp(kpts) + int1e.int1e_kin(cell, kpts)
+                result = mf.get_hcore()
+                assert result.ndim == 3
+                assert result.shape == expected.shape
+                assert result.dtype == expected.dtype
+                assert abs(result - expected).max() < 1e-11
 
 if __name__ == '__main__':
     print("Full Tests for PBC DF")

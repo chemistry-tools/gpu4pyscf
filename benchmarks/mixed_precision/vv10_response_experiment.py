@@ -31,13 +31,18 @@ def native_response(coords, rw, omega, kappa, atoms, natm):
         return ctypes.cast(a.data.ptr, ctypes.c_void_p)
 
     stream = ctypes.cast(cp.cuda.get_current_stream().ptr, ctypes.c_void_p)
-    err = numint.libgdft.VXC_vv10nlc_fock_eval_UWE(
-        stream, ptr(u), ptr(w), ptr(e), ptr(coords), ptr(rw), ptr(omega), ptr(kappa), ctypes.c_int(n))
+    def with_stream(*args):
+        if getattr(numint, '_VV10_STREAM_LAST', False):
+            return (*args, stream)
+        return (stream, *args)
+
+    err = numint.libgdft.VXC_vv10nlc_fock_eval_UWE(*with_stream(
+        ptr(u), ptr(w), ptr(e), ptr(coords), ptr(rw), ptr(omega), ptr(kappa), ctypes.c_int(n)))
     if err:
         raise RuntimeError('Native VV10 field kernel failed')
-    err = numint.libgdft.VXC_vv10nlc_grad_eval_E_grid_response_offdiagonal(
-        stream, ptr(response), ptr(coords), ptr(rw), ptr(omega), ptr(kappa), ptr(atoms), ptr(offsets),
-        ctypes.c_int(natm), ctypes.c_int(0), ctypes.c_int(n))
+    err = numint.libgdft.VXC_vv10nlc_grad_eval_E_grid_response_offdiagonal(*with_stream(
+        ptr(response), ptr(coords), ptr(rw), ptr(omega), ptr(kappa), ptr(atoms), ptr(offsets),
+        ctypes.c_int(natm), ctypes.c_int(0), ctypes.c_int(n)))
     if err:
         raise RuntimeError('Native VV10 coordinate response failed')
     for atom, (begin, end) in enumerate(zip(offsets[:-1].get(), offsets[1:].get())):
@@ -102,14 +107,14 @@ def main():
             kernel.compile()
     reference = measure('native', lambda: native_response(*arrays, natm))
     for block in (64, 128, 256):
-        measure(f'fused-{block}', lambda: _pair_response(*arrays, natm, block=block))
+        measure(f'fused-{block}', lambda block=block: _pair_response(*arrays, natm, block=block))
     best = min((row for row in report['runs'] if row['mode'].startswith('fused')), key=lambda row: row['seconds'])
     block = int(best['mode'].split('-')[1])
     for order in (('fused', 'native'), ('native', 'fused')):
         for mode in order:
             measure('native' if mode == 'native' else f'fused-{block}',
                     (lambda: native_response(*arrays, natm)) if mode == 'native'
-                    else (lambda: _pair_response(*arrays, natm, block=block)))
+                    else (lambda block=block: _pair_response(*arrays, natm, block=block)))
     medians = {mode: statistics.median(row['seconds'] for row in report['runs'] if row['mode'] == mode)
                for mode in ('native', f'fused-{block}')}
     report['summary'] = {'block': block, 'median_seconds': medians,

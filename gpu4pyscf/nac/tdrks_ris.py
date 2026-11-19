@@ -19,7 +19,7 @@ This module is under development.
 from functools import reduce
 import cupy as cp
 import numpy as np
-from pyscf import lib
+from pyscf import lib, gto
 from pyscf import __config__
 from pyscf.data.nist import HARTREE2EV
 from gpu4pyscf.lib import logger
@@ -284,7 +284,8 @@ def get_nacv_ee(td_nac, x_yI, x_yJ, EI, EJ, singlet=True, atmlst=None, verbose=l
 
     dh1e_td = int3c2e.get_dh1e(mol, dmz1doo)  # 1/r like terms
     if len(mol._ecpbas) > 0:
-        dh1e_td += rhf_grad.get_dh1e_ecp(mol, dmz1doo)  # 1/r like terms
+        ecp_atoms = np.unique(mol._ecpbas[:, gto.ATOM_OF])
+        dh1e_td[ecp_atoms] += rhf_grad.get_dh1e_ecp(mol, dmz1doo)  # 1/r like terms
 
     if mol._pseudo:
         raise NotImplementedError("Pseudopotential gradient not supported for molecular system yet")
@@ -353,6 +354,11 @@ def get_nacv_ee(td_nac, x_yI, x_yJ, EI, EJ, singlet=True, atmlst=None, verbose=l
         time_list = [time_list[i+1] - time_list[i] for i in range(len(time_list) - 1)]
         for i, t in enumerate(time_list):
             logger.note(td_nac, f"Time for step {i}: {t*1e-3:.6f}s")
+    # Integral contractions above retain all atoms; select output rows once.
+    if atmlst is not None:
+        atmlst = list(atmlst)
+        de = de[atmlst]
+        de_etf = de_etf[atmlst]
     return de, de/(EJ - EI), de_etf, de_etf/(EJ - EI)
 
 

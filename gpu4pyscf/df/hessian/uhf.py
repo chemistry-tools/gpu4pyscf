@@ -27,6 +27,7 @@ import cupy as cp
 from pyscf import lib
 from pyscf.gto import ATOM_OF
 from gpu4pyscf.lib import logger
+from gpu4pyscf.lib.utils import splits_by_blocksize
 from gpu4pyscf.lib.cupy_helper import (
     contract, asarray, ndarray, transpose_sum, get_avail_mem, fill_symmetric)
 from gpu4pyscf.df.int3c2e_bdiv import (
@@ -163,8 +164,11 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1,
         laux = auxmol.uniq_l_ctr[:,0].max()
         shm_size_max = shm_size[:laux+1,:lmax+1,:lmax+1].max()
 
+        # Bound serial work in each derivative-integral task.
+        pair_batch_size = np.minimum(nsp_per_block[0]*4,
+                                     np.maximum(nsp_per_block[0]//4, 16))
         bas_ij_idx, shl_pair_offsets = mol.aggregate_shl_pairs(
-            int3c2e_opt.bas_ij_cache, nsp_per_block[0]*4)
+            int3c2e_opt.bas_ij_cache, pair_batch_size)
         ao_pair_loc = get_ao_pair_loc(mol.uniq_l_ctr[:,0], int3c2e_opt.bas_ij_cache)
 
         l_ctr_aux_offsets = np.append(0, np.cumsum(auxmol.l_ctr_counts))
@@ -174,7 +178,6 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1,
         ksh_offsets_cpu = l_ctr_aux_offsets
         ksh_offsets_gpu = cp.asarray(ksh_offsets_cpu+mol.nbas, dtype=np.int32)
         aux_offsets = aux_loc[ksh_offsets_cpu]
-        num_aux_batches = len(aux_offsets) - 1
 
         if j_factor != 0:
             dm = contract('npi,nqi->pq', dm_factor_l, dm_factor_r)
@@ -187,8 +190,9 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1,
         buf = cp.empty((nao_pair*batch_size))
         buf2 = cp.empty((blksize, nao, nao))
         buf1 = cp.empty((blksize, nao, nocc))
-        for kbatch in range(num_aux_batches):
-            naux_in_batch = aux_offsets[kbatch+1] - aux_offsets[kbatch]
+        aux_splits = splits_by_blocksize(aux_offsets, batch_size)
+        for kbatch, kend in zip(aux_splits[:-1], aux_splits[1:]):
+            naux_in_batch = aux_offsets[kend] - aux_offsets[kbatch]
             aux_ao_offset = aux_loc[ksh_offsets_cpu[kbatch]]
             compressed = ndarray((nao_pair, naux_in_batch), buffer=buf)
             for k0, k1 in lib.prange(0, naux_in_batch, blksize):
@@ -214,14 +218,15 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1,
                 ctypes.byref(int3c2e_envs),
                 ctypes.c_int(shm_size_max),
                 ctypes.c_int(len(shl_pair_offsets) - 1),
-                ctypes.c_int(1),
+                ctypes.c_int(kend-kbatch),
                 ctypes.cast(shl_pair_offsets.data.ptr, ctypes.c_void_p),
                 ctypes.cast(bas_ij_idx.data.ptr, ctypes.c_void_p),
                 ctypes.cast(ksh_offsets_gpu[kbatch:].data.ptr, ctypes.c_void_p),
                 ctypes.cast(gout_stride.data.ptr, ctypes.c_void_p),
                 ctypes.cast(ao_pair_loc.data.ptr, ctypes.c_void_p),
                 ctypes.c_int(aux_ao_offset),
-                ctypes.c_int(naux_in_batch))
+                ctypes.c_int(naux_in_batch),
+                ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
             if err != 0:
                 raise RuntimeError('ejk_int3c2e_ip2 failed')
         return ejk
@@ -273,20 +278,26 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1,
     j2c_10 *= -1
     j2c_10, tmp = cp.empty_like(j2c_10), j2c_10
     j2c_10[:,aux_sorting[:,None], aux_sorting] = tmp
-    j2c_10v = contract('xrs,st->xrt', j2c_10, metric_v)
+    j2c_10v = ndarray((3, naux, metric_v.shape[1]), buffer=tmp)
+    contract('xrs,st->xrt', j2c_10, metric_v, out=j2c_10v)
+    tmp = None
 
     # j3c_oo1p = (1|0)(0|00) + (1|00)
     j3c_oo1p = contract('xuv,vnij->xunij', j2c_10, dm_oo, alpha=-1, beta=1, out=j3c_oo1)
-    # (00|1)(1|0)(0|00) + (00|1)(0|0)(1|00) +
-    # (00|0)(0|1)(1|00) + (00|0)(0|1)(1|0)(0|00)
-    # = 001p * 001p
-    h_aux = contract('xrnij,ysnij->xrys', j3c_oo1p, j3c_oo1p, -k_factor)
+    aux_atm_labels = _bas_atom_labels(auxmol, aux_sorting)
+    # The helper flattens spin and occupied-pair indices, summing exchange
+    # within each spin channel without introducing cross-spin products.
+    ejk += df_rhf_hess._aux_metric_response(
+        metric_w, metric_v, j2c_10v, dm_oo, j3c_oo1p,
+        aux_atm_labels, natm) * (-k_factor)
     if j_factor != 0:
         auxvec_ipauxp = cp.einsum('xrnii->xr', j3c_oo1p)
-        contract('xr,ys->xrys', auxvec_ipauxp, auxvec_ipauxp, j_factor, 1, h_aux)
-    j2c_inv = (metric_v / metric_w).dot(metric_v.T)
-    h_aux *= j2c_inv[None,:,None,:]
+        ejk += df_rhf_hess._aux_metric_response(
+            metric_w, metric_v, j2c_10v, auxvec[:,None],
+            auxvec_ipauxp[:,:,None], aux_atm_labels, natm) * j_factor
 
+    # Pair density for the genuine second derivative of the metric.
+    # Products of first metric derivatives are included in the helper above.
     if j_factor == 0:
         dm_aux = None
     else:
@@ -298,38 +309,7 @@ def _jk_energy_per_atom(int3c2e_opt, dm, j_factor=1, k_factor=1,
         auxmol, dm_aux[aux_sorting[:,None], aux_sorting], omega, lr_factor, sr_factor)
     ejk -= ejk_aux
 
-    # (00|0)(1|0)(0|1)(0|00)
-    j2c_ip2 = None
-    for x in range(3):
-        j2c_10v_w = j2c_10v[x] / metric_w
-        for y in range(3):
-            j2c_ip2 = contract('rs,ts->rt', j2c_10v_w, j2c_10v[y], out=j2c_ip2)
-            j2c_ip2 *= dm_aux
-            h_aux[x,:,y] += j2c_ip2
-    dm_aux = j2c_ip2 = j2c_10v_w = None
-
-    # (00|0)(1|0)(1|00) + (00|0)(1|0)(1|0)(0|00)
-    dm_aux1 = contract('xrnij,snij->xrs', j3c_oo1p, dm_oo, -k_factor)
-    if j_factor != 0:
-        dm_aux1 = contract('xr,t->xrt', auxvec_ipauxp, auxvec, j_factor, 1, dm_aux1)
-    tmp = contract('xrt,st->xrs', j2c_10v, metric_v/metric_w)
-    # perform the following operations
-    #:w10_100 = contract('xrt,ytr->xryt', tmp, dm_aux1)
-    #:h_aux -= w10_100
-    #:h_aux -= w10_100.transpose(1,0,3,2) # swap the asymetric di,dj indices
-    h_aux = contract('xrt,ytr->xryt', tmp, dm_aux1, alpha=-2, beta=1, out=h_aux)
-    dm_aux1 = j2c_10 = tmp = None
-
-    # swap the differentiation order
-    # (00|0)(1|0)(1|00) + (00|0)(1|0)(1|0)(0|00)
-    #:h_aux = h_aux + h_aux.transpose(2,3,0,1)
-    h_aux = transpose_sum(h_aux.reshape(3*naux,3*naux), inplace=True)
-    h_aux = h_aux.reshape(3,naux,3,naux).transpose(1,3,0,2)
-
-    aux_atm_labels = _bas_atom_labels(auxmol, aux_sorting)
-    ejk_aux = _aggregate_to_atoms(h_aux, natm, aux_atm_labels, axis=(0,1))
-    ejk += ejk_aux * .5
-    j2c_inv = j3c_oo1 = h_aux = None
+    dm_aux = j2c_10 = j3c_oo1 = None
     t1 = t0 = log.timer_debug1('contract int2c2e_ip1', *t0)
 
     # 3c integrals are computed in Cartesian bases, and sorted in the original
@@ -575,7 +555,9 @@ def _get_veff(int3c2e_opt, mo_coeff, mo_occ, j_factor=1, k_factor=1,
     dm_3c = j3c_00
     j3c_00 = tmp = work = metric_v = metric_w = None
 
-    dm_oo = contract('rniq,nqj->rnij', dm_3c, orbo)
+    dm_oo = cp.empty((naux, 2, nocc, nocc))
+    for r0, r1 in lib.prange(0, naux, batch_size):
+        contract('rniq,nqj->rnij', dm_3c[r0:r1], orbo, out=dm_oo[r0:r1])
     if j_factor != 0:
         auxvec = cp.einsum('rnii->r', dm_oo)
         auxvec_by_atm = auxvec[aux_idx]

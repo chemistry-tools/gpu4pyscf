@@ -15,7 +15,6 @@
 import unittest
 import numpy
 import pyscf
-import pytest
 import cupy
 from pyscf import gto
 from gpu4pyscf import scf
@@ -114,12 +113,12 @@ class KnownValues(unittest.TestCase):
                 assert numpy.linalg.norm(dSii[j,:,ia] - numpy.diag(dS0)) < 1e-8
                 numpy.fill_diagonal(dS0, 0)
 
-                dS_ia = numpy.zeros_like(dS0)
+                dS_ia = cupy.zeros_like(dS0)
                 dS_ia[p0:p1] = dS[j,p0:p1,:]
                 dS_ia[:,p0:p1] -= dS[j,:,p0:p1]
                 assert numpy.linalg.norm(dS0 - dS_ia) < 1e-8
 
-                dD_ia = numpy.zeros_like(dD0)
+                dD_ia = cupy.zeros_like(dD0)
                 dD_ia[p0:p1] = dD[j,p0:p1,:]
                 dD_ia[:,p0:p1] -= dD[j,:,p0:p1]
                 assert numpy.linalg.norm(dD0 - dD_ia) < 1e-8
@@ -363,6 +362,7 @@ class KnownValues(unittest.TestCase):
         ])
 
         assert numpy.max(numpy.abs(test_gradient - ref_gradient)) < 1e-7
+
 
 if __name__ == "__main__":
     print("Full Tests for Gradient of PCMs")

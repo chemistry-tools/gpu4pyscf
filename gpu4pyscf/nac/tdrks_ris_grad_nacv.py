@@ -15,7 +15,7 @@
 
 import cupy as cp
 import numpy as np
-from pyscf import lib
+from pyscf import lib, gto
 from gpu4pyscf.dft import rks
 from gpu4pyscf.lib import logger
 from gpu4pyscf.lib.cupy_helper import contract
@@ -342,7 +342,7 @@ def get_nacv_multi(td_nac, x_list, y_list, E_list, singlet=True, ge_targets=None
             dmz1doo_ee[-1] += cp.asarray(oo0)
             im0[-1, :nocc, nocc:] = 0
             im0[-1, nocc:, :nocc] *= 2.0
-            im0[-1, :nocc, :nocc] += np.diag(mo_energy[:nocc]) * 2.0
+            im0[-1, :nocc, :nocc] += cp.diag(mo_energy[:nocc]) * 2.0
 
         im0_ao_ee = _c_mat_cT(mo_coeff, im0, mo_coeff)
 
@@ -363,7 +363,8 @@ def get_nacv_multi(td_nac, x_list, y_list, E_list, singlet=True, ge_targets=None
     for k in range(total_tasks):
         dh1e_k = int3c2e.get_dh1e(mol, P_all[k])
         if len(mol._ecpbas) > 0:
-            dh1e_k += rhf_grad.get_dh1e_ecp(mol, P_all[k])
+            ecp_atoms = np.unique(mol._ecpbas[:, gto.ATOM_OF])
+            dh1e_k[ecp_atoms] += rhf_grad.get_dh1e_ecp(mol, P_all[k])
         dh1e_td_list.append(dh1e_k)
     dh1e_td_all = cp.array(dh1e_td_list)
 
@@ -511,7 +512,7 @@ def get_nacv_multi(td_nac, x_list, y_list, E_list, singlet=True, ge_targets=None
         
         if has_grad:
             n_tasks_ee -= 1
-            de_grad = base_de_ee[-1].get() + mf_grad.grad_nuc(mol, atmlst)
+            de_grad = base_de_ee[-1].get() + mf_grad.grad_nuc(mol)
             results['gradient'] = de_grad
 
         if n_pairs > 0:
@@ -550,6 +551,7 @@ def get_nacv_multi(td_nac, x_list, y_list, E_list, singlet=True, ge_targets=None
         for idx, t in enumerate(time_list):
             logger.note(td_nac, f"Time for step {idx}: {t*1e-3:.6f}s")
             
+    assert atmlst is None or len(atmlst) == mol.natm
     return results
 
 
@@ -682,7 +684,8 @@ class NAC_multistates(NAC_multistates_tdrks):
                         self.results[(global_i, global_j)] = res
 
         if self.grad_state == 0:
-            self.grad_result = self.base._scf.nuc_grad_method().kernel(atmlst=atmlst)
+            assert atmlst is None or len(atmlst) == self.mol.natm
+            self.grad_result = self.base._scf.nuc_grad_method().kernel()
 
         self._finalize()
         return self.results

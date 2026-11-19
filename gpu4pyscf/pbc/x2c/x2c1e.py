@@ -41,7 +41,7 @@ from gpu4pyscf.pbc.df import aft, rsdf_builder, ft_ao, int3c2e
 from gpu4pyscf.pbc.df.ft_ao import libpbc
 from gpu4pyscf.pbc.gto import int1e
 from gpu4pyscf.gto.mole import SortedGTO, extract_pgto_params
-from gpu4pyscf.pbc.tools.k2gamma import kpts_to_kmesh
+from gpu4pyscf.pbc.lib.kpts_helper import kpts_to_bvkmesh
 from gpu4pyscf.lib.cupy_helper import (
     contract, asarray, hermi_triu, empty_aligned)
 from gpu4pyscf.pbc.tools.pbc import get_coulG
@@ -169,11 +169,15 @@ class PBCX2CHelper(mol_x2c.X2CHelperBase):
 
     def reset(self, cell=None):
         if cell is not None:
-            self.cell = cell
+            # get_xmol() inherits its default molecule from the molecular base.
+            self.cell = self.mol = cell
         return self
 
 class SpinFreeX2CHelper(PBCX2CHelper):
     def get_hcore(self, cell=None, kpts=None):
+        """kpts follows the PySCF kpts convention; see
+        gpu4pyscf.pbc.lib.kpts_helper._normalize_kpts.
+        """
         if cell is None: cell = self.cell
         if cell.has_ecp():
             raise NotImplementedError
@@ -182,18 +186,17 @@ class SpinFreeX2CHelper(PBCX2CHelper):
         c = lib.param.LIGHT_SPEED
         xcell = self.get_xmol(cell)
 
-        is_single_kpt = False
+        is_single_kpt = kpts is None or kpts.ndim == 1
         if kpts is None:
             kpts = np.zeros((1, 3))
         else:
-            is_single_kpt = kpts.ndim == 1
             kpts = kpts.reshape(-1, 3)
-        bvk_kmesh = kpts_to_kmesh(cell, kpts, bound_by_supmol=True)
+        bvkmesh = kpts_to_bvkmesh(cell, kpts, bound_by_supmol=True)
 
-        t = int1e.int1e_kin(xcell, kpts, bvk_kmesh, sort_output=False)
-        s = int1e.int1e_ovlp(xcell, kpts, bvk_kmesh, sort_output=False)
-        v = _get_pnucp(xcell, kpts, bvk_kmesh, intor='nuc')
-        w = _get_pnucp(xcell, kpts, bvk_kmesh, intor='pnucp')
+        t = int1e.int1e_kin(xcell, kpts, bvkmesh, sort_output=False)
+        s = int1e.int1e_ovlp(xcell, kpts, bvkmesh, sort_output=False)
+        v = _get_pnucp(xcell, kpts, bvkmesh, intor='nuc')
+        w = _get_pnucp(xcell, kpts, bvkmesh, intor='pnucp')
         if not xcell.cell.cart:
             s, t, v, w = _orbital_pair_cart2sph(xcell, [s, t, v, w])
 
@@ -224,6 +227,9 @@ class SpinFreeX2CHelper(PBCX2CHelper):
         return h1
 
     def get_xmat(self, cell=None, kpts=None):
+        """kpts follows the PySCF kpts convention; see
+        gpu4pyscf.pbc.lib.kpts_helper._normalize_kpts.
+        """
         if cell is None: cell = self.cell
         if cell.has_ecp():
             raise NotImplementedError
@@ -232,13 +238,12 @@ class SpinFreeX2CHelper(PBCX2CHelper):
         c = lib.param.LIGHT_SPEED
         xcell = self.get_xmol(cell)
 
-        is_single_kpt = False
+        is_single_kpt = kpts is None or kpts.ndim == 1
         if kpts is None:
             kpts = np.zeros((1, 3))
         else:
-            is_single_kpt = kpts.ndim == 1
             kpts = kpts.reshape(-1, 3)
-        bvk_kmesh = kpts_to_kmesh(cell, kpts, bound_by_supmol=True)
+        bvkmesh = kpts_to_bvkmesh(cell, kpts, bound_by_supmol=True)
 
         x = []
         if 'ATOM' in self.approx.upper():
@@ -246,10 +251,10 @@ class SpinFreeX2CHelper(PBCX2CHelper):
             if not is_single_kpt:
                 x = cp.repeat(x_wo_pbc[None], len(kpts), axis=0)
         else:
-            t = int1e.int1e_kin(xcell, kpts, bvk_kmesh, sort_output=False)
-            s = int1e.int1e_ovlp(xcell, kpts, bvk_kmesh, sort_output=False)
-            v = _get_pnucp(xcell, kpts, bvk_kmesh, intor='nuc')
-            w = _get_pnucp(xcell, kpts, bvk_kmesh, intor='pnucp')
+            t = int1e.int1e_kin(xcell, kpts, bvkmesh, sort_output=False)
+            s = int1e.int1e_ovlp(xcell, kpts, bvkmesh, sort_output=False)
+            v = _get_pnucp(xcell, kpts, bvkmesh, intor='nuc')
+            w = _get_pnucp(xcell, kpts, bvkmesh, intor='pnucp')
             if not xcell.cell.cart:
                 s, t, v, w = _orbital_pair_cart2sph(xcell, [s, t, v, w])
             for tk, vk, wk, sk in zip(t, v, w, s):
@@ -279,7 +284,7 @@ class SpinOrbitalX2C1EHelper(PBCX2CHelper):
 
     to_cpu = utils.to_cpu
 
-def _get_pnucp(cell, kpts=None, bvk_kmesh=None, intor='pnucp', omega=0):
+def _get_pnucp(cell, kpts=None, bvkmesh=None, intor='pnucp', omega=0):
     assert isinstance(cell, SortedGTO)
     cell_exps, cs = extract_pgto_params(cell, 'diffuse')
     rsdf_omega = 0.3
@@ -287,22 +292,24 @@ def _get_pnucp(cell, kpts=None, bvk_kmesh=None, intor='pnucp', omega=0):
         # When omega is specified, the short-range Coulomb is evaluated
         rsdf_omega = min(rsdf_omega, omega)
 
-    is_single_kpt = kpts is not None and kpts.ndim == 1
+    is_single_kpt = kpts is None or kpts.ndim == 1
     is_gamma_point = kpts is None or is_zero(kpts)
-    if is_single_kpt:
+    if kpts is None:
+        kpts = np.zeros((1, 3))
+    elif is_single_kpt:
         kpts = kpts.reshape(1, 3)
     if is_gamma_point:
-        bvk_kmesh = np.ones(3, dtype=int)
+        bvkmesh = np.ones(3, dtype=int)
         bvk_ncells = 1
-    elif bvk_kmesh is None:
-        bvk_kmesh = kpts_to_kmesh(cell, kpts, bound_by_supmol=True)
-        bvk_ncells = np.prod(bvk_kmesh)
+    elif bvkmesh is None:
+        bvkmesh = kpts_to_bvkmesh(cell, kpts, bound_by_supmol=True)
+        bvk_ncells = np.prod(bvkmesh)
 
     ###############################################
     # SR part
     fakenuc = aft._fake_nuc(cell, with_pseudo=False)
     int3c2e_opt = int3c2e.SRInt3c2eOpt(
-        cell, fakenuc, omega=-rsdf_omega, bvk_kmesh=bvk_kmesh).build()
+        cell, fakenuc, omega=-rsdf_omega, bvkmesh=bvkmesh).build()
     charges = -cp.asarray(cell.atom_charges(), dtype=np.float64)
 
     cell = int3c2e_opt.cell
@@ -345,6 +352,7 @@ def _get_pnucp(cell, kpts=None, bvk_kmesh=None, intor='pnucp', omega=0):
 
     nao = cell.nao
     wj = cp.zeros((nao, bvk_ncells, nao))
+    stream = cp.cuda.get_current_stream()
     err = kern(
         ctypes.cast(wj.data.ptr, ctypes.c_void_p),
         ctypes.cast(charges.data.ptr, ctypes.c_void_p),
@@ -364,7 +372,8 @@ def _get_pnucp(cell, kpts=None, bvk_kmesh=None, intor='pnucp', omega=0):
         ctypes.cast(gout_stride.data.ptr, ctypes.c_void_p),
         ctypes.cast(diffuse_exps.data.ptr, ctypes.c_void_p),
         ctypes.cast(diffuse_coefs.data.ptr, ctypes.c_void_p),
-        ctypes.c_float(log_cutoff))
+        ctypes.c_float(log_cutoff),
+        ctypes.c_void_p(stream.ptr))
     if err != 0:
         raise RuntimeError('contract_int3c2e_auxvec failed')
     pool = task_pool = head = None
@@ -428,7 +437,8 @@ def _get_pnucp(cell, kpts=None, bvk_kmesh=None, intor='pnucp', omega=0):
             ctypes.cast(gout_stride.data.ptr, ctypes.c_void_p),
             ctypes.cast(GvT.data.ptr, ctypes.c_void_p),
             ctypes.c_int(ngrids),
-            ctypes.c_int(compressing))
+            ctypes.c_int(compressing),
+            ctypes.c_void_p(stream.ptr))
         if err != 0:
             raise RuntimeError('contract_ft_pdotp kernel failed')
 
@@ -458,7 +468,6 @@ def _orbital_pair_cart2sph(cell, arrays):
         # Input is a single 3-ndim matrix_kpts
         assert arrays.ndim == 3
         nkpts = len(arrays)
-        arrays = arrays.transpose(2,0,1)
     else:
         # Input is a list of 3-ndim matrix_kpts
         assert arrays[0].ndim == 3

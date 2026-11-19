@@ -266,8 +266,10 @@ class PySCF(Calculator):
             precision = self.parameters.precision
             if precision == 'auto':
                 from gpu4pyscf.dft.mixed_precision import _select_precision, supports_mixed_precision
-                precision = (_select_precision(base_method, 'auto', scanner=self.method_scan is not None)
-                             if supports_mixed_precision(base_method) else 'float64')
+                runtime = getattr(getattr(cp, 'cuda', None), 'runtime', None)
+                precision = 'float64'
+                if not getattr(runtime, 'is_hip', False) and supports_mixed_precision(base_method):
+                    precision = _select_precision(base_method, 'auto', scanner=self.method_scan is not None)
             self.calculation_info['precision'] = precision
             if precision in ('mixed', 'vv10'):
                 from gpu4pyscf.dft.mixed_precision import run_verified_scf
@@ -421,7 +423,7 @@ class PySCF(Calculator):
         method = self.method if self.method_scan is None else self.method_scan
         standard_path = self.atoms.cell.bandpath()
         band_kpts = method.cell.get_abs_kpts(standard_path.kpts)
-        e_k = cp.asnumpy(cp.array(method.get_bands(band_kpts)[0]))
+        e_k = cp.asnumpy(cp.array(method.get_bands(band_kpts)[0])) * HARTREE2EV
         if not method.istype('UHF'):
             e_k = e_k[None]
         fermi = self.get_fermi_level()

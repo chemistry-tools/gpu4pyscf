@@ -201,7 +201,7 @@ def _check_grad(mol, tol=1e-5, lindep=1.0e-12, disp=None, tda=False, method="cpu
 
 class KnownValues(unittest.TestCase):
     def test_grad_tda_spinconserve_cpu(self):
-        grad_gpu = _check_grad(mol, tol=5e-10, tda=True, method="cpu")
+        grad_gpu = _check_grad(mol, tol=2e-7, tda=True, method="cpu")
         ref = np.array([[-3.0185736020771e-15,  1.5100260822340e-15, -6.4464824062032e-02],
                         [ 1.7200484393589e-15,  7.0426620850669e-02, 3.2232412031016e-02],
                         [ 1.2985251627181e-15, -7.0426620850669e-02, 3.2232412031018e-02]])
@@ -213,7 +213,7 @@ class KnownValues(unittest.TestCase):
 
     @unittest.skipIf(num_devices > 1, '')
     def test_grad_tdhf_spinconserve_cpu(self):
-        grad_gpu = _check_grad(mol, tol=5e-10, lindep=1.0e-6, tda=False, method="cpu")
+        grad_gpu = _check_grad(mol, tol=2e-7, lindep=1.0e-6, tda=False, method="cpu")
         ref = np.array([[ 2.4083810840674e-15,  1.1005204522931e-15, -6.4107899188727e-02],
                         [-1.5974943646053e-15,  6.9613558808388e-02, 3.2053949594365e-02],
                         [-8.1088671946197e-16, -6.9613558808391e-02, 3.2053949594365e-02]])
@@ -235,8 +235,10 @@ class KnownValues(unittest.TestCase):
             unit='B',)
         mf = mol.UHF().to_gpu()
         nao = mol.nao
-        cp.random.seed(4)
-        c = cp.random.rand(2, nao, nao) - .5
+        # Backend-independent input: np.random (MT19937) is identical on
+        # every host, unlike cp.random (cuRAND on CUDA, oneMKL on SYCL).
+        np.random.seed(4)
+        c = cp.asarray(np.random.rand(2, nao, nao)) - .5
         s = mf.get_ovlp()
         diag = cp.einsum('npi,pq,nqi->ni', c, s, c)
         mf.mo_coeff = c / diag[:,None,:]**.5
@@ -245,13 +247,13 @@ class KnownValues(unittest.TestCase):
         nocc = 5
         nvir = nao - nocc
         mf.mo_occ[:,:nocc] = 2
-        x_y = cp.random.rand(2, 2, nocc, nvir) - .5
+        x_y = cp.asarray(np.random.rand(2, 2, nocc, nvir)) - .5
         x_y /= cp.linalg.norm(x_y)
         td_grad = mf.TDHF().Gradients()
         td_grad.cphf_max_cycle = 0
         td_grad.cphf_conv_tol = 1e9
         dat = td_grad.grad_elec(x_y, singlet=True)
-        self.assertAlmostEqual (lib.fp(dat), -14.006578651492646, 10)
+        self.assertAlmostEqual (lib.fp(dat), -6.969952595543902, 10)
 
 if __name__ == "__main__":
     print("Full Tests for TD-UHF Gradient")

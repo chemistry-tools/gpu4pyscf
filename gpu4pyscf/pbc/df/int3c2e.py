@@ -26,7 +26,7 @@ from pyscf.gto import (
 from pyscf.pbc import tools as pbctools
 from pyscf.pbc.tools.k2gamma import translation_vectors_for_kmesh
 from pyscf.pbc.lib.kpts_helper import is_zero
-from gpu4pyscf.pbc.tools.k2gamma import kpts_to_kmesh
+from gpu4pyscf.pbc.lib.kpts_helper import kpts_to_bvkmesh
 from gpu4pyscf.lib import logger
 from gpu4pyscf.lib.cupy_helper import (
     contract, asarray, transpose_sum, ndarray, empty_aligned, hermi_triu,
@@ -42,7 +42,8 @@ from gpu4pyscf.df.int3c2e_bdiv import (
 from gpu4pyscf.pbc.df.ft_ao import (
     libpbc, most_diffuse_pgto, FTOpt, ft_ao_scheme)
 from gpu4pyscf.pbc.df.int2c2e import _estimate_sr_2c2e_rcut
-from gpu4pyscf.pbc.lib.kpts_helper import conj_images_in_bvk_cell
+from gpu4pyscf.pbc.lib.kpts_helper import (
+    conj_images_in_bvk_cell, conj_kpts, _normalize_kpts, _get_kmesh)
 from gpu4pyscf.pbc.tools.k2gamma import double_translation_indices
 from gpu4pyscf.__config__ import props as gpu_specs
 
@@ -64,7 +65,7 @@ POOL_SIZE = 16384
 MAX_IMGS_PER_TASK = 31
 GOUT_WIDTH = 54
 
-def sr_aux_e2(cell, auxcell, omega, kpts=None, bvk_kmesh=None, j_only=False):
+def sr_aux_e2(cell, auxcell, omega, kpts=None, bvkmesh=None, j_only=False):
     r'''
     Short-range 3-center integrals (ij|k). The auxiliary basis functions are
     placed at the second electron.
@@ -74,20 +75,15 @@ def sr_aux_e2(cell, auxcell, omega, kpts=None, bvk_kmesh=None, j_only=False):
     if kpts is not None and kpts.ndim == 1: # single k-point
         assert is_gamma_point
 
-    if bvk_kmesh is None:
-        if j_only:
-            # Coulomb integrals can be converged within a smaller bvk cell.
-            bvk_kmesh = kpts_to_kmesh(cell, kpts, bound_by_supmol=True)
-        else:
-            # Remote images may contribute to certain k-point mesh, contributing
-            # to the finite-size effects in HFX. For sufficiently large number of
-            # kpts, the truncation radius cell.rcut may cause finite-size errors.
-            # Use a large radius to generate MP kmesh.
-            bvk_kmesh = kpts_to_kmesh(cell, kpts, rcut=cell.rcut*10,
-                                      bound_by_supmol=False)
+    if bvkmesh is None:
+        bvkmesh = kpts_to_bvkmesh(cell, kpts, rcut=cell.rcut*10)
+
+    if not is_gamma_point:
+        kmesh, with_gamma_point = _get_kmesh(cell, kpts, bvkmesh)
+        assert kmesh is not None, "A complete MP mesh in cell.make_kpts ordering is required"
 
     nao = cell.nao
-    int3c2e_opt = SRInt3c2eOpt(cell, auxcell, omega, bvk_kmesh).build()
+    int3c2e_opt = SRInt3c2eOpt(cell, auxcell, omega, bvkmesh).build()
     cell = int3c2e_opt.cell
     auxcell = int3c2e_opt.auxcell
     bvk_ncells = len(int3c2e_opt.bvkmesh_Ls)
@@ -120,7 +116,7 @@ def sr_aux_e2(cell, auxcell, omega, kpts=None, bvk_kmesh=None, j_only=False):
         kpts = cp.asarray(kpts).reshape(-1, 3)
         expLk = cp.exp(1j*bvkmesh_Ls.dot(kpts.T))
         conj_mapping = cp.asarray(
-            conj_images_in_bvk_cell(int3c2e_opt.bvk_kmesh), dtype=np.int32)
+            conj_kpts(kmesh, with_gamma_point), dtype=np.int32)
         nkpts = len(kpts)
         out = _unpack_cderi_v2(j3c, pair_address, np.arange(nkpts),
                                conj_mapping, expLk, nao, axis=1)
@@ -133,23 +129,28 @@ def sr_aux_e2(cell, auxcell, omega, kpts=None, bvk_kmesh=None, j_only=False):
         expLk = cp.exp(1j*bvkmesh_Ls.dot(kpts.T))
         nL, nkpts = expLk.shape
         conj_mapping = cp.asarray(
-            conj_images_in_bvk_cell(int3c2e_opt.bvk_kmesh), dtype=np.int32)
+            conj_kpts(kmesh, with_gamma_point), dtype=np.int32)
 
         axis = 0 # Transform index i
-        expLk_conjz = expLk.conj().view(np.float64).reshape(nL,nkpts,2)
-        j3c = contract('Lqt,LKz->Kqtz', j3c, expLk_conjz)
+        # Auxiliary momentum q = kj - ki. It includes Gamma even when the
+        # orbital kpoints mesh is shifted. bvkmesh is the larger BvK mesh.
+        # len(bvkmesh_Ls) != len(qpts) for off-gamma kpts
+        qpts = cp.asarray(auxcell.make_kpts(kmesh, with_gamma_point=True))
+        expLq_conj = cp.exp(-1j*bvkmesh_Ls.dot(qpts.T))
+        expLq_conjz = expLq_conj.view(np.float64).reshape(nL,nkpts,2)
+        j3c = contract('Lqt,LKz->Kqtz', j3c, expLq_conjz)
         j3c = j3c.view(np.complex128)[...,0]
         out = cp.empty((nkpts,nkpts,naux,nao,nao), dtype=np.complex128)
-        kk_conserv = double_translation_indices(int3c2e_opt.bvk_kmesh)
+        kk_conserv = double_translation_indices(kmesh)
         for k in range(nkpts):
             ki_idx, kj_idx = cp.where(kk_conserv == k)
             out[k] = _unpack_cderi_v2(j3c[k], pair_address, kj_idx,
                                       conj_mapping, expLk, nao, axis)
-        j3c = None
+        j3c = expLq_conj = expLq_conjz = None
 
         # k=ijk_conserv[i,j] provides: -i + j - k = 2n\pi
         # therefore, i=ijk_conserv[k,j]
-        ijk_conserv = double_translation_indices(int3c2e_opt.bvk_kmesh)
+        ijk_conserv = kk_conserv
         if axis == 0:
             #for ki in range(nkpts):
             #    for kj in range(nkpts):
@@ -172,7 +173,7 @@ def sr_aux_e2(cell, auxcell, omega, kpts=None, bvk_kmesh=None, j_only=False):
             out = out[None,None]
     return out
 
-def fill_triu_bvk(a, nao, bvk_kmesh, pair_address=None, conj_mapping=None, bvk_axis=0):
+def fill_triu_bvk(a, nao, bvkmesh, pair_address=None, conj_mapping=None, bvk_axis=0):
     '''Perform
     a[j,conj_mapping[L],i] = a[i,L,j]
     or
@@ -182,9 +183,9 @@ def fill_triu_bvk(a, nao, bvk_kmesh, pair_address=None, conj_mapping=None, bvk_a
     assert a.dtype == np.float64
 
     if conj_mapping is None:
-        conj_mapping = conj_images_in_bvk_cell(bvk_kmesh)
+        conj_mapping = conj_images_in_bvk_cell(bvkmesh)
     conj_mapping = cp.asarray(conj_mapping, dtype=np.int32)
-    bvk_ncells = np.prod(bvk_kmesh)
+    bvk_ncells = np.prod(bvkmesh)
 
     if bvk_axis == 0:
         assert a.size == nao*bvk_ncells*nao
@@ -192,7 +193,8 @@ def fill_triu_bvk(a, nao, bvk_kmesh, pair_address=None, conj_mapping=None, bvk_a
         err = libpbc.fill_bvk_triu_axis0(
             ctypes.cast(a.data.ptr, ctypes.c_void_p),
             ctypes.cast(conj_mapping.data.ptr, ctypes.c_void_p),
-            ctypes.c_int(nao), ctypes.c_int(bvk_ncells))
+            ctypes.c_int(nao), ctypes.c_int(bvk_ncells),
+            ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
         if err != 0:
             raise RuntimeError('fill_bvk_triu failed')
     else:
@@ -210,20 +212,21 @@ def fill_triu_bvk(a, nao, bvk_kmesh, pair_address=None, conj_mapping=None, bvk_a
             ctypes.cast(pair_address.data.ptr, ctypes.c_void_p),
             ctypes.cast(conj_mapping.data.ptr, ctypes.c_void_p),
             ctypes.c_int(len(pair_address)),
-            ctypes.c_int(bvk_ncells), ctypes.c_int(nao), ctypes.c_int(naux))
+            ctypes.c_int(bvk_ncells), ctypes.c_int(nao), ctypes.c_int(naux),
+            ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
         if err != 0:
             raise RuntimeError('fill_bvk_triu failed')
     return a
 
 class SRInt3c2eOpt:
-    def __init__(self, cell, auxcell, omega, bvk_kmesh=None):
+    def __init__(self, cell, auxcell, omega, bvkmesh=None):
         self.omega = abs(omega)
         self.cell = cell
         self.auxcell = auxcell
 
-        if bvk_kmesh is None:
-            bvk_kmesh = np.ones(3, dtype=int)
-        self.bvk_kmesh = bvk_kmesh
+        if bvkmesh is None:
+            bvkmesh = np.ones(3, dtype=int)
+        self.bvkmesh = bvkmesh
 
         self.rcut = None
         self._mesh = None
@@ -242,6 +245,7 @@ class SRInt3c2eOpt:
         With separate_dd=True, the SR evaluator contains only compact pairs;
         dd_ft_opt holds the complementary Fourier-transform pair list.
         """
+        assert not self.cell.space_group_symmetry
         auxcell = self.auxcell = SortedCell.from_cell(self.auxcell)
         assert auxcell.uniq_l_ctr[:,0].max() <= L_AUX_MAX
 
@@ -256,17 +260,17 @@ class SRInt3c2eOpt:
         # overlap integrals
         self.auxcell.rcut = _estimate_sr_2c2e_rcut(auxcell, -omega, cell.precision*1e-3)
 
-        bvk_kmesh = self.bvk_kmesh
-        bvk_ncells = np.prod(bvk_kmesh)
-        self.bvkmesh_Ls = translation_vectors_for_kmesh(cell, bvk_kmesh, True)
-        if np.prod(bvk_kmesh) == 1:
+        bvkmesh = self.bvkmesh
+        bvk_ncells = np.prod(bvkmesh)
+        self.bvkmesh_Ls = translation_vectors_for_kmesh(cell, bvkmesh, True)
+        if np.prod(bvkmesh) == 1:
             bvkcell = cell
             bvk_auxcell = auxcell
         else:
-            bvkcell = pbctools.super_cell(cell, bvk_kmesh, wrap_around=True)
+            bvkcell = pbctools.super_cell(cell, bvkmesh, wrap_around=True)
             # PTR_BAS_COORD was not initialized in pbctools.supe_rcell
             bvkcell._bas[:,PTR_BAS_COORD] = bvkcell._atm[bvkcell._bas[:,ATOM_OF],PTR_COORD]
-            bvk_auxcell = pbctools.super_cell(auxcell, bvk_kmesh, wrap_around=True)
+            bvk_auxcell = pbctools.super_cell(auxcell, bvkmesh, wrap_around=True)
             bvk_auxcell._bas[:,PTR_BAS_COORD] = bvk_auxcell._atm[bvk_auxcell._bas[:,ATOM_OF],PTR_COORD]
         self.bvkcell = bvkcell
         self.bvk_auxcell = bvk_auxcell
@@ -304,12 +308,14 @@ class SRInt3c2eOpt:
         nbas = cell.nbas
         img_counts = cp.zeros((nbas*bvk_ncells*nbas), dtype=np.uint32)
         symmetric = 1
+        stream = cp.cuda.get_current_stream()
         libpbc.bvk_ovlp_img_counts(
             ctypes.cast(img_counts.data.ptr, ctypes.c_void_p),
             ctypes.byref(self._int3c2e_envs),
             ctypes.cast(self.diffuse_exps.data.ptr, ctypes.c_void_p),
             ctypes.cast(log_c.data.ptr, ctypes.c_void_p),
-            ctypes.c_float(log_cutoff), ctypes.c_int(symmetric))
+            ctypes.c_float(log_cutoff), ctypes.c_int(symmetric),
+            ctypes.c_void_p(stream.ptr))
 
         mask = img_counts > 0
         dd_bas_ij_cache = {}
@@ -338,7 +344,8 @@ class SRInt3c2eOpt:
                     ctypes.cast(exps.data.ptr, ctypes.c_void_p),
                     ctypes.cast(coef.data.ptr, ctypes.c_void_p),
                     ctypes.c_int(npairs),
-                    ctypes.c_float(math.log(dressed_precision)))
+                    ctypes.c_float(math.log(dressed_precision)),
+                    ctypes.c_void_p(stream.ptr))
                 if err != 0:
                     raise RuntimeError('estimate_aft_Ecut kernel failed')
                 ke_cutoff = mesh_to_ke(cell.lattice_vectors(), self.mesh).min()
@@ -384,7 +391,8 @@ class SRInt3c2eOpt:
                 ctypes.byref(self._int3c2e_envs),
                 ctypes.cast(self.diffuse_exps.data.ptr, ctypes.c_void_p),
                 ctypes.cast(log_c.data.ptr, ctypes.c_void_p),
-                ctypes.c_float(log_cutoff))
+                ctypes.c_float(log_cutoff),
+                ctypes.c_void_p(stream.ptr))
         self.img_idx = img_idx
         self.img_offsets = img_offsets
 
@@ -406,7 +414,8 @@ class SRInt3c2eOpt:
                     ctypes.byref(self._int3c2e_envs),
                     ctypes.cast(self.diffuse_exps.data.ptr, ctypes.c_void_p),
                     ctypes.cast(log_c.data.ptr, ctypes.c_void_p),
-                    ctypes.c_float(log_cutoff))
+                    ctypes.c_float(log_cutoff),
+                    ctypes.c_void_p(stream.ptr))
                 self.dd_ft_opt = dd_ft_opt = FTOpt.from_intopt(self)
                 dd_ft_opt.bas_ij_cache = dd_bas_ij_cache
                 dd_ft_opt.img_idx = img_idx
@@ -520,7 +529,7 @@ class SRInt3c2eOpt:
 
         cell = self.cell
         auxcell = self.auxcell
-        bvk_ncells = np.prod(self.bvk_kmesh)
+        bvk_ncells = np.prod(self.bvkmesh)
 
         nsp_per_block, gout_stride, shm_size = int3c2e_scheme(
             gout_width=GOUT_WIDTH, cache_cart_idx=True)
@@ -617,7 +626,8 @@ class SRInt3c2eOpt:
                 ctypes.c_int(not cart),
                 ctypes.cast(diffuse_exps.data.ptr, ctypes.c_void_p),
                 ctypes.cast(diffuse_coefs.data.ptr, ctypes.c_void_p),
-                ctypes.c_float(log_cutoff))
+                ctypes.c_float(log_cutoff),
+                ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
             if err != 0:
                 raise RuntimeError('fill_int3c2e kernel')
             return out
@@ -647,7 +657,7 @@ class SRInt3c2eOpt:
 
         cell = self.cell
         auxcell = self.auxcell
-        bvk_ncells = np.prod(self.bvk_kmesh)
+        bvk_ncells = np.prod(self.bvkmesh)
 
         l_ctr_aux_offsets = _counts_to_offsets(auxcell.l_ctr_counts)
         # Split auxbasis in the unit cell. A large aux_batch can overflow the POOL_SIZE
@@ -697,7 +707,8 @@ class SRInt3c2eOpt:
             ctypes.cast(gout_stride.data.ptr, ctypes.c_void_p),
             ctypes.cast(diffuse_exps.data.ptr, ctypes.c_void_p),
             ctypes.cast(diffuse_coefs.data.ptr, ctypes.c_void_p),
-            ctypes.c_float(log_cutoff))
+            ctypes.c_float(log_cutoff),
+            ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
         if err != 0:
             raise RuntimeError('contract_int3c2e_dm failed')
         if hermi == 1:
@@ -707,6 +718,12 @@ class SRInt3c2eOpt:
         return vj_aux
 
     def contract_auxvec(self, auxvec, kpts=None, sort_output=True):
+        """Contract to AO matrices.
+
+        kpts follows the PySCF kpts convention; see
+        gpu4pyscf.pbc.lib.kpts_helper._normalize_kpts.
+        """
+        kpts, is_single_kpt = _normalize_kpts(kpts)
         assert auxvec.dtype == np.float64
         assert auxvec.ndim == 1
         assert len(auxvec) == self.auxcell.nao
@@ -768,11 +785,12 @@ class SRInt3c2eOpt:
             ctypes.cast(gout_stride.data.ptr, ctypes.c_void_p),
             ctypes.cast(diffuse_exps.data.ptr, ctypes.c_void_p),
             ctypes.cast(diffuse_coefs.data.ptr, ctypes.c_void_p),
-            ctypes.c_float(log_cutoff))
+            ctypes.c_float(log_cutoff),
+            ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
         if err != 0:
             raise RuntimeError('contract_int3c2e_auxvec failed')
 
-        if kpts is None or is_zero(kpts):
+        if is_zero(kpts):
             vj = vj.sum(axis=1)
             vj = vj.reshape(1,nao,nao)
         else:
@@ -784,7 +802,7 @@ class SRInt3c2eOpt:
         vj = hermi_triu(vj)
         if sort_output:
             vj = cell.apply_CT_mat_C(vj)
-        return vj
+        return vj[0] if is_single_kpt else vj
 
 def _conc_locs(ao_loc1, ao_loc2):
     comp_loc = np.append(ao_loc1[:-1], ao_loc1[-1] + ao_loc2)
@@ -968,12 +986,14 @@ def _create_pair_recontractor(cell, bas_ij_batches, cart, bvk_ncells=1):
 
     pair_addresses = pair_addresses[:cderi_npairs.value].copy()
 
-    def recontract(batch_id, cderi, j3c):
-        """Scatter [primitive_pair, aux] data into shared CDERI.
+    def recontract(batch_id, cderi, j3c, pair_start=0):
+        """Scatter a contiguous [primitive_pair, aux] slice into shared CDERI.
         """
         assert j3c.dtype == cderi.dtype
         npair, naux = j3c.shape
         out_idx, out_offsets, coef = recontraction_params[batch_id]
+        # Keep absolute offsets into out_idx/coef; only the input rows are sliced.
+        out_offsets = out_offsets[pair_start:pair_start+npair+1]
         assert len(out_offsets) == npair + 1
         if j3c.dtype == np.float64:
             kern = libpbc.PBCrecontract_cderi

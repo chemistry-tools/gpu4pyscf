@@ -29,7 +29,7 @@ from gpu4pyscf.gto.mole import group_basis, PTR_BAS_COORD, extract_pgto_params
 from gpu4pyscf.pbc.df.aft import _check_kpts
 from gpu4pyscf.pbc.df.fft_jk import _format_dms, _format_jks
 from gpu4pyscf.pbc.df.ft_ao import libpbc, PBCIntEnvVars
-from gpu4pyscf.pbc.tools.k2gamma import kpts_to_kmesh
+from gpu4pyscf.pbc.lib.kpts_helper import kpts_to_bvkmesh
 from gpu4pyscf.pbc.dft.gen_grid import UniformGrids, BeckeGrids
 from gpu4pyscf.scf.jk import _nearest_power2, _scale_sp_ctr_coeff
 from gpu4pyscf.dft import numint
@@ -72,6 +72,8 @@ def eval_ao(cell, coords, kpt=np.zeros(3), deriv=0, relativity=0, shls_slice=Non
             depending on the kpt argument.  If kpt is not given (gamma point),
             aoR is a float array.
     '''
+    if kpt is None:
+        kpt = np.zeros(3)
     ao_kpts = eval_ao_kpts(cell, coords, np.reshape(kpt, (-1,3)), deriv,
                            out=out, verbose=verbose, opt=opt)
     return ao_kpts[0]
@@ -82,11 +84,16 @@ def eval_ao_kpts(cell, coords, kpts=None, deriv=0, relativity=0,
     '''
     Returns:
         ao_kpts: (nkpts, [comp], ngrids, nao) ndarray
-            AO values at each k-point
+            AO values at each k-point. kpts and the presence of a k-point
+            axis follow the PySCF kpts convention; see
+            gpu4pyscf.pbc.lib.kpts_helper._normalize_kpts.
     '''
     log = logger.new_logger(cell, verbose)
     t0 = log.init_timer()
     assert deriv <= 2
+    is_single_kpt = kpts is None or kpts.ndim == 1
+    if kpts is not None and kpts.ndim == 1:
+        kpts = kpts.reshape(1, 3)
     if opt is None:
         opt = _GTOvalOpt(cell, kpts, deriv=deriv)
     else:
@@ -106,7 +113,8 @@ def eval_ao_kpts(cell, coords, kpts=None, deriv=0, relativity=0,
         ctypes.c_int(ngrids),
         ctypes.c_int(bvk_ncells*nao), ctypes.c_int(bvkcell.nbas),
         ctypes.c_int(deriv), ctypes.c_int(cell.cart),
-        ctypes.cast(opt.bas_rcut.data.ptr, ctypes.c_void_p))
+        ctypes.cast(opt.bas_rcut.data.ptr, ctypes.c_void_p),
+        ctypes.c_void_p(cp.cuda.get_current_stream().ptr))
     if err != 0:
         raise RuntimeError('PBCeval_gto_deriv failed')
 
@@ -121,14 +129,14 @@ def eval_ao_kpts(cell, coords, kpts=None, deriv=0, relativity=0,
     if deriv == 0:
         out = out[:,0]
     log.timer_debug2('eval_ao_kpts', *t0)
-    return out
+    return out[0] if is_single_kpt else out
 
 class _GTOvalOpt:
-    def __init__(self, cell, kpts=None, bvk_kmesh=None, deriv=0):
+    def __init__(self, cell, kpts=None, bvkmesh=None, deriv=0):
         self.cell = cell
         assert kpts is None or kpts.ndim == 2
         self.kpts = kpts
-        self.bvk_kmesh = bvk_kmesh
+        self.bvkmesh = bvkmesh
         self.deriv = deriv
 
         sorted_cell, ao_idx, _, uniq_l_ctr, _, bas_mapping = group_basis(
@@ -143,21 +151,21 @@ class _GTOvalOpt:
         rcut = _estimate_rcut(sorted_cell, deriv)
         self.bas_rcut = cp.asarray(rcut)
 
-        if bvk_kmesh is None:
+        if bvkmesh is None:
             if kpts is None:
-                bvk_kmesh = np.ones(3, dtype=np.int32)
+                bvkmesh = np.ones(3, dtype=np.int32)
             else:
-                bvk_kmesh = kpts_to_kmesh(cell, kpts)
-            self.bvk_kmesh = bvk_kmesh
-        bvk_ncells = np.prod(bvk_kmesh)
+                bvkmesh = kpts_to_bvkmesh(cell, kpts, bound_by_supmol=True)
+            self.bvkmesh = bvkmesh
+        bvk_ncells = np.prod(bvkmesh)
         if bvk_ncells == 1:
             bvkcell = sorted_cell
             expLk = None
         else:
-            bvkcell = super_cell(sorted_cell, bvk_kmesh, wrap_around=True)
+            bvkcell = super_cell(sorted_cell, bvkmesh, wrap_around=True)
             # PTR_BAS_COORD was not initialized in pbctools.supe_rcell
             bvkcell._bas[:,PTR_BAS_COORD] = bvkcell._atm[bvkcell._bas[:,ATOM_OF],PTR_COORD]
-            bvkmesh_Ls = translation_vectors_for_kmesh(sorted_cell, bvk_kmesh, True)
+            bvkmesh_Ls = translation_vectors_for_kmesh(sorted_cell, bvkmesh, True)
             expLk = cp.exp(1j * asarray(bvkmesh_Ls).dot(asarray(kpts).T))
         self.bvk_ncells = bvk_ncells
         self.bvkcell = bvkcell
@@ -344,8 +352,9 @@ def eval_rho(cell, ao, dm, non0tab=None, xctype='LDA', hermi=0, with_lapl=False,
 
 def nr_rks(ni, cell, grids, xc_code, dm_kpts, relativity=0, hermi=1,
            kpts=None, kpts_band=None, max_memory=2000, verbose=None):
+    """Integrate XC at Gamma for None, preserving the input density layout."""
     if kpts is None:
-        kpts = np.zeros((1,3))
+        kpts = np.zeros(3) if dm_kpts.ndim == 2 else np.zeros((1,3))
     elif isinstance(kpts, KPoints):
         kpts = kpts.kpts
 
@@ -423,8 +432,9 @@ def nr_rks(ni, cell, grids, xc_code, dm_kpts, relativity=0, hermi=1,
 
 def nr_uks(ni, cell, grids, xc_code, dm_kpts, relativity=0, hermi=1,
            kpts=None, kpts_band=None, max_memory=2000, verbose=None):
+    """Integrate XC at Gamma for None, preserving the input density layout."""
     if kpts is None:
-        kpts = np.zeros((1,3))
+        kpts = np.zeros(3) if dm_kpts.ndim == 3 else np.zeros((1,3))
     elif isinstance(kpts, KPoints):
         kpts = kpts.kpts
 
@@ -653,8 +663,7 @@ def cache_xc_kernel1(ni, cell, grids, xc_code, dm, spin=0, kpts=None, is_rhf=Non
         ao_deriv = 0
         nvar = 1
 
-    kpts, is_single_kpt = _check_kpts(kpts)
-    assert not is_single_kpt
+    kpts, _ = _check_kpts(kpts)
     dms = _format_dms(dm, kpts)
     if is_rhf is None:
         is_rhf = len(dms) == 1
@@ -777,7 +786,9 @@ class KNumInt(lib.StreamObject, numint.LibXCMixin):
             if blksize < ALIGNED:
                 raise RuntimeError('Not enough GPU memory')
 
-        if kpts is not None:
+        if kpts is None:
+            kpts = np.zeros((1, 3))
+        else:
             kpts = kpts.reshape(-1, 3)
 
         eval_gto_opt = _GTOvalOpt(cell, kpts, deriv=deriv)

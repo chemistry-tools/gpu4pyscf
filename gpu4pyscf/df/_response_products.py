@@ -89,35 +89,28 @@ class _SparseAuxTransform:
                             & cp.all(cp.count_nonzero(coefficient, axis=1) == 1))):
             return None
         self = cls()
-        self.auxmol, self.sorting, self.coefficient = auxmol, indices, coefficient
+        self.coefficient = coefficient
+        rows, cols = cp.nonzero(coefficient)
+        self.columns = cp.empty_like(cols)
+        self.columns[rows] = cols
+        self.rows = cp.empty_like(rows)
+        self.rows[cols] = rows
+        self.row_scales = coefficient[cp.arange(n), self.columns]
+        self.column_scales = coefficient[self.rows, cp.arange(n)]
         self.device, self.stream = device, cp.cuda.get_current_stream()
         return self
 
-    def apply(self, matrix):
+    def apply(self, matrix, out=None, *, transpose=False):
         import cupy as cp
 
         if (not isinstance(matrix, cp.ndarray) or matrix.ndim != 2
                 or matrix.dtype != cp.float64 or matrix.shape[0] != self.coefficient.shape[1]
                 or matrix.device.id != self.device or cp.cuda.device.get_device_id() != self.device
                 or cp.cuda.get_current_stream().ptr != self.stream.ptr):
-            return self.coefficient.dot(matrix)
-        # coefficient[sorting] was built from auxmol.ctr_coeff in this call.
-        # Its single nonzero per row/column makes the native sparse operation
-        # a scaled permutation with the same float64 products as dense GEMM.
-        value = self.auxmol.C_dot_mat(matrix)
-        result = cp.empty_like(value)
-        result[self.sorting] = value
-        return result
-
-    def project_rhs(self, vectors, rhs):
-        import cupy as cp
-
-        expected = self.coefficient.T
-        if (isinstance(rhs, cp.ndarray) and rhs.dtype == expected.dtype
-                and rhs.shape == expected.shape and rhs.strides == expected.strides
-                and rhs.data.ptr == expected.data.ptr and rhs.device.id == expected.device.id):
-            return cp.ascontiguousarray(self.apply(vectors).conj().T)
-        return vectors.conj().T @ rhs.reshape(vectors.shape[0], -1)
+            coefficient = self.coefficient.T if transpose else self.coefficient
+            return cp.matmul(coefficient, matrix, out=out)
+        indices, scales = (self.rows, self.column_scales) if transpose else (self.columns, self.row_scales)
+        return cp.multiply(matrix[indices], scales[:, None], out=out)
 
 
 def _symmetric_aux_gram(values, out, alpha, beta):

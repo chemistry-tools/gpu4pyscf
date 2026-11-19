@@ -161,6 +161,7 @@ void fill_dm_xyz_ip1(double *dm_xyz, double *gx_dmyz, double *xs_exp,
         if (m < nf2*L2) {
             dm_xyz[m*WARP_SIZE] = r3[n];
         }
+        __syncthreads();
 //    } else if (L == 6) {
 //        double r2[62];
 //        double r1[L2];
@@ -953,10 +954,11 @@ void eval_mat_gga_kernel(double *out, double *rho, MGridEnvVars envs,
 static size_t buflen_gga(int l, int tile)
 {
     int lj = MIN(l, LMAX);
-    size_t len1 = WARP_SIZE * tile * (l+1) * 2;
-    size_t len2 = WARP_SIZE * (lj+2)*(lj+2) * 3;
+    int warp = gpu4pyscf_effective_warp_size();
+    size_t len1 = warp * tile * (l+1) * 2;
+    size_t len2 = warp * (lj+2)*(lj+2) * 3;
     if (l < 4) {
-        len2 += WARP_SIZE * (l+1)*(l+2)/2*(l+2);
+        len2 += warp * (l+1)*(l+2)/2*(l+2);
     }
     return MAX(len1, len2) * sizeof(double);
 }
@@ -964,25 +966,25 @@ static size_t buflen_gga(int l, int tile)
 extern "C" {
 int MG_eval_mat_gga_orth(double *out, double *rho, MGridEnvVars envs,
                          int l, int n_radius, int *mesh, int nshl_pair,
-                         int *bas_ij_idx, double *pool, int workers)
+                         int *bas_ij_idx, double *pool, int workers, cudaStream_t stream)
 {
     MGridBounds bounds = {
         nshl_pair, bas_ij_idx, n_radius, {mesh[0], mesh[1], mesh[2]},
     };
     uint32_t *batch_head;
     cudaMalloc(reinterpret_cast<void **>(&batch_head), sizeof(uint32_t) * 1);
-    cudaMemset(batch_head, 0, sizeof(uint32_t));
+    cudaMemsetAsync(batch_head, 0, sizeof(uint32_t), stream);
 
     switch (l) {
-    case 0: eval_mat_gga_kernel<0,32> <<<workers, THREADS, buflen_gga(0,32)>>>(out, rho, envs, bounds, pool, batch_head); break;
-    case 1: eval_mat_gga_kernel<1,32> <<<workers, THREADS, buflen_gga(1,32)>>>(out, rho, envs, bounds, pool, batch_head); break;
-    case 2: eval_mat_gga_kernel<2,16> <<<workers, THREADS, buflen_gga(2,16)>>>(out, rho, envs, bounds, pool, batch_head); break;
-    case 3: eval_mat_gga_kernel<3,16> <<<workers, THREADS, buflen_gga(3,16)>>>(out, rho, envs, bounds, pool, batch_head); break;
-    case 4: eval_mat_gga_kernel<4,16> <<<workers, THREADS, buflen_gga(4,16)>>>(out, rho, envs, bounds, pool, batch_head); break;
-    case 5: eval_mat_gga_kernel<5, 8> <<<workers, THREADS, buflen_gga(5, 8)>>>(out, rho, envs, bounds, pool, batch_head); break;
-    case 6: eval_mat_gga_kernel<6, 8> <<<workers, THREADS, buflen_gga(6, 8)>>>(out, rho, envs, bounds, pool, batch_head); break;
-    case 7: eval_mat_gga_kernel<7, 8> <<<workers, THREADS, buflen_gga(7, 8)>>>(out, rho, envs, bounds, pool, batch_head); break;
-    case 8: eval_mat_gga_kernel<8, 8> <<<workers, THREADS, buflen_gga(8, 8)>>>(out, rho, envs, bounds, pool, batch_head); break;
+    case 0: eval_mat_gga_kernel<0,32> <<<workers, THREADS, buflen_gga(0,32), stream>>>(out, rho, envs, bounds, pool, batch_head); break;
+    case 1: eval_mat_gga_kernel<1,32> <<<workers, THREADS, buflen_gga(1,32), stream>>>(out, rho, envs, bounds, pool, batch_head); break;
+    case 2: eval_mat_gga_kernel<2,16> <<<workers, THREADS, buflen_gga(2,16), stream>>>(out, rho, envs, bounds, pool, batch_head); break;
+    case 3: eval_mat_gga_kernel<3,16> <<<workers, THREADS, buflen_gga(3,16), stream>>>(out, rho, envs, bounds, pool, batch_head); break;
+    case 4: eval_mat_gga_kernel<4,16> <<<workers, THREADS, buflen_gga(4,16), stream>>>(out, rho, envs, bounds, pool, batch_head); break;
+    case 5: eval_mat_gga_kernel<5, 8> <<<workers, THREADS, buflen_gga(5, 8), stream>>>(out, rho, envs, bounds, pool, batch_head); break;
+    case 6: eval_mat_gga_kernel<6, 8> <<<workers, THREADS, buflen_gga(6, 8), stream>>>(out, rho, envs, bounds, pool, batch_head); break;
+    case 7: eval_mat_gga_kernel<7, 8> <<<workers, THREADS, buflen_gga(7, 8), stream>>>(out, rho, envs, bounds, pool, batch_head); break;
+    case 8: eval_mat_gga_kernel<8, 8> <<<workers, THREADS, buflen_gga(8, 8), stream>>>(out, rho, envs, bounds, pool, batch_head); break;
     default: 
         fprintf(stderr, "MG_eval_mat_gga_orth does not support l>8\n");
         cudaFree(batch_head);

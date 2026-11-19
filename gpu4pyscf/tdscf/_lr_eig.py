@@ -18,6 +18,7 @@ functions are provided in future PySCF release.
 '''
 
 import cupy as cp
+from gpu4pyscf.lib.cusolver import eigh_std
 import sys
 import numpy as np
 import scipy.linalg
@@ -27,7 +28,7 @@ from functools import partial
 from pyscf.lib.parameters import MAX_MEMORY
 from gpu4pyscf.lib import logger
 from gpu4pyscf.lib.cupy_helper import asarray
-from pyscf.lib.linalg_helper import _sort_elast, _outprod_to_subspace
+from pyscf.lib.linalg_helper import _sort_elast
 try:
     from pyscf.lib.exceptions import LinearDependencyError
 except ImportError:
@@ -93,10 +94,9 @@ def eigh(aop, x0, precond, tol_residual=1e-5, lindep=1e-12, nroots=1,
     else:
         log = logger.Logger(sys.stdout, verbose)
 
-    if isinstance(x0, np.ndarray) and x0.ndim == 1:
-        x0 = x0[None,:]
-
     x0 = cp.asarray(x0)
+    if x0.ndim == 1:
+        x0 = x0[None,:]
 
     x0_size = x0.shape[1]
     if MAX_SPACE_INC is None:
@@ -154,7 +154,7 @@ def eigh(aop, x0, precond, tol_residual=1e-5, lindep=1e-12, nroots=1,
         xt = None
 
         if x0sym is None:
-            w, v = cp.linalg.eigh(heff)
+            w, v = eigh_std(heff)
         else:
             # Diagonalize within eash symmetry sectors
             row1 = len(xs)
@@ -162,10 +162,10 @@ def eigh(aop, x0, precond, tol_residual=1e-5, lindep=1e-12, nroots=1,
             v = cp.zeros((row1, row1))
             v_ir = []
             i1 = 0
-            for ir in set(xs_ir):
+            for ir in np.unique(cp.asnumpy(xs_ir)):
                 idx = cp.where(xs_ir == ir)[0]
                 i0, i1 = i1, i1 + idx.size
-                w_sub, v_sub = cp.linalg.eigh(heff[idx[:,None],idx])
+                w_sub, v_sub = eigh_std(heff[idx[:,None],idx])
                 w[i0:i1] = w_sub
                 v[idx,i0:i1] = v_sub
                 v_ir.append([ir] * idx.size)
@@ -315,7 +315,7 @@ def eig(aop, x0, precond, tol_residual=1e-5, nroots=1, x0sym=None, pick=None,
     else:
         log = logger.Logger(sys.stdout, verbose)
 
-    if isinstance(x0, cp.ndarray) and x0.ndim == 1:
+    if isinstance(x0, (np.ndarray, cp.ndarray)) and x0.ndim == 1:
         x0 = x0[None,:]
     x0 = cp.asarray(x0)
     x0_size = x0.shape[1]
@@ -366,6 +366,26 @@ def eig(aop, x0, precond, tol_residual=1e-5, nroots=1, x0sym=None, pick=None,
     fresh_start = True
     for icyc in range(max_cycle):
         if fresh_start:
+            if icyc > 0:
+                # Non-Hermitian Ritz vectors and their conjugate partners are
+                # not Euclidean-orthogonal; restore the projected basis metric.
+                if x0sym is None:
+                    x0 = _symmetric_orth(x0)
+                else:
+                    x0_ir = cp.asnumpy(x0_ir)
+                    x0_orth = []
+                    x0_orth_ir = []
+                    for ir in set(x0_ir):
+                        idx = np.where(x0_ir == ir)[0]
+                        xt_sub = _symmetric_orth(x0[idx])
+                        x0_orth.append(xt_sub)
+                        x0_orth_ir.append([ir] * len(xt_sub))
+                    if x0_orth:
+                        x0 = cp.vstack(x0_orth)
+                        x0_ir = cp.hstack(x0_orth_ir)
+                    else:
+                        x0 = []
+                    x0_orth = x0_orth_ir = xt_sub = None
             vlast = None
             conv_last = conv = np.zeros(nroots, dtype=bool)
             xs = cp.zeros((0, x0_size))
@@ -402,12 +422,12 @@ def eig(aop, x0, precond, tol_residual=1e-5, nroots=1, x0sym=None, pick=None,
             w, v = scipy.linalg.eig(heff[:row1*2,:row1*2])
         else:
             # Diagonalize within each symmetry sectors
-            xs_ir2 = np.repeat(xs_ir, 2)
+            xs_ir2 = np.repeat(cp.asnumpy(xs_ir), 2)
             w = np.empty(row1*2, dtype=np.complex128)
             v = np.zeros((row1*2, row1*2), dtype=np.complex128)
             v_ir = []
             i1 = 0
-            for ir in set(xs_ir):
+            for ir in np.unique(cp.asnumpy(xs_ir)):
                 idx = np.where(xs_ir2 == ir)[0]
                 i0, i1 = i1, i1 + idx.size
                 w_sub, v_sub = scipy.linalg.eig(heff[idx[:,None],idx])
@@ -439,11 +459,11 @@ def eig(aop, x0, precond, tol_residual=1e-5, nroots=1, x0sym=None, pick=None,
 
         x0 = _gen_x0(asarray(v), xs)
         ax0 = xt = _gen_ax0(asarray(v), ax)
-        xt -= w[:,None] * x0
+        xt -= cp.asarray(w)[:,None] * x0
         ax0 = None
         if x0sym is not None:
             xt_ir = v_ir[:space_inc]
-            x0_ir = v_ir[:nroots]
+            x0_ir = v_ir[:space_inc]
 
         dx_norm = cp.linalg.norm(xt, axis=1)
         max_dx_norm = max(dx_norm[:nroots])
@@ -474,14 +494,16 @@ def eig(aop, x0, precond, tol_residual=1e-5, nroots=1, x0sym=None, pick=None,
         # Remove quasi linearly dependent bases, as they cause more numerical
         # errors in _symmetric_orth
         xt_norm = cp.linalg.norm(xt, axis=1)
-        xt_to_keep = (dx_norm > tol_residual) & (xt_norm > max(lindep**.5, tol_residual))
+        # Preconditioning changes the correction norm; convergence is measured
+        # by dx_norm, while only linear dependence should discard a correction.
+        xt_to_keep = (dx_norm > tol_residual) & (xt_norm > lindep**.5)
         xt = xt[xt_to_keep]
         if len(xt) > 0:
             xt /= xt_norm[xt_to_keep, None]
             if x0sym is None:
                 xt = _symmetric_orth(xt)
             else:
-                xt_ir = xt_ir[xt_to_keep]
+                xt_ir = xt_ir[xt_to_keep.get()]
                 xt_orth = []
                 xt_orth_ir = []
                 for ir in set(xt_ir):
@@ -666,7 +688,7 @@ def real_eig(aop, x0, precond, tol_residual=1e-5, nroots=1, x0sym=None, pick=Non
             y = cp.zeros_like(x)
             v_ir = []
             i1 = 0
-            for ir in set(xs_ir):
+            for ir in np.unique(cp.asnumpy(xs_ir)):
                 idx = cp.nonzero(xs_ir[:m1] == ir)[0]
                 _w, _x, _y = TDDFT_subspace_eigen_solver(
                     a[idx[:,None],idx], b[idx[:,None],idx],
@@ -747,7 +769,7 @@ def real_eig(aop, x0, precond, tol_residual=1e-5, nroots=1, x0sym=None, pick=Non
             xt_orth_ir = []
             V = []
             W = []
-            for ir in set(xt_ir):
+            for ir in np.unique(cp.asnumpy(xt_ir)):
                 idx = cp.nonzero(xt_ir == ir)[0]
                 _V, _W = VW_Gram_Schmidt_fill_holder(
                     V_holder[:,:m1], W_holder[:,:m1], X_new[:,idx], Y_new[:,idx], lindep)
@@ -783,8 +805,8 @@ def real_eig(aop, x0, precond, tol_residual=1e-5, nroots=1, x0sym=None, pick=Non
     return conv[:nroots], e[:nroots].get(), cp.hstack(x0)
 
 def _gen_x0(v, xs):
-    out = _outprod_to_subspace(v[::2], xs)
-    out_conj = _outprod_to_subspace(v[1::2].conj(), xs)
+    out = v[::2].T @ xs
+    out_conj = v[1::2].conj().T @ xs
     n = out.shape[1] // 2
     # v[1::2] * xs.conj() = (v[1::2].conj() * xs).conj()
     out[:,:n] += out_conj[:,n:].conj()
@@ -792,8 +814,8 @@ def _gen_x0(v, xs):
     return out
 
 def _gen_ax0(v, xs):
-    out = _outprod_to_subspace(v[::2], xs)
-    out_conj = _outprod_to_subspace(v[1::2].conj(), xs)
+    out = v[::2].T @ xs
+    out_conj = v[1::2].conj().T @ xs
     n = out.shape[1] // 2
     out[:,:n] -= out_conj[:,n:].conj()
     out[:,n:] -= out_conj[:,:n].conj()
@@ -825,7 +847,7 @@ def _qr(xs, lindep=1e-14):
 
 
 def _symmetric_orth(xt, lindep=1e-12):
-    xt = np.asarray(xt)
+    xt = cp.asarray(xt)
     if xt.dtype == np.float64:
         return _symmetric_orth_real(xt, lindep)
     else:
@@ -842,11 +864,11 @@ def _symmetric_orth_real(xt, lindep=1e-12):
     # Symmetric orthogonalize s, where
     # s = [[s11, s21.conj().T],
     #      [s21, s11.conj()  ]]
-    e, c = np.linalg.eigh(s11)
+    e, c = cp.linalg.eigh(s11)
     mask = e > lindep
     e = e[mask]
     if e.size == 0:
-        return np.zeros([0, x0_size], dtype=xt.dtype)
+        return cp.zeros([0, x0_size], dtype=xt.dtype)
     c = c[:,mask] * e**-.5
 
     # c22 = c.conj()
@@ -857,24 +879,24 @@ def _symmetric_orth_real(xt, lindep=1e-12):
     for i in range(n):
         _s21 = csc[i:,i:]
         # s21 is symmetric for real vectors
-        w, u = np.linalg.eigh(_s21)
+        w, u = cp.linalg.eigh(_s21)
         mask = 1 - abs(w) > lindep_sqrt
-        if np.any(mask):
+        if cp.any(mask):
             c = c[:,i:]
             break
     else:
-        return np.zeros([0, x0_size], dtype=xt.dtype)
+        return cp.zeros([0, x0_size], dtype=xt.dtype)
     w = w[mask]
     u = u[:,mask]
     c_orth = c.dot(u)
 
     if e[0] < 1e-6 or 1-abs(w[0]) < 1e-3:
         # Rerun the orthogonalization to reduce numerical errors
-        e, c = np.linalg.eigh(c_orth.T.dot(s11).dot(c_orth))
+        e, c = cp.linalg.eigh(c_orth.T.dot(s11).dot(c_orth))
         c *= e**-.5
         c_orth = c_orth.dot(c)
         csc = c_orth.T.dot(s21).dot(c_orth)
-        w, u = np.linalg.eigh(csc)
+        w, u = cp.linalg.eigh(csc)
         c_orth = c_orth.dot(u)
 
     # Symmetric diagonalize
@@ -903,9 +925,9 @@ def _symmetric_orth_cmplx(xt, lindep=1e-12):
     # The conjugated basis np.hstack([xt[:,m:], xt[:,:m]]).conj()
     s11 = xt.conj().dot(xt.T)
     s21 = _conj_dot(xt, xt)
-    s = np.block([[s11, s21.conj().T],
-                  [s21, s11.conj()  ]])
-    e, c = scipy.linalg.eigh(s)
+    s = cp.vstack([cp.hstack([s11, s21.conj().T]),
+                   cp.hstack([s21, s11.conj()])])
+    e, c = cp.linalg.eigh(s)
     if e[0] < lindep:
         if n == 1:
             return xt
@@ -953,7 +975,7 @@ def TDDFT_subspace_eigen_solver(a, b, sigma, pi, nroots):
 
     G = cp.linalg.cholesky(GGT)
     if cp.any(cp.isnan(G)):
-        eig, eigv = cp.linalg.eigh(GGT)
+        eig, eigv = eigh_std(GGT)
         if eig[0] < -1e-4:
             error_msg = (
                 "GGT matrix is not positive definite.\n"
@@ -968,7 +990,7 @@ def TDDFT_subspace_eigen_solver(a, b, sigma, pi, nroots):
     d_apb_d = cp.einsum('i,ij,j->ij', d_mh, a+b, d_mh)
     M = cp.dot(G.T, cp.dot(L_inv, cp.dot(d_apb_d, cp.dot(L_inv.T, G))))
 
-    omega2, Z = cp.linalg.eigh(M)
+    omega2, Z = eigh_std(M)
     if cp.any(omega2 <= 0):
         idx = cp.nonzero(omega2 > 0)[0]
         omega2 = omega2[idx[:nroots]]
@@ -1009,7 +1031,7 @@ def VW_Gram_Schmidt_fill_holder(V_holder, W_holder, X_new, Y_new, lindep=1e-12):
     # s21 is symmetric
     s21  = X_new.T.dot(Y_new)
     s21 += Y_new.T.dot(X_new)
-    e, c = cp.linalg.eigh(s11)
+    e, c = eigh_std(s11)
     mask = e > lindep
     e = e[mask]
     if e.size == 0:
@@ -1021,7 +1043,7 @@ def VW_Gram_Schmidt_fill_holder(V_holder, W_holder, X_new, Y_new, lindep=1e-12):
     n = csc.shape[0]
     lindep_sqrt = lindep**.5
     for i in range(n):
-        w, u = cp.linalg.eigh(csc[i:,i:])
+        w, u = eigh_std(csc[i:,i:])
         mask = 1 - abs(w) > lindep_sqrt
         if cp.any(mask):
             c = c[:,i:]
@@ -1035,11 +1057,11 @@ def VW_Gram_Schmidt_fill_holder(V_holder, W_holder, X_new, Y_new, lindep=1e-12):
 
     if e[0] < 1e-6 or 1-abs(w[0]) < 1e-3:
         # Rerun the orthogonalization to reduce numerical errors
-        e, c = cp.linalg.eigh(c_orth.T.dot(s11).dot(c_orth))
+        e, c = eigh_std(c_orth.T.dot(s11).dot(c_orth))
         c *= e**-.5
         c_orth = c_orth.dot(c)
         csc = c_orth.T.dot(s21).dot(c_orth)
-        w, u = cp.linalg.eigh(csc)
+        w, u = eigh_std(csc)
         c_orth = c_orth.dot(u)
     mask = 1 - abs(w) > lindep_sqrt
     w = w[mask]
@@ -1162,9 +1184,9 @@ def Davidson(matrix_vector_product,
         max_iter: int
              maximum iterations
         gram_schmidt: bool
-             use Gram-Schmidt orthogonalization
+             use Gram-Schmidt orthogonalization.
         single: bool
-             use single precision
+             use single precision.
 
     Returns:
         omega: 1D array
@@ -1268,7 +1290,7 @@ def Davidson(matrix_vector_product,
         '''
         t0 = log.init_timer()
         if gram_schmidt:
-            omega, x = cp.linalg.eigh(sub_A)
+            omega, x = eigh_std(sub_A)
         else:
             s_holder = math_helper.gen_VW(s_holder, V_holder, V_holder, size_old, size_new, symmetry=False)
             overlap_s = s_holder[:size_new,:size_new]
@@ -1311,6 +1333,9 @@ def Davidson(matrix_vector_product,
         V_holder, size_new = fill_holder(V_holder, size_old, new_guess)
 
         _time_add(log, t_fill_holder, t0)
+        if size_new == size_old:
+            log.warn('No independent Davidson correction vectors remain')
+            break
 
 
     if ii == max_iter-1 and max_norm >= conv_tol:
@@ -1322,7 +1347,7 @@ def Davidson(matrix_vector_product,
 
 
     log.info(f'Maximum residual norm = {max_norm:.2e}')
-    log.info(f'Final subspace size = {sub_A.shape[0]:d}')
+    log.info(f'Final subspace size = {size_new:d}')
 
 
     _time_add(log, t_total, cpu0)
@@ -1568,7 +1593,7 @@ def Davidson_Casida(matrix_vector_product,
 
     if ii == (max_iter -1) and max_norm >= conv_tol:
         log.warn(f'===  Warning: TDDFT eigen solver not converged below {conv_tol:.2e} due to max iteration limit ===')
-        log.warn('max residual norms', cp.max(r_norms))
+        log.warn('max residual norms %s', cp.max(r_norms))
 
     log.info(f'Finished in {ii+1:d} steps')
     log.info(f'final subspace = {sub_A.shape[0]}' )
@@ -1620,7 +1645,7 @@ def davidson_nosym1(
     toloose = tol**0.5
     log.debug1('tol %g  toloose %g', tol, toloose)
 
-    if isinstance(x0, np.ndarray) and x0.ndim == 1:
+    if isinstance(x0, (np.ndarray, cp.ndarray)) and x0.ndim == 1:
         x0 = x0[None, :]
     x0 = cp.asarray(x0)
     x0_size = x0.shape[1]
@@ -1661,8 +1686,6 @@ def davidson_nosym1(
                     'Check to see if `pick` function :%s: is providing linear dependent '
                     'vectors' % (x0len - len(xt), pick.__name__)
                 )
-        elif len(xt) > 1:
-            xt, _ = _qr(xt, lindep)
         if icyc != 0:
             xt = xt[:space_inc]
 
@@ -1745,6 +1768,9 @@ def davidson_nosym1(
         )
 
         xt /= xt_norm[:, None]
+        if len(xt) > 1:
+            # Count independent corrections before deciding whether they fit.
+            xt, _ = _qr(xt, lindep)
 
         fresh_start = space + len(xt) > max_space
         if callable(callback):
