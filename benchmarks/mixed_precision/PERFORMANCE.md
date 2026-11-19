@@ -1987,3 +1987,40 @@ checks pass. Existing unqualified methods, devices and basis representations kee
 their original behavior. Evidence and source hashes are outside Git under
 `circumcoronene-current-20261028-v1`; all 548 Python source files in the fitted
 baseline match `0504b8c`.
+
+## Symmetric float64 VV10 response (2026-11-19)
+
+The fused verification and force path computes both directions of each
+off-diagonal tile pair together. Tiles follow atom boundaries so the weighted
+coordinate response can be accumulated once with opposite signs for the two
+atoms. Radial and angular grids retain their full quadrature. Each launch batch
+uses at most 74 MiB of pair scratch. On compute capability 8.6 the path is
+eligible from 65,536 active points, subject to the memory and input guards.
+
+The panel uses fitted ωB97M-V/def2-TZVPD with ordinary/VV10 grids 5/3, full
+grid and auxiliary response, and the same supplied density per pair. RTX 3080
+GPU 7 at 260 W and four pinned CPU threads ran every timing sequentially.
+Reported totals include fitting setup, SCF, float64 verification and forces.
+Repeat timings use both run orders. Coronene uses host-backed fitted tensors.
+
+| Molecule | Original, s | Symmetric, s | Less total time |
+| --- | ---: | ---: | ---: |
+| Acetyl fluoride | 4.51 | 3.87 | 14.2% |
+| Acetyl chloride | 5.05 | 4.56 | 9.9% |
+| Acetamide | 5.56 | 4.81 | 13.5% |
+| Dimethyl sulfoxide | 7.22 | 6.35 | 12.0% |
+| Pyridine | 8.35 | 7.58 | 9.2% |
+| Naphthalene | 21.56 | 18.77 | 12.9% |
+| Ethyl 4-acetamidobenzoate | 54.51 | 47.99 | 12.0% |
+| Coronene | 137.26 | 126.15 | 8.1% |
+
+All runs pass float64 SCF verification with the same round counts per molecule.
+The 681-AO pair pass averages 14.01 → 7.63 seconds. Seven molecules agree within
+`4.81e-9` Hartree/Bohr on complete forces. Coronene's independently initialized
+comparison differs by `1.50e-7` Hartree/Bohr. Two original runs differ by
+`1.64e-7` Hartree/Bohr. At identical frozen orbitals, the original and symmetric
+coronene forces agree within `2.35e-13` Hartree/Bohr. The 32 focused CUDA tests pass.
+
+Receipts are under `vv10-f64-symmetric-20261119-v1`,
+`vv10-f64-symmetric-20261119-panel-extra-v1` and
+`vv10-f64-symmetric-20261119-coronene-diagnostic` in the benchmark directory.
